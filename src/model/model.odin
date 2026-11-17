@@ -99,7 +99,12 @@ ensure_menus :: proc(app: ^App) {
 		kw_leaf("Package declaration", "package", "main"),
 		leaf("File tags", "#+build linux"),
 		leaf("Comments", "// comment"),
+	)
+	dependencies := make_slice(
 		grp("Import", import_src),
+		leaf("Aliased import", "import str \"core:strings\""),
+		leaf("Foreign import", "foreign import libc \"system:c\""),
+		leaf("Foreign block", "foreign libc { }"),
 	)
 	procedures := make_slice(
 		proc_leaf("Procedure"),
@@ -114,7 +119,7 @@ ensure_menus :: proc(app: ^App) {
 	)
 	app.add_menu = make_slice(
 		grp("File Setup", file_setup),
-		grp_dim("Dependencies"),
+		grp("Dependencies", dependencies),
 		grp("Procedures", procedures),
 		grp("Types", types),
 		grp_dim("Values"),

@@ -133,7 +133,7 @@ test_import_core_navigates_to_leaf :: proc(t: ^testing.T) {
 	app.os_name = "windows"
 	app.state = .Editor
 	confirm(&app)                 // Add root
-	select_label(&app, "File Setup")
+	select_label(&app, "Dependencies")
 	select_label(&app, "Import")
 	select_label(&app, "core")
 	drill_to_path(&app, "core:fmt")
@@ -141,6 +141,47 @@ test_import_core_navigates_to_leaf :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(app.doc.nodes), 1)
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
 	testing.expect_value(t, txt, "import \"core:fmt\"")
+}
+
+@(test)
+test_file_setup_no_import :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	confirm(&app)                 // Add root
+	select_label(&app, "File Setup")
+	v := current_view(&app)
+	// Check that File Setup does not contain Import
+	for e in v.entries {
+		testing.expect(t, e.label != "Import", "File Setup should not contain Import")
+	}
+	// File Setup should have exactly 3 entries: Package declaration, File tags, Comments
+	testing.expect_value(t, len(v.entries), 3)
+}
+
+@(test)
+test_dependencies_contains_import_and_aliased :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	confirm(&app)                 // Add root
+	select_label(&app, "Dependencies")
+	v := current_view(&app)
+	// Check that Dependencies contains Import
+	found_import := false
+	for e in v.entries {
+		if e.label == "Import" {
+			found_import = true
+			break
+		}
+	}
+	testing.expect(t, found_import, "Dependencies should contain Import")
+	// Test Aliased import leaf
+	select_label(&app, "Aliased import")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect_value(t, txt, "import str \"core:strings\"")
 }
 
 
