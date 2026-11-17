@@ -258,8 +258,8 @@ test_proc_green_dot_focused_after_insert :: proc(t: ^testing.T) {
 	defer cleanup(&app)
 	app.state = .Editor
 	add_proc(&app)
-	// editor_sel should equal num_editable (green dot position)
-	testing.expect_value(t, app.editor_sel, num_editable(&app))
+	// green insertion dot focused: editor_line is past the last node
+	testing.expect_value(t, app.editor_line, len(app.doc.nodes))
 	_, _, ok := editor_target(&app)
 	testing.expect(t, !ok, "green dot should be focused right after insert")
 }
@@ -281,29 +281,28 @@ test_proc_name_editable_slots_are_slots :: proc(t: ^testing.T) {
 	defer cleanup(&app)
 	app.state = .Editor
 	add_proc(&app)
-	// Navigate up 4 times to select all fields
-	update(&app, Input{up = true}) // body slot
+	// Up/Down move between lines; Left/Right move between dots on a line.
+	update(&app, Input{up = true}) // from green dot -> body slot line (node 1)
 	ni, fi, ok := editor_target(&app)
 	testing.expect(t, ok)
-	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "body should be a slot")
 	testing.expect(t, !app.doc.nodes[ni].fields[fi].editable, "slot should not be editable")
 
-	update(&app, Input{up = true}) // return slot
-	ni, fi, ok = editor_target(&app)
-	testing.expect(t, ok)
-	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
-
-	update(&app, Input{up = true}) // params slot
-	ni, fi, ok = editor_target(&app)
-	testing.expect(t, ok)
-	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
-
-	update(&app, Input{up = true}) // name (editable)
+	update(&app, Input{up = true}) // -> signature line (node 0), first dot = name
 	ni, fi, ok = editor_target(&app)
 	testing.expect(t, ok)
 	testing.expect(t, app.doc.nodes[ni].fields[fi].editable, "name should be editable")
-	testing.expect(t, !app.doc.nodes[ni].fields[fi].slot, "name should not be a slot")
 	testing.expect_value(t, app.doc.nodes[ni].fields[fi].text, "do_thing")
+
+	update(&app, Input{right = true}) // -> params slot
+	ni, fi, ok = editor_target(&app)
+	testing.expect(t, ok)
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "params should be a slot")
+
+	update(&app, Input{right = true}) // -> return slot
+	ni, fi, ok = editor_target(&app)
+	testing.expect(t, ok)
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "return should be a slot")
 }
 
 @(test)
@@ -312,10 +311,12 @@ test_proc_set_field_text_on_name :: proc(t: ^testing.T) {
 	defer cleanup(&app)
 	app.state = .Editor
 	add_proc(&app)
-	// Navigate up to the name field (4 up presses from green dot)
-	for _ in 0..<4 do update(&app, Input{up = true})
+	// Up to the body line, up again to the signature line (first dot = name).
+	update(&app, Input{up = true})
+	update(&app, Input{up = true})
 	ni, fi, ok := editor_target(&app)
 	testing.expect(t, ok)
+	testing.expect(t, app.doc.nodes[ni].fields[fi].editable, "should be on the editable name")
 	set_field_text(&app, ni, fi, "my_func")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
 	testing.expect(t, strings.contains(txt, "my_func"), "proc name should be updated")

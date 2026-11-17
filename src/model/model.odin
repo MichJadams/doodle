@@ -75,7 +75,8 @@ App :: struct {
 	recent_imports: [dynamic]string, // import paths, most-recent first
 	os_name:        string,
 	want_quit:      bool,
-	editor_sel:     int, // index into editable fields; == num_editable => green dot focused
+	editor_line:    int, // index into doc.nodes; == len(nodes) => green insertion dot focused
+	editor_field:   int, // selectable-field index within the current line (left/right)
 
 	add_menu: []Entry, // built lazily per-app (no globals -> test-safe)
 	ide_menu: []Entry,
@@ -270,15 +271,64 @@ num_editable :: proc(app: ^App) -> int {
 }
 
 // Resolve the current editor selection to a selectable field location (editable or slot).
-editor_target :: proc(app: ^App) -> (ni: int, fi: int, ok: bool) {
-	if app.editor_sel < 0 do return 0, 0, false
-	idx := 0
-	for n, n_i in app.doc.nodes {
-		for f, f_i in n.fields {
-			if f.editable || f.slot {
-				if idx == app.editor_sel do return n_i, f_i, true
-				idx += 1
+// Count selectable (editable or slot) fields on one line.
+selectable_in_node :: proc(app: ^App, ni: int) -> int {
+	c := 0
+	for f in app.doc.nodes[ni].fields do if f.editable || f.slot do c += 1
+	return c
+}
+
+// Focus the green insertion dot (past the last line).
+focus_dot :: proc(app: ^App) {
+	app.editor_line = len(app.doc.nodes)
+	app.editor_field = 0
+}
+
+clamp_field :: proc(app: ^App) {
+	if app.editor_line < len(app.doc.nodes) {
+		cnt := selectable_in_node(app, app.editor_line)
+		app.editor_field = cnt <= 0 ? 0 : clamp(app.editor_field, 0, cnt - 1)
+	} else {
+		app.editor_field = 0
+	}
+}
+
+// Move up/down between lines that have dots (green insertion dot is the bottom stop).
+editor_move_line :: proc(app: ^App, dir: int) {
+	nlines := len(app.doc.nodes)
+	if dir < 0 {
+		for i := app.editor_line - 1; i >= 0; i -= 1 {
+			if selectable_in_node(app, i) > 0 {
+				app.editor_line = i
+				clamp_field(app)
+				return
 			}
+		}
+		// nothing above: stay put
+	} else {
+		for i := app.editor_line + 1; i < nlines; i += 1 {
+			if selectable_in_node(app, i) > 0 {
+				app.editor_line = i
+				clamp_field(app)
+				return
+			}
+		}
+		focus_dot(app) // nothing below -> green insertion dot
+	}
+}
+
+// The currently highlighted field: line `editor_line`, the `editor_field`-th
+// selectable field on it. ok=false means the green insertion dot is focused.
+editor_target :: proc(app: ^App) -> (ni: int, fi: int, ok: bool) {
+	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return 0, 0, false
+	cnt := selectable_in_node(app, app.editor_line)
+	if cnt == 0 do return 0, 0, false
+	k := clamp(app.editor_field, 0, cnt - 1)
+	idx := 0
+	for f, f_i in app.doc.nodes[app.editor_line].fields {
+		if f.editable || f.slot {
+			if idx == k do return app.editor_line, f_i, true
+			idx += 1
 		}
 	}
 	return 0, 0, false
@@ -315,7 +365,8 @@ doc_reset :: proc(app: ^App) {
 		delete(n.fields)
 	}
 	clear(&app.doc.nodes)
-	app.editor_sel = 0
+	app.editor_line = 0
+	app.editor_field = 0
 }
 
 active_bank :: proc(inp: Input) -> int {
@@ -463,7 +514,7 @@ menu_select :: proc(app: ^App) {
 		return // placeholder, no-op
 	}
 	clear_nav(app)
-	app.editor_sel = num_editable(app) // keep the green dot focused after inserting
+	focus_dot(app) // keep the green dot focused after inserting
 	app.state = app.return_state
 }
 
@@ -494,14 +545,21 @@ update :: proc(app: ^App, inp: Input) {
 			}
 		}
 	case .Editor:
-		count := num_editable(app)
-		if app.editor_sel > count do app.editor_sel = count
-		// Up/Down move the highlight between editable fields; the position past the
-		// last field (== count) is the glowing green insertion dot.
-		if inp.up   do app.editor_sel = clamp(app.editor_sel - 1, 0, count)
-		if inp.down do app.editor_sel = clamp(app.editor_sel + 1, 0, count)
+		nlines := len(app.doc.nodes)
+		if app.editor_line > nlines do app.editor_line = nlines
+		// Left/Right move between dots on the current line.
+		if app.editor_line < nlines {
+			cnt := selectable_in_node(app, app.editor_line)
+			if cnt > 0 {
+				if inp.left  do app.editor_field = max(0, app.editor_field - 1)
+				if inp.right do app.editor_field = min(cnt - 1, app.editor_field + 1)
+			}
+		}
+		// Up/Down move between lines (green insertion dot is the bottom stop).
+		if inp.up   do editor_move_line(app, -1)
+		if inp.down do editor_move_line(app, +1)
 		if inp.cancel do app.state = .Menu
-		if inp.confirm && app.editor_sel >= count do open_add_menu(app) // A on the dot = Add menu
+		if inp.confirm && app.editor_line >= nlines do open_add_menu(app) // A on the dot = Add menu
 	case .Radial:
 		v := current_view(app)
 		n := len(v.entries)

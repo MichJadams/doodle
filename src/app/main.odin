@@ -126,7 +126,9 @@ main :: proc() {
 
 		// Mic is available only when an editable field is highlighted.
 		tni, tfi, has_target := model.editor_target(&m)
-		g_mic_ready = has_target && stt_e != nil && m.state == .Editor
+		// Mic is available only on an editable identifier field, not on slots.
+		target_editable := has_target && m.doc.nodes[tni].fields[tfi].editable
+		g_mic_ready = target_editable && stt_e != nil && m.state == .Editor
 
 		// Push-to-talk dictation into the highlighted field.
 		if mic_hold && g_mic_ready && !g_recording {
