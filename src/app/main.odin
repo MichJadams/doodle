@@ -78,6 +78,7 @@ main :: proc() {
 
 	m: model.App
 	m.state = .Menu
+	m.os_name = os_name()
 
 	raw: Raw
 	events: [dynamic]platform.Event
@@ -116,6 +117,15 @@ main :: proc() {
 
 		free_all(context.temp_allocator)
 	}
+}
+
+os_name :: proc() -> string {
+	#partial switch ODIN_OS {
+	case .Windows: return "windows"
+	case .Linux:   return "linux"
+	case .Darwin:  return "darwin"
+	}
+	return ""
 }
 
 load_a_font :: proc(r: ^gpu.Renderer, px: f32) -> ^text.Font {
@@ -265,33 +275,37 @@ draw_green_dot :: proc(r: ^gpu.Renderer, cx, cy: f32) {
 	gpu.draw_circle(r, cx, cy, radius, {0.25, 0.95, 0.50, 1})
 }
 
-// The "radial" is a centered GRID of buttons.
+// Render the current menu view (top of the navigation stack) as a grid.
 draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
+	v := model.current_view(m)
+	if v == nil do return
 	fw, fh := f32(w), f32(h)
 	gpu.draw_rect(r, {0, 0, fw, fh}, {0, 0, 0, 0.60})
-	text.draw_centered(r, g_ui, {0, fh * 0.20, fw, 40}, m.radial.title, COL_ACCENT)
+	text.draw_centered(r, g_ui, {0, fh * 0.16, fw, 40}, v.title, COL_ACCENT)
 
-	n := len(m.radial.options)
+	n := len(v.entries)
 	cols := model.GRID_COLS
 	if n < cols do cols = n
+	if cols < 1 do cols = 1
 	rows := (n + cols - 1) / cols
 
-	cellw, cellh, gap := f32(240), f32(64), f32(18)
+	cellw, cellh, gap := f32(240), f32(60), f32(16)
 	grid_w := f32(cols) * cellw + f32(cols - 1) * gap
 	grid_h := f32(rows) * cellh + f32(rows - 1) * gap
 	start_x := fw * 0.5 - grid_w * 0.5
-	start_y := fh * 0.5 - grid_h * 0.5 + 10
+	start_y := fh * 0.26
 
-	for opt, i in m.radial.options {
+	for e, i in v.entries {
 		col := i % cols
 		row := i / cols
 		box := gpu.Rect{start_x + f32(col) * (cellw + gap), start_y + f32(row) * (cellh + gap), cellw, cellh}
-		active := i == m.radial.index
+		active := i == v.index
 		gpu.draw_rect(r, box, active ? COL_HILITE : COL_PANEL)
 		if active do gpu.draw_rect_outline(r, box, 2, COL_ACCENT)
-		text.draw_centered(r, g_ui, box, opt, COL_TEXT)
+		col_text := e.dim ? COL_DIM : COL_TEXT
+		text.draw_centered(r, g_ui, box, e.label, col_text)
 	}
-	text.draw_centered(r, g_ui, {0, start_y + grid_h + 26, fw, 28}, "D-pad / Arrows to move     + : select     < : back", COL_DIM)
+	text.draw_centered(r, g_ui, {0, start_y + grid_h + 24, fw, 28}, "D-pad / Arrows to move     + : select     < : back", COL_DIM)
 }
 
 draw_hud :: proc(r: ^gpu.Renderer, m: ^model.App, inp: model.Input, w, h: int) {

@@ -1,110 +1,355 @@
 package model
 
-// Pure application logic: state, document, menu navigation, insertion.
+// Pure application logic: state, document, data-driven menu navigation.
 // NO dependencies on gpu/platform/text so it can be unit-tested with `odin test`.
-// The app layer translates raw SDL events into `Input` and calls `update`.
-// Contract/overview: docs/EDITOR_MODEL.md
+// Menu tree is `Entry` nodes; navigation is a stack of display views.
+// Overview: docs/EDITOR_MODEL.md
 
-State    :: enum { Menu, Editor, Radial }
-MenuKind :: enum { Add, Ide }
+import "core:slice"
+import "core:strings"
+import "core:fmt"
 
-GRID_COLS :: 3
+State :: enum { Menu, Editor, Radial }
 
-MENU_ITEMS     := [?]string{"New Project", "Recent Projects", "Open Folder"}
-ROOT_OPTS      := [?]string{"File Setup", "Dependencies", "Procedures", "Types", "Values"}
-FILESETUP_OPTS := [?]string{"Package declaration", "File tags", "Comments"}
-IDE_OPTS       := [?]string{"Exit"}
+GRID_COLS        :: 3
+BUCKET_THRESHOLD :: 12
+BUCKET_TARGET    :: 9
 
-Doc :: struct {
-	nodes: [dynamic]string, // each entry is an inserted Odin line/section
+MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder"}
+
+// A menu entry. Exactly one behaviour applies:
+//   children non-empty -> submenu
+//   import_path set    -> inserts `import "<import_path>"`
+//   insert set         -> inserts that literal text
+//   quit               -> exits the app
+Entry :: struct {
+	label:       string,
+	insert:      string, // literal text (e.g. "package main")
+	import_path: string, // e.g. "core:fmt" -> inserts import statement
+	platform:    string, // "" = all; else comma list of ODIN_OS names
+	dim:         bool,
+	quit:        bool,
+	children:    []Entry,
 }
 
-RadialMenu :: struct {
-	kind:    MenuKind,
+Doc :: struct {
+	nodes: [dynamic]string, // owned (cloned) inserted lines
+}
+
+MenuView :: struct {
 	title:   string,
-	options: []string,
+	entries: []Entry,         // display list (allocated)
+	rest:    []Entry,         // backing for bucket children (allocated, or nil)
+	labels:  [dynamic]string, // allocated bucket labels to free on pop
 	index:   int,
-	level:   int, // 0 = root, 1 = file-setup submenu
 }
 
 App :: struct {
-	state:        State,
-	menu_index:   int,
-	doc:          Doc,
-	radial:       RadialMenu,
-	return_state: State,
-	want_quit:    bool,
+	state:          State,
+	menu_index:     int,
+	doc:            Doc,
+	nav:            [dynamic]MenuView,
+	return_state:   State,
+	recent_imports: [dynamic]string, // import paths, most-recent first
+	os_name:        string,
+	want_quit:      bool,
+
+	add_menu: []Entry, // built lazily per-app (no globals -> test-safe)
+	ide_menu: []Entry,
 }
 
-// One frame of abstract input: button edges (just-pressed) + trigger hold state.
 Input :: struct {
-	confirm, cancel:              bool,
-	up, down, left, right:        bool,
-	lt_held, rt_held:             bool,
+	confirm, cancel:       bool,
+	up, down, left, right: bool,
+	lt_held, rt_held:      bool,
 }
 
-// Which control bank is active: 0 = left (LT), 1 = middle (none), 2 = right (RT).
+// ---- Menus (built lazily per App) ----
+
+ensure_menus :: proc(app: ^App) {
+	if app.add_menu != nil do return
+	core := build_core_tree()
+	import_src := make_slice(grp("core", core))
+	file_setup := make_slice(
+		leaf("Package declaration", "package main"),
+		leaf("File tags", "#+build linux"),
+		leaf("Comments", "// comment"),
+		grp("Import", import_src),
+	)
+	app.add_menu = make_slice(
+		grp("File Setup", file_setup),
+		grp_dim("Dependencies"),
+		grp_dim("Procedures"),
+		grp_dim("Types"),
+		grp_dim("Values"),
+	)
+	app.ide_menu = make_slice(Entry{label = "Exit", quit = true})
+}
+
+leaf    :: proc(label, insert: string) -> Entry { return Entry{label = label, insert = insert} }
+grp     :: proc(label: string, children: []Entry) -> Entry { return Entry{label = label, children = children} }
+grp_dim :: proc(label: string) -> Entry { return Entry{label = label, dim = true} }
+
+make_slice :: proc(items: ..Entry) -> []Entry {
+	s := make([]Entry, len(items))
+	copy(s, items)
+	return s
+}
+
+// Free a menu tree (child slices only; all strings are literals).
+free_entries :: proc(entries: []Entry) {
+	for e in entries do free_entries(e.children)
+	if entries != nil do delete(entries)
+}
+
+free_menus :: proc(app: ^App) {
+	if app.add_menu != nil { free_entries(app.add_menu); app.add_menu = nil }
+	if app.ide_menu != nil { free_entries(app.ide_menu); app.ide_menu = nil }
+}
+
+// ---- Build the core tree from the generated flat rows ----
+
+@(private = "file")
+TNode :: struct { e: Entry, kids: [dynamic]^TNode }
+
+build_core_tree :: proc() -> []Entry {
+	roots: [dynamic]^TNode
+	defer delete(roots)
+	stack: [dynamic]^TNode
+	defer delete(stack)
+
+	for row in CORE_ROWS {
+		n := new(TNode)
+		n.e = Entry{label = row.label, import_path = row.path, platform = row.platform, dim = row.dim}
+		if row.depth == 0 {
+			append(&roots, n)
+			clear(&stack)
+			append(&stack, n)
+		} else {
+			parent := stack[row.depth - 1]
+			append(&parent.kids, n)
+			if len(stack) < row.depth + 1 do resize(&stack, row.depth + 1)
+			stack[row.depth] = n
+		}
+	}
+	return tnodes_to_entries(roots[:])
+}
+
+@(private = "file")
+tnodes_to_entries :: proc(nodes: []^TNode) -> []Entry {
+	if len(nodes) == 0 do return nil
+	out := make([]Entry, len(nodes))
+	for n, i in nodes {
+		out[i] = n.e
+		out[i].children = tnodes_to_entries(n.kids[:])
+		delete(n.kids)
+		free(n)
+	}
+	return out
+}
+
+// ---- Helpers ----
+
+is_leaf :: proc(e: Entry) -> bool {
+	return len(e.children) == 0 && (e.insert != "" || e.import_path != "")
+}
+
+// Composed import statement for a leaf (uses the given allocator).
+import_text :: proc(path: string, allocator := context.allocator) -> string {
+	return strings.concatenate({"import \"", path, "\""}, allocator)
+}
+
+platform_ok :: proc(app: ^App, e: Entry) -> bool {
+	if e.platform == "" do return true
+	s := e.platform
+	start := 0
+	for i := 0; i <= len(s); i += 1 {
+		if i == len(s) || s[i] == ',' {
+			if s[start:i] == app.os_name do return true
+			start = i + 1
+		}
+	}
+	return false
+}
+
+is_imported :: proc(app: ^App, node_text: string) -> bool {
+	for n in app.doc.nodes do if n == node_text do return true
+	return false
+}
+
+is_recent :: proc(app: ^App, path: string) -> bool {
+	for s in app.recent_imports do if s == path do return true
+	return false
+}
+
+record_recent :: proc(app: ^App, path: string) {
+	for s, i in app.recent_imports {
+		if s == path { ordered_remove(&app.recent_imports, i); break }
+	}
+	inject_at(&app.recent_imports, 0, path)
+}
+
+insert_node :: proc(app: ^App, s: string) { append(&app.doc.nodes, strings.clone(s)) }
+
+doc_reset :: proc(app: ^App) {
+	for n in app.doc.nodes do delete(n)
+	clear(&app.doc.nodes)
+}
+
 active_bank :: proc(inp: Input) -> int {
 	if inp.lt_held do return 0
 	if inp.rt_held do return 2
 	return 1
 }
 
-insert_node :: proc(app: ^App, s: string) {
-	append(&app.doc.nodes, s)
+@(private = "file")
+label_less :: proc(a, b: Entry) -> bool {
+	return strings.to_lower(a.label, context.temp_allocator) < strings.to_lower(b.label, context.temp_allocator)
 }
 
-open_radial_root :: proc(app: ^App) {
+@(private = "file")
+upper_byte :: proc(b: u8) -> u8 { return (b >= 'a' && b <= 'z') ? b - 32 : b }
+
+// ---- Build a display view: platform filter -> usage-first -> bucket remainder ----
+
+make_view :: proc(app: ^App, title: string, raw: []Entry) -> MenuView {
+	v: MenuView
+	v.title = title
+
+	filtered: [dynamic]Entry
+	defer delete(filtered)
+	for e in raw do if platform_ok(app, e) do append(&filtered, e)
+
+	display: [dynamic]Entry
+	defer delete(display)
+	seen := make(map[string]bool)
+	defer delete(seen)
+
+	// 1. Already-imported leaves first (original order).
+	for e in filtered {
+		if e.import_path != "" && is_imported(app, import_text(e.import_path, context.temp_allocator)) {
+			append(&display, e)
+			seen[e.import_path] = true
+		}
+	}
+	// 2. Then recently-used leaves, in recency order.
+	for path in app.recent_imports {
+		for e in filtered {
+			if e.import_path == path && !(e.import_path in seen) {
+				append(&display, e)
+				seen[e.import_path] = true
+				break
+			}
+		}
+	}
+	// 3. Everything else (groups + remaining leaves), original order.
+	other: [dynamic]Entry
+	defer delete(other)
+	for e in filtered {
+		if e.import_path != "" && (e.import_path in seen) do continue
+		append(&other, e)
+	}
+
+	if len(other) > BUCKET_THRESHOLD {
+		v.rest = make([]Entry, len(other))
+		copy(v.rest, other[:])
+		slice.sort_by(v.rest, label_less)
+		n := len(v.rest)
+		k := (n + BUCKET_TARGET - 1) / BUCKET_TARGET
+		if k < 2 do k = 2
+		per := (n + k - 1) / k
+		i := 0
+		for i < n {
+			j := min(i + per, n)
+			lab := fmt.aprintf("%c-%c", upper_byte(v.rest[i].label[0]), upper_byte(v.rest[j - 1].label[0]))
+			append(&v.labels, lab)
+			append(&display, Entry{label = lab, children = v.rest[i:j]})
+			i = j
+		}
+	} else {
+		for e in other do append(&display, e)
+	}
+
+	v.entries = make([]Entry, len(display))
+	copy(v.entries, display[:])
+	return v
+}
+
+// ---- Navigation ----
+
+push_menu :: proc(app: ^App, title: string, raw: []Entry) {
+	append(&app.nav, make_view(app, title, raw))
+}
+
+pop_menu :: proc(app: ^App) {
+	if len(app.nav) == 0 do return
+	v := pop(&app.nav)
+	delete(v.entries)
+	if v.rest != nil do delete(v.rest)
+	for s in v.labels do delete(s)
+	delete(v.labels)
+}
+
+clear_nav :: proc(app: ^App) {
+	for len(app.nav) > 0 do pop_menu(app)
+}
+
+open_add_menu :: proc(app: ^App) {
+	ensure_menus(app)
+	clear_nav(app)
 	app.return_state = .Editor
 	app.state = .Radial
-	app.radial.kind = .Add
-	app.radial.level = 0
-	app.radial.index = 0
-	app.radial.title = "Add  (insertion point)"
-	app.radial.options = ROOT_OPTS[:]
+	push_menu(app, "Add  (insertion point)", app.add_menu)
 }
 
 open_ide_menu :: proc(app: ^App) {
+	ensure_menus(app)
+	clear_nav(app)
 	app.return_state = app.state
 	app.state = .Radial
-	app.radial.kind = .Ide
-	app.radial.level = 0
-	app.radial.index = 0
-	app.radial.title = "IDE MENU"
-	app.radial.options = IDE_OPTS[:]
+	push_menu(app, "IDE MENU", app.ide_menu)
 }
 
-radial_select :: proc(app: ^App) {
-	if app.radial.kind == .Ide {
-		switch app.radial.index {
-		case 0: // Exit
-			app.want_quit = true
-		}
+current_view :: proc(app: ^App) -> ^MenuView {
+	if len(app.nav) == 0 do return nil
+	return &app.nav[len(app.nav) - 1]
+}
+
+menu_select :: proc(app: ^App) {
+	v := current_view(app)
+	if v == nil || len(v.entries) == 0 do return
+	e := v.entries[v.index]
+	if e.quit {
+		app.want_quit = true
 		return
 	}
-	if app.radial.level == 0 {
-		switch app.radial.index {
-		case 0: // File Setup -> submenu
-			app.radial.level = 1
-			app.radial.index = 0
-			app.radial.title = "File Setup"
-			app.radial.options = FILESETUP_OPTS[:]
-		case:
-			app.state = app.return_state // other branches not implemented yet
-		}
-	} else { // File Setup submenu
-		switch app.radial.index {
-		case 0: insert_node(app, "package main")  // Package declaration
-		case 1: insert_node(app, "#+build linux") // File tags
-		case 2: insert_node(app, "// comment")    // Comments
-		}
-		app.state = app.return_state
+	if len(e.children) > 0 {
+		push_menu(app, e.label, e.children)
+		return
 	}
+	if e.import_path != "" {
+		node := import_text(e.import_path, context.temp_allocator)
+		insert_node(app, node)
+		record_recent(app, e.import_path)
+	} else if e.insert != "" {
+		insert_node(app, e.insert)
+	} else {
+		return // placeholder, no-op
+	}
+	clear_nav(app)
+	app.state = app.return_state
 }
+
+menu_cancel :: proc(app: ^App) {
+	pop_menu(app)
+	if len(app.nav) == 0 do app.state = app.return_state
+}
+
+// ---- Top-level update ----
 
 update :: proc(app: ^App, inp: Input) {
 	// Global binding: LT (left bank) + D-pad Left opens the IDE menu.
-	if app.state != .Radial && active_bank(inp) == 0 && inp.left {
+	if app.state != .Radial && inp.lt_held && inp.left {
 		open_ide_menu(app)
 		return
 	}
@@ -112,31 +357,30 @@ update :: proc(app: ^App, inp: Input) {
 	switch app.state {
 	case .Menu:
 		n := len(MENU_ITEMS)
-		if inp.up   do app.menu_index = (app.menu_index + n - 1) %% n
-		if inp.down do app.menu_index = (app.menu_index + 1) %% n
+		if inp.up     do app.menu_index = (app.menu_index + n - 1) %% n
+		if inp.down   do app.menu_index = (app.menu_index + 1) %% n
 		if inp.cancel do app.want_quit = true
 		if inp.confirm {
 			if app.menu_index == 0 { // New Project
-				clear(&app.doc.nodes)
+				doc_reset(app)
 				app.state = .Editor
 			}
-			// Recent / Open Folder: not wired yet.
 		}
 	case .Editor:
 		if inp.cancel  do app.state = .Menu
-		if inp.confirm do open_radial_root(app)
+		if inp.confirm do open_add_menu(app)
 	case .Radial:
-		n := len(app.radial.options)
+		v := current_view(app)
+		n := len(v.entries)
 		cols := GRID_COLS
 		if n < cols do cols = n
-		if inp.right do app.radial.index = min(app.radial.index + 1, n - 1)
-		if inp.left  do app.radial.index = max(app.radial.index - 1, 0)
-		if inp.down && app.radial.index + cols < n do app.radial.index += cols
-		if inp.up   && app.radial.index - cols >= 0 do app.radial.index -= cols
-		if inp.cancel {
-			if app.radial.kind == .Add && app.radial.level == 1 do open_radial_root(app)
-			else do app.state = app.return_state
+		if n > 0 {
+			if inp.right do v.index = min(v.index + 1, n - 1)
+			if inp.left  do v.index = max(v.index - 1, 0)
+			if inp.down && v.index + cols < n do v.index += cols
+			if inp.up   && v.index - cols >= 0 do v.index -= cols
 		}
-		if inp.confirm do radial_select(app)
+		if inp.cancel  do menu_cancel(app)
+		if inp.confirm do menu_select(app)
 	}
 }
