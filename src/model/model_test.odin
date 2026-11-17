@@ -47,7 +47,40 @@ test_add_package_inserts_text :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.state, State.Editor)
 	testing.expect_value(t, len(app.nav), 0)
 	testing.expect_value(t, len(app.doc.nodes), 1)
-	testing.expect_value(t, app.doc.nodes[0], "package main")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect_value(t, txt, "package main")
+}
+
+@(test)
+test_package_main_is_editable :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app)
+	// exactly one editable field ("main"); "package " is fixed
+	testing.expect_value(t, num_editable(&app), 1)
+	// green dot focused after insert (editor_sel == count)
+	_, _, ok0 := editor_target(&app)
+	testing.expect(t, !ok0, "dot should be focused right after insert")
+	// press Up -> highlight the editable field
+	update(&app, Input{up = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "up should highlight the editable field")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].text, "main")
+}
+
+@(test)
+test_set_field_text_replaces :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app)
+	update(&app, Input{up = true}) // highlight "main"
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok)
+	set_field_text(&app, ni, fi, "brave_otter")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect_value(t, txt, "package brave_otter")
 }
 
 @(test)
@@ -104,8 +137,9 @@ test_import_core_navigates_to_leaf :: proc(t: ^testing.T) {
 	select_label(&app, "core")
 	drill_to_path(&app, "core:fmt")
 	testing.expect_value(t, app.state, State.Editor)
-	testing.expect(t, len(app.doc.nodes) == 1 && app.doc.nodes[0] == "import \"core:fmt\"",
-		"should have inserted core:fmt import")
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect_value(t, txt, "import \"core:fmt\"")
 }
 
 @(test)
@@ -129,7 +163,7 @@ test_bucketing_large_menu :: proc(t: ^testing.T) {
 test_usage_first :: proc(t: ^testing.T) {
 	app: App
 	defer cleanup(&app)
-	insert_node(&app, import_text("core:zzz", context.temp_allocator)) // mark as already imported
+	append_text_node(&app, import_text("core:zzz", context.temp_allocator)) // mark as already imported
 	raw := make_slice(imp("aaa", "core:aaa"), imp("zzz", "core:zzz"), imp("mmm", "core:mmm"))
 	defer delete(raw)
 	v := make_view(&app, "u", raw)

@@ -84,25 +84,34 @@ begin :: proc(e: ^Engine) {
 	e.recording = true
 }
 
-// Stop capture, transcribe, return one cleaned lowercase word ("" if nothing).
+// Transcribe audio captured SO FAR without stopping (for multi-part dictation).
+// Returns a cleaned identifier fragment ("" if nothing). Caller owns the string.
+segment :: proc(e: ^Engine) -> string {
+	if e == nil || !e.available || !e.recording do return ""
+	return transcribe_queued(e)
+}
+
+// Stop capture, transcribe the remainder, return a cleaned identifier fragment.
 end :: proc(e: ^Engine) -> string {
 	if e == nil || !e.available || !e.recording do return ""
 	sdl.PauseAudioDevice(e.dev, true)
 	e.recording = false
+	return transcribe_queued(e)
+}
 
+@(private)
+transcribe_queued :: proc(e: ^Engine) -> string {
 	size := sdl.GetQueuedAudioSize(e.dev)
 	if size == 0 do return ""
 	buf := make([]u8, int(size))
 	defer delete(buf)
 	got := sdl.DequeueAudio(e.dev, raw_data(buf), size)
 	if got == 0 do return ""
-
 	if !write_wav(e.cfg.tmp_wav, buf[:int(got)]) do return ""
 	run_whisper(e.cfg)
-
 	data, _ := os.read_entire_file(e.cfg.tmp_txt, context.allocator)
 	defer if data != nil do delete(data)
-	return clean_word(string(data))
+	return clean_identifier(string(data))
 }
 
 // Convenience for a fixed-window one-shot capture (used by the probe).
@@ -149,24 +158,26 @@ run_whisper :: proc(cfg: Config) {
 	libc.system(cmd)
 }
 
+// Lowercase, map non-alphanumeric runs to single underscores -> snake_case.
+// e.g. "Brave Otter." -> "brave_otter". Caller owns the returned string.
 @(private)
-clean_word :: proc(s: string) -> string {
-	// take the first alphanumeric run, lowercased
-	start := -1
-	end_i := -1
+clean_identifier :: proc(s: string) -> string {
+	out: [dynamic]u8
+	prev_us := true // suppress leading underscore
 	for i in 0 ..< len(s) {
 		c := s[i]
-		alnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-		if alnum {
-			if start < 0 do start = i
-			end_i = i + 1
-		} else if start >= 0 {
-			break
+		low := c
+		if c >= 'A' && c <= 'Z' do low = c + 32
+		if (low >= 'a' && low <= 'z') || (low >= '0' && low <= '9') {
+			append(&out, low)
+			prev_us = false
+		} else if !prev_us {
+			append(&out, '_')
+			prev_us = true
 		}
 	}
-	if start < 0 do return ""
-	word := s[start:end_i]
-	return strings.to_lower(word) // allocated; caller owns
+	for len(out) > 0 && out[len(out) - 1] == '_' do pop(&out)
+	return string(out[:])
 }
 
 @(private)

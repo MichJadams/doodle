@@ -11,6 +11,7 @@ import "../model"
 import "../stt"
 import "core:math"
 import "core:fmt"
+import "core:strings"
 
 WINDOW_W :: 1280
 WINDOW_H :: 800 // Steam Deck native resolution
@@ -42,6 +43,10 @@ g_time: f64
 // STT push-to-talk state (for the HUD/editor overlay).
 g_recording: bool
 g_heard:     string
+g_mic_ready: bool            // a field is highlighted + whisper available
+g_stt_parts: [dynamic]string // dictated fragments joined by "_"
+g_stt_ni:    int             // target node/field captured at record start
+g_stt_fi:    int
 
 // Raw per-frame input accumulated from SDL events, converted to model.Input.
 Raw :: struct {
@@ -108,20 +113,42 @@ main :: proc() {
 		}
 
 		inp := build_input(&raw)
+		down_edge := inp.down
+		mic_hold := inp.lt_held && raw.x_held
+		// While recording, the d-pad/buttons drive dictation, not navigation.
+		if g_recording {
+			inp.confirm = false; inp.cancel = false
+			inp.up = false; inp.down = false; inp.left = false; inp.right = false
+		}
 		model.update(&m, inp)
 
-		// Push-to-talk: hold LT + X to speak one word/number.
-		ptt := inp.lt_held && raw.x_held
-		if ptt && !g_recording {
+		// Mic is available only when an editable field is highlighted.
+		tni, tfi, has_target := model.editor_target(&m)
+		g_mic_ready = has_target && stt_e != nil && m.state == .Editor
+
+		// Push-to-talk dictation into the highlighted field.
+		if mic_hold && g_mic_ready && !g_recording {
 			stt.begin(stt_e)
 			g_recording = true
-		} else if !ptt && g_recording {
-			w := stt.end(stt_e)
-			g_recording = false
-			if w != "" {
+			g_stt_ni = tni
+			g_stt_fi = tfi
+			clear(&g_stt_parts)
+		}
+		if g_recording && down_edge {
+			append(&g_stt_parts, stt.segment(stt_e)) // d-pad Down = underscore boundary
+		}
+		if g_recording && !mic_hold {
+			append(&g_stt_parts, stt.end(stt_e))
+			final := join_identifier(g_stt_parts[:])
+			if final != "" {
+				model.set_field_text(&m, g_stt_ni, g_stt_fi, final)
 				if g_heard != "" do delete(g_heard)
-				g_heard = w
+				g_heard = strings.clone(final)
 			}
+			for p in g_stt_parts do delete(p)
+			clear(&g_stt_parts)
+			delete(final)
+			g_recording = false
 		}
 
 		w, h := platform.get_size(win)
@@ -287,9 +314,21 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 
 	lh := text.line_height(font)
 	y0 := f32(96)
-	x := pad + 34
-	for node, i in m.doc.nodes {
-		text.draw_line(r, font, {x, y0 + f32(i) * lh}, node, COL_TEXT)
+	x0 := pad + 34
+	tni, tfi, has_target := model.editor_target(m)
+	for node, ni in m.doc.nodes {
+		x := x0
+		y := y0 + f32(ni) * lh
+		for field, fi in node.fields {
+			wsz := text.measure(font, field.text).x
+			if has_target && ni == tni && fi == tfi {
+				gpu.draw_rect(r, {x - 4, y, wsz + 8, lh}, {0.22, 0.40, 0.70, 0.55})
+				gpu.draw_rect_outline(r, {x - 4, y, wsz + 8, lh}, 2, COL_ACCENT)
+			}
+			col := field.editable ? COL_ACCENT : COL_TEXT
+			text.draw_line(r, font, {x, y}, field.text, col)
+			x += wsz
+		}
 	}
 	dot_y := y0 + f32(len(m.doc.nodes)) * lh + lh * 0.4
 	draw_green_dot(r, pad + 14, dot_y)
@@ -385,10 +424,26 @@ draw_bank :: proc(r: ^gpu.Renderer, m: ^model.App, bank: int, cx, cy, scale: f32
 	// Face buttons (Y top, A bottom, X left, B right)
 	d := 32.0 * scale
 	rad := 16.0 * scale
+	// Mic-ready glow on LT+X (left bank, X button).
+	if bank == 0 && g_mic_ready {
+		pulse := 0.5 + 0.5 * math.sin(f32(g_time) * 5.0)
+		gpu.draw_circle_outline(r, face_cx - d, cy, rad + 4 + 2 * pulse, 2.5, {0.30, 0.95, 0.50, 0.35 + 0.4 * pulse})
+	}
+
 	draw_face(r, g_ui, face_cx, cy - d, rad, {0.92, 0.78, 0.25, a}, face_glyph(m, bank, .Y))
 	draw_face(r, g_ui, face_cx, cy + d, rad, {0.30, 0.78, 0.42, a}, face_glyph(m, bank, .A))
 	draw_face(r, g_ui, face_cx - d, cy, rad, {0.28, 0.52, 0.90, a}, face_glyph(m, bank, .X))
 	draw_face(r, g_ui, face_cx + d, cy, rad, {0.86, 0.30, 0.30, a}, face_glyph(m, bank, .B))
+}
+
+join_identifier :: proc(parts: []string) -> string {
+	out: [dynamic]u8
+	for p in parts {
+		if p == "" do continue
+		if len(out) > 0 do append(&out, '_')
+		append(&out, ..transmute([]u8)p)
+	}
+	return string(out[:])
 }
 
 draw_face :: proc(r: ^gpu.Renderer, font: ^text.Font, cx, cy, rad: f32, col: gpu.Color, label: string) {

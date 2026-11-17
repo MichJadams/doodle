@@ -23,17 +23,34 @@ MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder"}
 //   insert set         -> inserts that literal text
 //   quit               -> exits the app
 Entry :: struct {
-	label:       string,
-	insert:      string, // literal text (e.g. "package main")
-	import_path: string, // e.g. "core:fmt" -> inserts import statement
-	platform:    string, // "" = all; else comma list of ODIN_OS names
-	dim:         bool,
-	quit:        bool,
-	children:    []Entry,
+	label:         string,
+	insert:        string, // literal text (e.g. a comment)
+	import_path:   string, // e.g. "core:fmt" -> inserts import statement
+	keyword:       string, // e.g. "package" -> node = keyword + editable identifier
+	ident_default: string, // default identifier text for keyword leaves
+	platform:      string, // "" = all; else comma list of ODIN_OS names
+	dim:           bool,
+	quit:          bool,
+	children:      []Entry,
 }
 
+// A node is a line made of fields. Some fields are editable "slots" (identifiers),
+// the rest are fixed keywords/punctuation.
+Field :: struct {
+	text:     string,
+	editable: bool,
+}
+Node :: struct {
+	fields: [dynamic]Field,
+}
 Doc :: struct {
-	nodes: [dynamic]string, // owned (cloned) inserted lines
+	nodes: [dynamic]Node,
+}
+
+node_text :: proc(n: Node, allocator := context.allocator) -> string {
+	b := strings.builder_make(allocator)
+	for f in n.fields do strings.write_string(&b, f.text)
+	return strings.to_string(b)
 }
 
 MenuView :: struct {
@@ -53,6 +70,7 @@ App :: struct {
 	recent_imports: [dynamic]string, // import paths, most-recent first
 	os_name:        string,
 	want_quit:      bool,
+	editor_sel:     int, // index into editable fields; == num_editable => green dot focused
 
 	add_menu: []Entry, // built lazily per-app (no globals -> test-safe)
 	ide_menu: []Entry,
@@ -71,7 +89,7 @@ ensure_menus :: proc(app: ^App) {
 	core := build_core_tree()
 	import_src := make_slice(grp("core", core))
 	file_setup := make_slice(
-		leaf("Package declaration", "package main"),
+		kw_leaf("Package declaration", "package", "main"),
 		leaf("File tags", "#+build linux"),
 		leaf("Comments", "// comment"),
 		grp("Import", import_src),
@@ -89,6 +107,9 @@ ensure_menus :: proc(app: ^App) {
 leaf    :: proc(label, insert: string) -> Entry { return Entry{label = label, insert = insert} }
 grp     :: proc(label: string, children: []Entry) -> Entry { return Entry{label = label, children = children} }
 grp_dim :: proc(label: string) -> Entry { return Entry{label = label, dim = true} }
+kw_leaf :: proc(label, keyword, ident: string) -> Entry {
+	return Entry{label = label, keyword = keyword, ident_default = ident}
+}
 
 make_slice :: proc(items: ..Entry) -> []Entry {
 	s := make([]Entry, len(items))
@@ -151,7 +172,7 @@ tnodes_to_entries :: proc(nodes: []^TNode) -> []Entry {
 // ---- Helpers ----
 
 is_leaf :: proc(e: Entry) -> bool {
-	return len(e.children) == 0 && (e.insert != "" || e.import_path != "")
+	return len(e.children) == 0 && (e.insert != "" || e.import_path != "" || e.keyword != "")
 }
 
 // Composed import statement for a leaf (uses the given allocator).
@@ -172,8 +193,11 @@ platform_ok :: proc(app: ^App, e: Entry) -> bool {
 	return false
 }
 
-is_imported :: proc(app: ^App, node_text: string) -> bool {
-	for n in app.doc.nodes do if n == node_text do return true
+is_imported :: proc(app: ^App, text: string) -> bool {
+	for n in app.doc.nodes {
+		t := node_text(n, context.temp_allocator)
+		if t == text do return true
+	}
 	return false
 }
 
@@ -189,11 +213,54 @@ record_recent :: proc(app: ^App, path: string) {
 	inject_at(&app.recent_imports, 0, path)
 }
 
-insert_node :: proc(app: ^App, s: string) { append(&app.doc.nodes, strings.clone(s)) }
+// Append a single fixed (non-editable) line node.
+append_text_node :: proc(app: ^App, text: string) {
+	n: Node
+	append(&n.fields, Field{strings.clone(text), false})
+	append(&app.doc.nodes, n)
+}
+
+// Append `keyword <editable ident>` (e.g. package main).
+append_kw_node :: proc(app: ^App, keyword, ident: string) {
+	n: Node
+	append(&n.fields, Field{strings.concatenate({keyword, " "}), false})
+	append(&n.fields, Field{strings.clone(ident), true})
+	append(&app.doc.nodes, n)
+}
+
+num_editable :: proc(app: ^App) -> int {
+	c := 0
+	for n in app.doc.nodes do for f in n.fields do if f.editable do c += 1
+	return c
+}
+
+// Resolve the current editor selection to an editable field location.
+editor_target :: proc(app: ^App) -> (ni: int, fi: int, ok: bool) {
+	if app.editor_sel < 0 do return 0, 0, false
+	idx := 0
+	for n, n_i in app.doc.nodes {
+		for f, f_i in n.fields {
+			if f.editable {
+				if idx == app.editor_sel do return n_i, f_i, true
+				idx += 1
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+set_field_text :: proc(app: ^App, ni, fi: int, text: string) {
+	delete(app.doc.nodes[ni].fields[fi].text)
+	app.doc.nodes[ni].fields[fi].text = strings.clone(text)
+}
 
 doc_reset :: proc(app: ^App) {
-	for n in app.doc.nodes do delete(n)
+	for &n in app.doc.nodes {
+		for f in n.fields do delete(f.text)
+		delete(n.fields)
+	}
 	clear(&app.doc.nodes)
+	app.editor_sel = 0
 }
 
 active_bank :: proc(inp: Input) -> int {
@@ -327,16 +394,19 @@ menu_select :: proc(app: ^App) {
 		push_menu(app, e.label, e.children)
 		return
 	}
-	if e.import_path != "" {
+	if e.keyword != "" {
+		append_kw_node(app, e.keyword, e.ident_default)
+	} else if e.import_path != "" {
 		node := import_text(e.import_path, context.temp_allocator)
-		insert_node(app, node)
+		append_text_node(app, node)
 		record_recent(app, e.import_path)
 	} else if e.insert != "" {
-		insert_node(app, e.insert)
+		append_text_node(app, e.insert)
 	} else {
 		return // placeholder, no-op
 	}
 	clear_nav(app)
+	app.editor_sel = num_editable(app) // keep the green dot focused after inserting
 	app.state = app.return_state
 }
 
@@ -367,8 +437,14 @@ update :: proc(app: ^App, inp: Input) {
 			}
 		}
 	case .Editor:
-		if inp.cancel  do app.state = .Menu
-		if inp.confirm do open_add_menu(app)
+		count := num_editable(app)
+		if app.editor_sel > count do app.editor_sel = count
+		// Up/Down move the highlight between editable fields; the position past the
+		// last field (== count) is the glowing green insertion dot.
+		if inp.up   do app.editor_sel = clamp(app.editor_sel - 1, 0, count)
+		if inp.down do app.editor_sel = clamp(app.editor_sel + 1, 0, count)
+		if inp.cancel do app.state = .Menu
+		if inp.confirm && app.editor_sel >= count do open_add_menu(app) // A on the dot = Add menu
 	case .Radial:
 		v := current_view(app)
 		n := len(v.entries)
