@@ -1,0 +1,28 @@
+# Build output
+/bin/
+*.exe
+*.pdb
+*.obj
+*.o
+*.a
+*.lib
+*.ilk
+
+# Odin
+*.bin
+
+# Vendored binaries (keep headers, ignore large libs/models)
+vendor/**/*.dll
+vendor/**/*.so
+vendor/**/*.dylib
+vendor/models/*.bin
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Scratch
+/tmp/
+/_gen_*.py
