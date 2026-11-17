@@ -9,8 +9,7 @@ mkdir -p bin
 
 case "${1:-}" in
   test)
-    odin test src/buffer
-    odin test src/input
+    odin test src/model
     ;;
   release)
     odin build "$SRC" -out:"$OUT" -o:speed -no-bounds-check

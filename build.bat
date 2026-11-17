@@ -17,8 +17,7 @@ if not exist bin\SDL2.dll (
 )
 
 if "%1"=="test" (
-    odin test src\buffer
-    odin test src\input
+    odin test src\model
     goto :eof
 )
 
