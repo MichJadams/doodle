@@ -363,7 +363,6 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 		draw_green_dot(r, app, pad + 14, y + 58)
 	} else {
 		draw_green_dot(r, app, pad + 14, y + 16)
-		text.draw_line(r, font, {x, y}, "press  A  on the glowing dot to add something", COL_DIM)
 	}
 }
 
