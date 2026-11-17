@@ -32,6 +32,7 @@ Entry :: struct {
 	ident_default:  string, // default identifier text for keyword leaves
 	proc_outline:   bool,   // inserts procedure outline (3 nodes, 1 editable + 3 slots)
 	type_construct: string, // "" = not a type; else "struct"/"enum"/"union"/"bit_set"/"distinct"/"alias"
+	value_construct: string, // "" = not a value; else "const"/"typed_const"/"config"/"global_typed"/"global_init"
 	platform:       string, // "" = all; else comma list of ODIN_OS names
 	dim:            bool,
 	quit:           bool,
@@ -120,12 +121,19 @@ ensure_menus :: proc(app: ^App) {
 		type_leaf("Distinct type", "distinct"),
 		type_leaf("Type alias", "alias"),
 	)
+	values := make_slice(
+		value_leaf("Constant", "const"),
+		value_leaf("Typed constant", "typed_const"),
+		value_leaf("Build-config constant", "config"),
+		value_leaf("Global variable (typed)", "global_typed"),
+		value_leaf("Global variable (init)", "global_init"),
+	)
 	app.add_menu = make_slice(
 		grp("File Setup", file_setup),
 		grp("Dependencies", dependencies),
 		grp("Procedures", procedures),
 		grp("Types", types),
-		grp_dim("Values"),
+		grp("Values", values),
 	)
 	app.ide_menu = make_slice(Entry{label = "Exit", quit = true})
 }
@@ -138,6 +146,7 @@ kw_leaf   :: proc(label, keyword, ident: string) -> Entry {
 }
 proc_leaf :: proc(label: string) -> Entry { return Entry{label = label, proc_outline = true} }
 type_leaf :: proc(label, kind: string) -> Entry { return Entry{label = label, type_construct = kind} }
+value_leaf :: proc(label, kind: string) -> Entry { return Entry{label = label, value_construct = kind} }
 
 make_slice :: proc(items: ..Entry) -> []Entry {
 	s := make([]Entry, len(items))
@@ -200,7 +209,7 @@ tnodes_to_entries :: proc(nodes: []^TNode) -> []Entry {
 // ---- Helpers ----
 
 is_leaf :: proc(e: Entry) -> bool {
-	return len(e.children) == 0 && (e.insert != "" || e.import_path != "" || e.keyword != "" || e.proc_outline || e.type_construct != "")
+	return len(e.children) == 0 && (e.insert != "" || e.import_path != "" || e.keyword != "" || e.proc_outline || e.type_construct != "" || e.value_construct != "")
 }
 
 // Composed import statement for a leaf (uses the given allocator).
@@ -382,6 +391,53 @@ append_type_node :: proc(app: ^App, kind: string) {
 		append(&n.fields, Field{strings.clone("MyType"), true, false})        // editable name
 		append(&n.fields, Field{strings.clone(" :: "), false, false})          // fixed
 		append(&n.fields, Field{"", false, true})                               // type slot
+		append(&app.doc.nodes, n)
+	}
+}
+
+append_value_node :: proc(app: ^App, kind: string) {
+	switch kind {
+	case "const":
+		// Single line: MAX_HP :: •
+		n: Node
+		append(&n.fields, Field{strings.clone("MAX_HP"), true, false})    // editable name
+		append(&n.fields, Field{strings.clone(" :: "), false, false})      // fixed
+		append(&n.fields, Field{"", false, true})                           // value slot
+		append(&app.doc.nodes, n)
+
+	case "typed_const":
+		// Single line: MAX_HP : • : •
+		n: Node
+		append(&n.fields, Field{strings.clone("MAX_HP"), true, false})    // editable name
+		append(&n.fields, Field{strings.clone(" : "), false, false})       // fixed
+		append(&n.fields, Field{"", false, true})                           // type slot
+		append(&n.fields, Field{strings.clone(" : "), false, false})       // fixed
+		append(&n.fields, Field{"", false, true})                           // value slot
+		append(&app.doc.nodes, n)
+
+	case "config":
+		// Single line: DEBUG :: #config(DEBUG, •)
+		n: Node
+		append(&n.fields, Field{strings.clone("DEBUG"), true, false})     // editable name
+		append(&n.fields, Field{strings.clone(" :: #config(DEBUG, "), false, false}) // fixed
+		append(&n.fields, Field{"", false, true})                           // default value slot
+		append(&n.fields, Field{strings.clone(")"), false, false})         // fixed
+		append(&app.doc.nodes, n)
+
+	case "global_typed":
+		// Single line: score: •
+		n: Node
+		append(&n.fields, Field{strings.clone("score"), true, false})     // editable name
+		append(&n.fields, Field{strings.clone(": "), false, false})        // fixed
+		append(&n.fields, Field{"", false, true})                           // type slot
+		append(&app.doc.nodes, n)
+
+	case "global_init":
+		// Single line: score := •
+		n: Node
+		append(&n.fields, Field{strings.clone("score"), true, false})     // editable name
+		append(&n.fields, Field{strings.clone(" := "), false, false})      // fixed
+		append(&n.fields, Field{"", false, true})                           // value slot
 		append(&app.doc.nodes, n)
 	}
 }
@@ -631,6 +687,8 @@ menu_select :: proc(app: ^App) {
 		append_proc_node(app)
 	} else if e.type_construct != "" {
 		append_type_node(app, e.type_construct)
+	} else if e.value_construct != "" {
+		append_value_node(app, e.value_construct)
 	} else if e.import_path != "" {
 		if app.import_alias {
 			append_aliased_import_node(app, e.import_path)

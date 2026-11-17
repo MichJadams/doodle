@@ -799,3 +799,131 @@ test_alias_text :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(txt, "MyType"), "alias name should be MyType")
 	testing.expect(t, strings.contains(txt, "::"), "should contain ::")
 }
+
+// ---- Value tests ----
+
+add_value :: proc(app: ^App, label: string) {
+	confirm(app)                    // Editor: open Add root
+	select_label(app, "Values")     // root: Values -> submenu
+	select_label(app, label)        // submenu: value construct
+}
+
+@(test)
+test_const_inserts_and_returns :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Constant")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	testing.expect_value(t, app.editor_line, len(app.doc.nodes))
+}
+
+@(test)
+test_const_has_name_and_slot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Constant")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "MAX_HP"), "const should have default name MAX_HP")
+	testing.expect(t, strings.contains(txt, "::"), "const should contain ::")
+	// 1 editable name + 1 value slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
+
+@(test)
+test_typed_const_inserts_and_returns :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Typed constant")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	testing.expect_value(t, app.editor_line, len(app.doc.nodes))
+}
+
+@(test)
+test_typed_const_has_name_and_two_slots :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Typed constant")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "MAX_HP"), "typed const should have default name")
+	testing.expect(t, strings.contains(txt, " : "), "typed const should contain ' : ' pattern")
+	// 1 editable name + 1 type slot + 1 value slot = 3 selectable
+	testing.expect_value(t, num_editable(&app), 3)
+}
+
+@(test)
+test_config_const_inserts_and_returns :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Build-config constant")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	testing.expect_value(t, app.editor_line, len(app.doc.nodes))
+}
+
+@(test)
+test_config_const_has_config_syntax :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Build-config constant")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "DEBUG"), "config const should have default name DEBUG")
+	testing.expect(t, strings.contains(txt, "#config("), "config const should contain #config(")
+	// 1 editable name + 1 default value slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
+
+@(test)
+test_global_typed_inserts_and_returns :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Global variable (typed)")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	testing.expect_value(t, app.editor_line, len(app.doc.nodes))
+}
+
+@(test)
+test_global_typed_has_name_and_type_slot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Global variable (typed)")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "score"), "global typed should have default name score")
+	testing.expect(t, strings.contains(txt, ":"), "global typed should contain :")
+	// 1 editable name + 1 type slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
+
+@(test)
+test_global_init_inserts_and_returns :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Global variable (init)")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	testing.expect_value(t, app.editor_line, len(app.doc.nodes))
+}
+
+@(test)
+test_global_init_has_walrus :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Global variable (init)")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "score"), "global init should have default name score")
+	testing.expect(t, strings.contains(txt, ":="), "global init should contain :=")
+	// 1 editable name + 1 value slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
