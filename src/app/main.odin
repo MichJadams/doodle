@@ -328,14 +328,28 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 		x := x0
 		y := y0 + f32(ni) * lh
 		for field, fi in node.fields {
-			wsz := text.measure(font, field.text).x
-			if has_target && ni == tni && fi == tfi {
-				gpu.draw_rect(r, {x - 4, y, wsz + 8, lh}, {0.22, 0.40, 0.70, 0.55})
-				gpu.draw_rect_outline(r, {x - 4, y, wsz + 8, lh}, 2, COL_ACCENT)
+			if field.slot {
+				// Slot: render as orange dot
+				dot_w := f32(24) // dot diameter + padding
+				dot_cx := x + dot_w / 2
+				dot_cy := y + lh / 2
+				if has_target && ni == tni && fi == tfi {
+					gpu.draw_rect(r, {x - 4, y, dot_w + 8, lh}, {0.22, 0.40, 0.70, 0.55})
+					gpu.draw_rect_outline(r, {x - 4, y, dot_w + 8, lh}, 2, COL_ACCENT)
+				}
+				draw_orange_dot(r, dot_cx, dot_cy)
+				x += dot_w
+			} else {
+				// Regular field: render as text
+				wsz := text.measure(font, field.text).x
+				if has_target && ni == tni && fi == tfi {
+					gpu.draw_rect(r, {x - 4, y, wsz + 8, lh}, {0.22, 0.40, 0.70, 0.55})
+					gpu.draw_rect_outline(r, {x - 4, y, wsz + 8, lh}, 2, COL_ACCENT)
+				}
+				col := field.editable ? COL_ACCENT : COL_TEXT
+				text.draw_line(r, font, {x, y}, field.text, col)
+				x += wsz
 			}
-			col := field.editable ? COL_ACCENT : COL_TEXT
-			text.draw_line(r, font, {x, y}, field.text, col)
-			x += wsz
 		}
 	}
 	dot_y := y0 + f32(len(m.doc.nodes)) * lh + lh * 0.4
@@ -350,10 +364,20 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 }
 
 draw_green_dot :: proc(r: ^gpu.Renderer, cx, cy: f32) {
+	draw_colored_dot(r, cx, cy, {0.20, 0.90, 0.45, 1.0}, {0.25, 0.95, 0.50, 1})
+}
+
+draw_orange_dot :: proc(r: ^gpu.Renderer, cx, cy: f32) {
+	draw_colored_dot(r, cx, cy, {1.0, 0.55, 0.12, 1.0}, {1.0, 0.65, 0.22, 1})
+}
+
+draw_colored_dot :: proc(r: ^gpu.Renderer, cx, cy: f32, outer_col, inner_col: gpu.Color) {
 	pulse := 0.5 + 0.5 * math.sin(f32(g_time) * 3.0)
 	radius := 9.0 + 3.0 * pulse
-	gpu.draw_circle(r, cx, cy, radius + 9, {0.20, 0.90, 0.45, 0.18 + 0.20 * pulse})
-	gpu.draw_circle(r, cx, cy, radius, {0.25, 0.95, 0.50, 1})
+	outer := outer_col
+	outer.a = 0.18 + 0.20 * pulse
+	gpu.draw_circle(r, cx, cy, radius + 9, outer)
+	gpu.draw_circle(r, cx, cy, radius, inner_col)
 }
 
 // Render the current menu view (top of the navigation stack) as a grid.

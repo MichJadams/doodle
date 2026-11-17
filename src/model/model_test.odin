@@ -2,6 +2,7 @@ package model
 
 import "core:testing"
 import "core:fmt"
+import "core:strings"
 
 @(private = "file")
 confirm :: proc(app: ^App) { update(app, Input{confirm = true}) }
@@ -235,4 +236,102 @@ tree_contains_path :: proc(entries: []Entry, path: string) -> bool {
 		if tree_contains_path(e.children, path) do return true
 	}
 	return false
+}
+
+// ---- Procedure construct tests ----
+
+@(private = "file")
+add_proc :: proc(app: ^App) {
+	confirm(app)                        // Editor: open Add root
+	select_label(app, "Procedures")     // root: Procedures -> submenu
+	select_label(app, "Procedure")      // submenu: Procedure
+}
+
+@(test)
+test_proc_inserts_three_nodes :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 3)
+}
+
+@(test)
+test_proc_has_four_selectable_fields :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// 1 editable name + 3 slots = 4 selectable
+	testing.expect_value(t, num_editable(&app), 4)
+}
+
+@(test)
+test_proc_green_dot_focused_after_insert :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// editor_sel should equal num_editable (green dot position)
+	testing.expect_value(t, app.editor_sel, num_editable(&app))
+	_, _, ok := editor_target(&app)
+	testing.expect(t, !ok, "green dot should be focused right after insert")
+}
+
+@(test)
+test_proc_first_line_text :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "do_thing"), "proc name should be do_thing")
+	testing.expect(t, strings.contains(txt, "proc("), "should contain proc(")
+}
+
+@(test)
+test_proc_name_editable_slots_are_slots :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate up 4 times to select all fields
+	update(&app, Input{up = true}) // body slot
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok)
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
+	testing.expect(t, !app.doc.nodes[ni].fields[fi].editable, "slot should not be editable")
+
+	update(&app, Input{up = true}) // return slot
+	ni, fi, ok = editor_target(&app)
+	testing.expect(t, ok)
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
+
+	update(&app, Input{up = true}) // params slot
+	ni, fi, ok = editor_target(&app)
+	testing.expect(t, ok)
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
+
+	update(&app, Input{up = true}) // name (editable)
+	ni, fi, ok = editor_target(&app)
+	testing.expect(t, ok)
+	testing.expect(t, app.doc.nodes[ni].fields[fi].editable, "name should be editable")
+	testing.expect(t, !app.doc.nodes[ni].fields[fi].slot, "name should not be a slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].text, "do_thing")
+}
+
+@(test)
+test_proc_set_field_text_on_name :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate up to the name field (4 up presses from green dot)
+	for _ in 0..<4 do update(&app, Input{up = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok)
+	set_field_text(&app, ni, fi, "my_func")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "my_func"), "proc name should be updated")
 }

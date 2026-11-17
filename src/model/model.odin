@@ -21,6 +21,8 @@ MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder"}
 //   children non-empty -> submenu
 //   import_path set    -> inserts `import "<import_path>"`
 //   insert set         -> inserts that literal text
+//   keyword set        -> inserts `keyword <ident>`
+//   proc_outline       -> inserts a procedure outline (3 nodes)
 //   quit               -> exits the app
 Entry :: struct {
 	label:         string,
@@ -28,6 +30,7 @@ Entry :: struct {
 	import_path:   string, // e.g. "core:fmt" -> inserts import statement
 	keyword:       string, // e.g. "package" -> node = keyword + editable identifier
 	ident_default: string, // default identifier text for keyword leaves
+	proc_outline:  bool,   // inserts procedure outline (3 nodes, 1 editable + 3 slots)
 	platform:      string, // "" = all; else comma list of ODIN_OS names
 	dim:           bool,
 	quit:          bool,
@@ -35,10 +38,12 @@ Entry :: struct {
 }
 
 // A node is a line made of fields. Some fields are editable "slots" (identifiers),
-// the rest are fixed keywords/punctuation.
+// the rest are fixed keywords/punctuation. A field can also be a "slot" (a placeholder
+// rendered as an orange dot, with empty text).
 Field :: struct {
 	text:     string,
 	editable: bool,
+	slot:     bool, // orange placeholder dot (params/return/body slots, etc.)
 }
 Node :: struct {
 	fields: [dynamic]Field,
@@ -94,22 +99,26 @@ ensure_menus :: proc(app: ^App) {
 		leaf("Comments", "// comment"),
 		grp("Import", import_src),
 	)
+	procedures := make_slice(
+		proc_leaf("Procedure"),
+	)
 	app.add_menu = make_slice(
 		grp("File Setup", file_setup),
 		grp_dim("Dependencies"),
-		grp_dim("Procedures"),
+		grp("Procedures", procedures),
 		grp_dim("Types"),
 		grp_dim("Values"),
 	)
 	app.ide_menu = make_slice(Entry{label = "Exit", quit = true})
 }
 
-leaf    :: proc(label, insert: string) -> Entry { return Entry{label = label, insert = insert} }
-grp     :: proc(label: string, children: []Entry) -> Entry { return Entry{label = label, children = children} }
-grp_dim :: proc(label: string) -> Entry { return Entry{label = label, dim = true} }
-kw_leaf :: proc(label, keyword, ident: string) -> Entry {
+leaf      :: proc(label, insert: string) -> Entry { return Entry{label = label, insert = insert} }
+grp       :: proc(label: string, children: []Entry) -> Entry { return Entry{label = label, children = children} }
+grp_dim   :: proc(label: string) -> Entry { return Entry{label = label, dim = true} }
+kw_leaf   :: proc(label, keyword, ident: string) -> Entry {
 	return Entry{label = label, keyword = keyword, ident_default = ident}
 }
+proc_leaf :: proc(label: string) -> Entry { return Entry{label = label, proc_outline = true} }
 
 make_slice :: proc(items: ..Entry) -> []Entry {
 	s := make([]Entry, len(items))
@@ -172,7 +181,7 @@ tnodes_to_entries :: proc(nodes: []^TNode) -> []Entry {
 // ---- Helpers ----
 
 is_leaf :: proc(e: Entry) -> bool {
-	return len(e.children) == 0 && (e.insert != "" || e.import_path != "" || e.keyword != "")
+	return len(e.children) == 0 && (e.insert != "" || e.import_path != "" || e.keyword != "" || e.proc_outline)
 }
 
 // Composed import statement for a leaf (uses the given allocator).
@@ -216,31 +225,57 @@ record_recent :: proc(app: ^App, path: string) {
 // Append a single fixed (non-editable) line node.
 append_text_node :: proc(app: ^App, text: string) {
 	n: Node
-	append(&n.fields, Field{strings.clone(text), false})
+	append(&n.fields, Field{strings.clone(text), false, false})
 	append(&app.doc.nodes, n)
 }
 
 // Append `keyword <editable ident>` (e.g. package main).
 append_kw_node :: proc(app: ^App, keyword, ident: string) {
 	n: Node
-	append(&n.fields, Field{strings.concatenate({keyword, " "}), false})
-	append(&n.fields, Field{strings.clone(ident), true})
+	append(&n.fields, Field{strings.concatenate({keyword, " "}), false, false})
+	append(&n.fields, Field{strings.clone(ident), true, false})
 	append(&app.doc.nodes, n)
 }
 
+// Append a procedure outline (3 nodes: signature, body indent, closing brace).
+// Name is editable; params/return/body are slots (orange dots).
+append_proc_node :: proc(app: ^App, name := "do_thing") {
+	// Line 1: <name> :: proc( <params> ) -> <ret> {
+	n1: Node
+	append(&n1.fields, Field{strings.clone(name), true, false})            // editable name
+	append(&n1.fields, Field{strings.clone(" :: proc( "), false, false})  // fixed
+	append(&n1.fields, Field{"", false, true})                             // params slot
+	append(&n1.fields, Field{strings.clone(" ) -> "), false, false})      // fixed
+	append(&n1.fields, Field{"", false, true})                             // return slot
+	append(&n1.fields, Field{strings.clone(" {"), false, false})          // fixed
+	append(&app.doc.nodes, n1)
+
+	// Line 2: <indent><body>
+	n2: Node
+	append(&n2.fields, Field{strings.clone("    "), false, false})        // indent
+	append(&n2.fields, Field{"", false, true})                             // body slot
+	append(&app.doc.nodes, n2)
+
+	// Line 3: }
+	n3: Node
+	append(&n3.fields, Field{strings.clone("}"), false, false})           // closing brace
+	append(&app.doc.nodes, n3)
+}
+
+// Count selectable fields (editable identifiers + slots).
 num_editable :: proc(app: ^App) -> int {
 	c := 0
-	for n in app.doc.nodes do for f in n.fields do if f.editable do c += 1
+	for n in app.doc.nodes do for f in n.fields do if f.editable || f.slot do c += 1
 	return c
 }
 
-// Resolve the current editor selection to an editable field location.
+// Resolve the current editor selection to a selectable field location (editable or slot).
 editor_target :: proc(app: ^App) -> (ni: int, fi: int, ok: bool) {
 	if app.editor_sel < 0 do return 0, 0, false
 	idx := 0
 	for n, n_i in app.doc.nodes {
 		for f, f_i in n.fields {
-			if f.editable {
+			if f.editable || f.slot {
 				if idx == app.editor_sel do return n_i, f_i, true
 				idx += 1
 			}
@@ -273,7 +308,10 @@ collect_vocab :: proc(app: ^App) -> []string {
 
 doc_reset :: proc(app: ^App) {
 	for &n in app.doc.nodes {
-		for f in n.fields do delete(f.text)
+		for f in n.fields {
+			// Only delete non-empty text (slots have empty string literals)
+			if len(f.text) > 0 do delete(f.text)
+		}
 		delete(n.fields)
 	}
 	clear(&app.doc.nodes)
@@ -413,6 +451,8 @@ menu_select :: proc(app: ^App) {
 	}
 	if e.keyword != "" {
 		append_kw_node(app, e.keyword, e.ident_default)
+	} else if e.proc_outline {
+		append_proc_node(app)
 	} else if e.import_path != "" {
 		node := import_text(e.import_path, context.temp_allocator)
 		append_text_node(app, node)
