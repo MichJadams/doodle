@@ -34,16 +34,63 @@ COL_HILITE :: gpu.Color{0.22, 0.40, 0.70, 1}
 MENU_ITEMS     := [?]string{"New Project", "Recent Projects", "Open Folder"}
 ROOT_OPTS      := [?]string{"File Setup", "Dependencies", "Procedures", "Types", "Values"}
 FILESETUP_OPTS := [?]string{"Package declaration", "File tags", "Comments"}
+IDE_OPTS       := [?]string{"Exit"}
 HUD_LABELS     := [?]string{"L-TRIGGER", "DEFAULT", "R-TRIGGER"}
 
 State :: enum { Menu, Editor, Radial }
+
+GRID_COLS :: 3
+
+// Identifies a face button so we can look up its current bound symbol.
+FaceBtn :: enum { A, B, X, Y }
+
+// Returns the glyph to draw on a face button for the given bank + app context.
+// As we bind actions to buttons, their on-pad symbol changes (e.g. A -> "+").
+// NOTE: glyphs must be ASCII (the baked font atlas covers 32..127).
+face_glyph :: proc(app: ^App, bank: int, face: FaceBtn) -> string {
+	// Middle bank (bank 1) = default context (no trigger held).
+	if bank == 1 {
+		switch face {
+		case .A: return "+" // select / confirm
+		case .B: return "<" // back / cancel
+		case .X: // unbound for now
+		case .Y: // unbound for now
+		}
+	}
+	switch face {
+	case .A: return "A"
+	case .B: return "B"
+	case .X: return "X"
+	case .Y: return "Y"
+	}
+	return "?"
+}
+
+Dir4 :: enum { Up, Down, Left, Right }
+
+// Glyph to overlay on a d-pad direction for a bank ("" = nothing bound yet).
+dpad_glyph :: proc(app: ^App, bank: int, dir: Dir4) -> string {
+	// Left bank (LT held): D-pad Left opens the IDE menu.
+	if bank == 0 && dir == .Left do return "="
+	return ""
+}
+
+// Which control bank is active: 0 = left (LT), 1 = middle (none), 2 = right (RT).
+active_bank :: proc(app: ^App) -> int {
+	if app.lt > 0.5 || app.key_lt do return 0
+	if app.rt > 0.5 || app.key_rt do return 2
+	return 1
+}
 
 Doc :: struct {
 	has_package:  bool,
 	package_name: string,
 }
 
+MenuKind :: enum { Add, Ide }
+
 RadialMenu :: struct {
+	kind:    MenuKind,
 	title:   string,
 	options: []string,
 	index:   int,
@@ -52,9 +99,10 @@ RadialMenu :: struct {
 
 App :: struct {
 	state:      State,
-	menu_index: int,
-	doc:        Doc,
-	radial:     RadialMenu,
+	menu_index:   int,
+	doc:          Doc,
+	radial:       RadialMenu,
+	return_state: State, // where a menu returns to on cancel/complete
 
 	lt, rt:         f32,
 	key_lt, key_rt: bool,
@@ -194,6 +242,12 @@ handle_key :: proc(app: ^App, sym: i32, pressed: bool) {
 }
 
 update :: proc(app: ^App) {
+	// Global binding: LT (left bank) + D-pad Left opens the IDE menu.
+	if app.state != .Radial && active_bank(app) == 0 && app.e_left {
+		open_ide_menu(app)
+		return
+	}
+
 	switch app.state {
 	case .Menu:
 		n := len(MENU_ITEMS)
@@ -211,25 +265,48 @@ update :: proc(app: ^App) {
 		if app.e_confirm do open_radial_root(app)
 	case .Radial:
 		n := len(app.radial.options)
-		if app.e_left || app.e_up    do app.radial.index = (app.radial.index + n - 1) %% n
-		if app.e_right || app.e_down do app.radial.index = (app.radial.index + 1) %% n
+		cols := GRID_COLS
+		if n < cols do cols = n
+		if app.e_right do app.radial.index = min(app.radial.index + 1, n - 1)
+		if app.e_left  do app.radial.index = max(app.radial.index - 1, 0)
+		if app.e_down && app.radial.index + cols < n do app.radial.index += cols
+		if app.e_up   && app.radial.index - cols >= 0 do app.radial.index -= cols
 		if app.e_cancel {
-			if app.radial.level == 1 do open_radial_root(app)
-			else do app.state = .Editor
+			if app.radial.kind == .Add && app.radial.level == 1 do open_radial_root(app)
+			else do app.state = app.return_state
 		}
 		if app.e_confirm do radial_select(app)
 	}
 }
 
 open_radial_root :: proc(app: ^App) {
+	app.return_state = .Editor
 	app.state = .Radial
+	app.radial.kind = .Add
 	app.radial.level = 0
 	app.radial.index = 0
 	app.radial.title = "Add  (insertion point)"
 	app.radial.options = ROOT_OPTS[:]
 }
 
+open_ide_menu :: proc(app: ^App) {
+	app.return_state = app.state
+	app.state = .Radial
+	app.radial.kind = .Ide
+	app.radial.level = 0
+	app.radial.index = 0
+	app.radial.title = "IDE MENU"
+	app.radial.options = IDE_OPTS[:]
+}
+
 radial_select :: proc(app: ^App) {
+	if app.radial.kind == .Ide {
+		switch app.radial.index {
+		case 0: // Exit
+			app.want_quit = true
+		}
+		return
+	}
 	if app.radial.level == 0 {
 		switch app.radial.index {
 		case 0: // File Setup -> submenu
@@ -238,16 +315,16 @@ radial_select :: proc(app: ^App) {
 			app.radial.title = "File Setup"
 			app.radial.options = FILESETUP_OPTS[:]
 		case:
-			app.state = .Editor // other branches not implemented yet
+			app.state = app.return_state // other branches not implemented yet
 		}
 	} else { // File Setup submenu
 		switch app.radial.index {
 		case 0: // Package declaration
 			app.doc.has_package = true
 			app.doc.package_name = "main"
-			app.state = .Editor
+			app.state = app.return_state
 		case:
-			app.state = .Editor
+			app.state = app.return_state
 		}
 	}
 }
@@ -284,7 +361,6 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 		line := fmt.tprintf("package %s", app.doc.package_name)
 		text.draw_line(r, font, {x, y}, line, COL_TEXT)
 		draw_green_dot(r, app, pad + 14, y + 58)
-		text.draw_line(r, font, {x, y + 48}, "(next insertion point)", COL_DIM)
 	} else {
 		draw_green_dot(r, app, pad + 14, y + 16)
 		text.draw_line(r, font, {x, y}, "press  A  on the glowing dot to add something", COL_DIM)
@@ -298,34 +374,37 @@ draw_green_dot :: proc(r: ^gpu.Renderer, app: ^App, cx, cy: f32) {
 	gpu.draw_circle(r, cx, cy, radius, {0.25, 0.95, 0.50, 1})
 }
 
+// The "radial" is now a centered GRID of buttons.
 draw_radial :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 	fw, fh := f32(w), f32(h)
-	gpu.draw_rect(r, {0, 0, fw, fh}, {0, 0, 0, 0.55})
-
-	cx, cy := fw * 0.5, fh * 0.5
-	text.draw_centered(r, font, {0, cy - 200, fw, 36}, app.radial.title, COL_ACCENT)
+	gpu.draw_rect(r, {0, 0, fw, fh}, {0, 0, 0, 0.60})
+	text.draw_centered(r, font, {0, fh * 0.20, fw, 40}, app.radial.title, COL_ACCENT)
 
 	n := len(app.radial.options)
-	radius := f32(165)
+	cols := GRID_COLS
+	if n < cols do cols = n
+	rows := (n + cols - 1) / cols
+
+	cellw, cellh, gap := f32(240), f32(64), f32(18)
+	grid_w := f32(cols) * cellw + f32(cols - 1) * gap
+	grid_h := f32(rows) * cellh + f32(rows - 1) * gap
+	start_x := fw * 0.5 - grid_w * 0.5
+	start_y := fh * 0.5 - grid_h * 0.5 + 10
+
 	for opt, i in app.radial.options {
-		ang := -math.PI * 0.5 + f32(i) * (2 * math.PI / f32(n))
-		ox := cx + math.cos(ang) * radius
-		oy := cy + math.sin(ang) * radius
-		box := gpu.Rect{ox - 95, oy - 26, 190, 52}
+		col := i % cols
+		row := i / cols
+		box := gpu.Rect{start_x + f32(col) * (cellw + gap), start_y + f32(row) * (cellh + gap), cellw, cellh}
 		active := i == app.radial.index
 		gpu.draw_rect(r, box, active ? COL_HILITE : COL_PANEL)
 		if active do gpu.draw_rect_outline(r, box, 2, COL_ACCENT)
 		text.draw_centered(r, font, box, opt, COL_TEXT)
 	}
-	text.draw_centered(r, font, {cx - 120, cy - 15, 240, 30}, "A: select   B: back", COL_DIM)
+	text.draw_centered(r, font, {0, start_y + grid_h + 26, fw, 28}, "D-pad / Arrows to move     + : select     < : back", COL_DIM)
 }
 
 draw_hud :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
-	active_bank := 1
-	lt_on := app.lt > 0.5 || app.key_lt
-	rt_on := app.rt > 0.5 || app.key_rt
-	if lt_on      do active_bank = 0
-	else if rt_on do active_bank = 2
+	cur_bank := active_bank(app)
 
 	fw := f32(w)
 	hud_h := f32(150)
@@ -337,14 +416,14 @@ draw_hud :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 	cy := top + hud_h * 0.46
 	for bank in 0 ..< 3 {
 		cx := third * (f32(bank) + 0.5)
-		active := bank == active_bank
-		draw_bank(r, font, cx, cy, active ? 1.15 : 0.82, active)
+		active := bank == cur_bank
+		draw_bank(r, font, app, bank, cx, cy, active ? 1.15 : 0.82, active)
 		text.draw_centered(r, font, {cx - 100, top + hud_h - 30, 200, 24},
 			HUD_LABELS[bank], active ? COL_ACCENT : COL_DIM)
 	}
 }
 
-draw_bank :: proc(r: ^gpu.Renderer, font: ^text.Font, cx, cy, scale: f32, active: bool) {
+draw_bank :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, bank: int, cx, cy, scale: f32, active: bool) {
 	a := active ? f32(1.0) : f32(0.5)
 	dpad_cx := cx - 82 * scale
 	face_cx := cx + 82 * scale
@@ -356,13 +435,21 @@ draw_bank :: proc(r: ^gpu.Renderer, font: ^text.Font, cx, cy, scale: f32, active
 	gpu.draw_rect(r, {dpad_cx - th / 2, cy - arm / 2, th, arm}, dcol)
 	gpu.draw_rect(r, {dpad_cx - arm / 2, cy - th / 2, arm, th}, dcol)
 
+	// Overlay any bound d-pad direction glyphs.
+	gcol := gpu.Color{0.10, 0.11, 0.13, a}
+	half := arm / 2 - th / 2
+	if g := dpad_glyph(app, bank, .Left);  g != "" do text.draw_centered(r, font, {dpad_cx - arm / 2, cy - th / 2, half, th}, g, gcol)
+	if g := dpad_glyph(app, bank, .Right); g != "" do text.draw_centered(r, font, {dpad_cx + th / 2, cy - th / 2, half, th}, g, gcol)
+	if g := dpad_glyph(app, bank, .Up);    g != "" do text.draw_centered(r, font, {dpad_cx - th / 2, cy - arm / 2, th, half}, g, gcol)
+	if g := dpad_glyph(app, bank, .Down);  g != "" do text.draw_centered(r, font, {dpad_cx - th / 2, cy + th / 2, th, half}, g, gcol)
+
 	// Face buttons (Y top, A bottom, X left, B right)
 	d := 32.0 * scale
 	rad := 16.0 * scale
-	draw_face(r, font, face_cx, cy - d, rad, {0.92, 0.78, 0.25, a}, "Y")
-	draw_face(r, font, face_cx, cy + d, rad, {0.30, 0.78, 0.42, a}, "A")
-	draw_face(r, font, face_cx - d, cy, rad, {0.28, 0.52, 0.90, a}, "X")
-	draw_face(r, font, face_cx + d, cy, rad, {0.86, 0.30, 0.30, a}, "B")
+	draw_face(r, font, face_cx, cy - d, rad, {0.92, 0.78, 0.25, a}, face_glyph(app, bank, .Y))
+	draw_face(r, font, face_cx, cy + d, rad, {0.30, 0.78, 0.42, a}, face_glyph(app, bank, .A))
+	draw_face(r, font, face_cx - d, cy, rad, {0.28, 0.52, 0.90, a}, face_glyph(app, bank, .X))
+	draw_face(r, font, face_cx + d, cy, rad, {0.86, 0.30, 0.30, a}, face_glyph(app, bank, .B))
 }
 
 draw_face :: proc(r: ^gpu.Renderer, font: ^text.Font, cx, cy, rad: f32, col: gpu.Color, label: string) {
