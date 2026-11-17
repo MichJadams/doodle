@@ -1,0 +1,7 @@
+# Template: constrain Whisper to a fixed set of command words.
+# Edit this list to match whatever single-word commands a given context allows.
+# Constraining to a known vocabulary dramatically improves one-off-word accuracy.
+
+root ::= " " word
+word ::= "yes" | "no" | "ok" | "cancel" | "delete" | "rename" | "up" | "down"
+       | "left" | "right" | "open" | "close" | "next" | "back" | "confirm"

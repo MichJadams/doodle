@@ -26,3 +26,7 @@ Thumbs.db
 # Scratch
 /tmp/
 /_gen_*.py
+
+# STT: cloned whisper.cpp + large models/binaries (recreate via tools/stt/setup_whisper.sh)
+/third_party/
+bin/_stt_*

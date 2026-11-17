@@ -1,21 +1,199 @@
 package stt
 
-import "../platform"
+// Push-to-talk single-word speech-to-text via whisper.cpp (subprocess).
+// Owner: Agent E.  Overview: docs/STT.md
+//
+// Flow: SDL2 queue-based mic capture -> 16 kHz mono s16 WAV -> whisper-cli
+// (optionally grammar-constrained) -> parse one cleaned word.
+// Designed for ONE-OFF words / numbers, not sentences.
 
-// Whisper integration, push-to-talk, dictation modes.
-// Owner: Agent E.  Contract: ARCHITECTURE.md §5.8
+import sdl "vendor:sdl2"
+import "core:c/libc"
+import "core:os"
+import "core:strings"
+import "core:fmt"
 
-Mode :: enum { Command, Identifier, FreeText }
+SAMPLE_RATE :: 16000
 
-Engine :: struct {
-	// whisper_context* (C binding) OR subprocess handle
-	mode: Mode,
+Config :: struct {
+	cli_path:     string, // path to whisper-cli(.exe)
+	model_path:   string, // path to ggml-*.bin
+	grammar_path: string, // optional GBNF grammar ("" = none)
+	tmp_wav:      string,
+	tmp_txt:      string,
 }
 
-init      :: proc(model_path: string) -> (^Engine, bool) { return nil, false }
-begin_ptt :: proc(e: ^Engine, cap: ^platform.Audio_Capture, mode: Mode) {}
-end_ptt   :: proc(e: ^Engine) -> string { return "" } // blocking transcribe
-shutdown  :: proc(e: ^Engine) {}
+Engine :: struct {
+	cfg:       Config,
+	dev:       sdl.AudioDeviceID,
+	available: bool,
+	recording: bool,
+}
 
-// Identifier mode: turn dictated words into a valid Odin identifier.
-to_identifier :: proc(spoken: string) -> string { return spoken }
+// Defaults assume the app runs from the repo root.
+default_config :: proc() -> Config {
+	cli := "third_party/whisper.cpp/build/bin/whisper-cli.exe"
+	when ODIN_OS != .Windows {
+		cli = "third_party/whisper.cpp/build/bin/whisper-cli"
+	}
+	return Config {
+		cli_path     = cli,
+		model_path   = "third_party/whisper.cpp/models/ggml-base.en.bin",
+		grammar_path = "", // set to "assets/stt/number.gbnf" for numeric fields
+		tmp_wav      = "bin/_stt_capture.wav",
+		tmp_txt      = "bin/_stt_out.txt",
+	}
+}
+
+@(private)
+file_exists :: proc(path: string) -> bool {
+	h, err := os.open(path)
+	if err != os.ERROR_NONE do return false
+	os.close(h)
+	return true
+}
+
+init :: proc(cfg: Config) -> (^Engine, bool) {
+	if !file_exists(cfg.cli_path) || !file_exists(cfg.model_path) {
+		return nil, false // whisper not set up: see docs/STT.md / tools/stt/setup_whisper.sh
+	}
+	if sdl.Init(sdl.INIT_AUDIO) != 0 do return nil, false
+
+	want, have: sdl.AudioSpec
+	want.freq = SAMPLE_RATE
+	want.format = sdl.AUDIO_S16
+	want.channels = 1
+	want.samples = 1024
+
+	e := new(Engine)
+	e.cfg = cfg
+	e.dev = sdl.OpenAudioDevice(nil, true, &want, &have, {}) // iscapture = true
+	if e.dev == 0 {
+		free(e)
+		return nil, false
+	}
+	e.available = true
+	return e, true
+}
+
+// Begin push-to-talk capture (call on button-down).
+begin :: proc(e: ^Engine) {
+	if e == nil || !e.available || e.recording do return
+	sdl.ClearQueuedAudio(e.dev)
+	sdl.PauseAudioDevice(e.dev, false) // unpause = start capturing
+	e.recording = true
+}
+
+// Stop capture, transcribe, return one cleaned lowercase word ("" if nothing).
+end :: proc(e: ^Engine) -> string {
+	if e == nil || !e.available || !e.recording do return ""
+	sdl.PauseAudioDevice(e.dev, true)
+	e.recording = false
+
+	size := sdl.GetQueuedAudioSize(e.dev)
+	if size == 0 do return ""
+	buf := make([]u8, int(size))
+	defer delete(buf)
+	got := sdl.DequeueAudio(e.dev, raw_data(buf), size)
+	if got == 0 do return ""
+
+	if !write_wav(e.cfg.tmp_wav, buf[:int(got)]) do return ""
+	run_whisper(e.cfg)
+
+	data, _ := os.read_entire_file(e.cfg.tmp_txt, context.allocator)
+	defer if data != nil do delete(data)
+	return clean_word(string(data))
+}
+
+// Convenience for a fixed-window one-shot capture (used by the probe).
+listen :: proc(e: ^Engine, ms: u32) -> string {
+	begin(e)
+	sdl.Delay(ms)
+	return end(e)
+}
+
+shutdown :: proc(e: ^Engine) {
+	if e == nil do return
+	if e.available do sdl.CloseAudioDevice(e.dev)
+	free(e)
+}
+
+// ---- internals ----
+
+@(private)
+run_whisper :: proc(cfg: Config) {
+	redirect := " > \"%s\" 2> nul"
+	when ODIN_OS != .Windows {
+		redirect = " > \"%s\" 2> /dev/null"
+	}
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	// greedy, deterministic, no timestamps/prints -> fastest for one word
+	fmt.sbprintf(&b, "\"%s\" -m \"%s\" -f \"%s\" -nt -np -l en -tp 0 -bo 1 -bs 1 -t 4",
+		cfg.cli_path, cfg.model_path, cfg.tmp_wav)
+	if cfg.grammar_path != "" {
+		fmt.sbprintf(&b, " --grammar \"%s\" --grammar-rule root --grammar-penalty 100", cfg.grammar_path)
+	}
+	fmt.sbprintf(&b, redirect, cfg.tmp_txt)
+
+	inner := strings.to_string(b)
+	// cmd.exe /c strips the outer quotes when the string starts with a quote,
+	// so wrap the whole command in an extra pair on Windows.
+	full: string
+	when ODIN_OS == .Windows {
+		full = strings.concatenate({"\"", inner, "\""}, context.temp_allocator)
+	} else {
+		full = inner
+	}
+	cmd := strings.clone_to_cstring(full, context.temp_allocator)
+	libc.system(cmd)
+}
+
+@(private)
+clean_word :: proc(s: string) -> string {
+	// take the first alphanumeric run, lowercased
+	start := -1
+	end_i := -1
+	for i in 0 ..< len(s) {
+		c := s[i]
+		alnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if alnum {
+			if start < 0 do start = i
+			end_i = i + 1
+		} else if start >= 0 {
+			break
+		}
+	}
+	if start < 0 do return ""
+	word := s[start:end_i]
+	return strings.to_lower(word) // allocated; caller owns
+}
+
+@(private)
+le16 :: proc(b: ^[dynamic]u8, v: u16) { append(b, u8(v), u8(v >> 8)) }
+@(private)
+le32 :: proc(b: ^[dynamic]u8, v: u32) { append(b, u8(v), u8(v >> 8), u8(v >> 16), u8(v >> 24)) }
+
+@(private)
+write_wav :: proc(path: string, pcm: []u8) -> bool {
+	data_len := u32(len(pcm))
+	byte_rate := u32(SAMPLE_RATE * 1 * 2)
+	b: [dynamic]u8
+	defer delete(b)
+	append(&b, 'R', 'I', 'F', 'F')
+	le32(&b, 36 + data_len)
+	append(&b, 'W', 'A', 'V', 'E')
+	append(&b, 'f', 'm', 't', ' ')
+	le32(&b, 16)      // fmt chunk size
+	le16(&b, 1)       // PCM
+	le16(&b, 1)       // mono
+	le32(&b, SAMPLE_RATE)
+	le32(&b, byte_rate)
+	le16(&b, 2)       // block align
+	le16(&b, 16)      // bits per sample
+	append(&b, 'd', 'a', 't', 'a')
+	le32(&b, data_len)
+	append(&b, ..pcm)
+	err := os.write_entire_file(path, b[:])
+	return err == nil
+}

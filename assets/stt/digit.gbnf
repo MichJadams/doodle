@@ -1,0 +1,5 @@
+# GBNF grammar constraining Whisper output to a single spoken digit.
+# Great for one-keystroke numeric entry on a controller.
+
+root  ::= " " digit
+digit ::= "zero" | "one" | "two" | "three" | "four" | "five" | "six" | "seven" | "eight" | "nine" | "oh"

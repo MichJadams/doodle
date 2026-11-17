@@ -8,6 +8,7 @@ import "../platform"
 import "../gpu"
 import "../text"
 import "../model"
+import "../stt"
 import "core:math"
 import "core:fmt"
 
@@ -38,10 +39,15 @@ HUD_LABELS := [?]string{"L-TRIGGER", "DEFAULT", "R-TRIGGER"}
 g_ui:   ^text.Font
 g_time: f64
 
+// STT push-to-talk state (for the HUD/editor overlay).
+g_recording: bool
+g_heard:     string
+
 // Raw per-frame input accumulated from SDL events, converted to model.Input.
 Raw :: struct {
 	lt, rt:         f32,
 	key_lt, key_rt: bool,
+	x_held:         bool,
 
 	e_confirm, e_cancel:           bool,
 	e_up, e_down, e_left, e_right: bool,
@@ -80,6 +86,10 @@ main :: proc() {
 	m.state = .Menu
 	m.os_name = os_name()
 
+	// STT is optional: if whisper isn't built yet, stt_e is nil and PTT is disabled.
+	stt_e, _ := stt.init(stt.default_config())
+	defer stt.shutdown(stt_e)
+
 	raw: Raw
 	events: [dynamic]platform.Event
 	defer delete(events)
@@ -99,6 +109,20 @@ main :: proc() {
 
 		inp := build_input(&raw)
 		model.update(&m, inp)
+
+		// Push-to-talk: hold LT + X to speak one word/number.
+		ptt := inp.lt_held && raw.x_held
+		if ptt && !g_recording {
+			stt.begin(stt_e)
+			g_recording = true
+		} else if !ptt && g_recording {
+			w := stt.end(stt_e)
+			g_recording = false
+			if w != "" {
+				if g_heard != "" do delete(g_heard)
+				g_heard = w
+			}
+		}
 
 		w, h := platform.get_size(win)
 		gpu.begin_frame(r, w, h, COL_BG)
@@ -169,6 +193,7 @@ build_input :: proc(raw: ^Raw) -> model.Input {
 handle_event :: proc(raw: ^Raw, e: platform.Event) {
 	#partial switch ev in e {
 	case platform.Button_Event:
+		if ev.button == .X do raw.x_held = ev.pressed
 		if ev.pressed {
 			#partial switch ev.button {
 			case .A:     raw.e_confirm = true
@@ -192,6 +217,7 @@ handle_key :: proc(raw: ^Raw, sym: i32, pressed: bool) {
 	switch sym {
 	case 'q': raw.key_lt = pressed
 	case 'e': raw.key_rt = pressed
+	case 'x': raw.x_held = pressed
 	}
 	if !pressed do return
 	switch sym {
@@ -209,6 +235,7 @@ handle_key :: proc(raw: ^Raw, sym: i32, pressed: bool) {
 // Glyph drawn on a face button for the given bank + context. As we bind
 // actions, the on-pad symbol changes (e.g. A -> "+"). ASCII only (atlas 32..127).
 face_glyph :: proc(m: ^model.App, bank: int, face: FaceBtn) -> string {
+	if bank == 0 && face == .X do return "o" // LT + X = talk (mic)
 	if bank == 1 { // middle bank = default (no trigger) context
 		switch face {
 		case .A: return "+" // select / confirm
@@ -266,6 +293,13 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	}
 	dot_y := y0 + f32(len(m.doc.nodes)) * lh + lh * 0.4
 	draw_green_dot(r, pad + 14, dot_y)
+
+	// STT push-to-talk indicator / last heard word.
+	if g_recording {
+		text.draw_line(r, g_ui, {f32(w) - 150, 14}, "[REC]", {0.90, 0.30, 0.30, 1})
+	} else if g_heard != "" {
+		text.draw_line(r, g_ui, {f32(w) - 320, 14}, fmt.tprintf("heard: %s", g_heard), COL_ACCENT)
+	}
 }
 
 draw_green_dot :: proc(r: ^gpu.Renderer, cx, cy: f32) {

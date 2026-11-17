@@ -1,0 +1,9 @@
+# GBNF grammar constraining Whisper output to a spoken number 0-99.
+# Use with: whisper-cli ... --grammar assets/stt/number.gbnf --grammar-rule root --grammar-penalty 100
+# The leading space in `root` matters (Whisper emits a leading space).
+
+root  ::= " " value
+value ::= "zero" | teen | tens (" " ones)? | ones
+ones  ::= "one" | "two" | "three" | "four" | "five" | "six" | "seven" | "eight" | "nine"
+teen  ::= "ten" | "eleven" | "twelve" | "thirteen" | "fourteen" | "fifteen" | "sixteen" | "seventeen" | "eighteen" | "nineteen"
+tens  ::= "twenty" | "thirty" | "forty" | "fifty" | "sixty" | "seventy" | "eighty" | "ninety"
