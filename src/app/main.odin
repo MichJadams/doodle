@@ -262,7 +262,7 @@ handle_key :: proc(raw: ^Raw, sym: i32, pressed: bool) {
 // Glyph drawn on a face button for the given bank + context. As we bind
 // actions, the on-pad symbol changes (e.g. A -> "+"). ASCII only (atlas 32..127).
 face_glyph :: proc(m: ^model.App, bank: int, face: FaceBtn) -> string {
-	if bank == 0 && face == .X do return "o" // LT + X = talk (mic)
+	if bank == 0 && face == .X do return "" // LT + X = talk: drawn as a mic icon, no letter
 	if bank == 1 { // middle bank = default (no trigger) context
 		switch face {
 		case .A: return "+" // select / confirm
@@ -434,6 +434,26 @@ draw_bank :: proc(r: ^gpu.Renderer, m: ^model.App, bank: int, cx, cy, scale: f32
 	draw_face(r, g_ui, face_cx, cy + d, rad, {0.30, 0.78, 0.42, a}, face_glyph(m, bank, .A))
 	draw_face(r, g_ui, face_cx - d, cy, rad, {0.28, 0.52, 0.90, a}, face_glyph(m, bank, .X))
 	draw_face(r, g_ui, face_cx + d, cy, rad, {0.86, 0.30, 0.30, a}, face_glyph(m, bank, .B))
+
+	// The LT+X (left bank, X) button is the "talk" control: draw a mic icon on it.
+	if bank == 0 {
+		draw_mic_icon(r, face_cx - d, cy, rad * 0.82, {0.97, 0.98, 1.0, a})
+	}
+}
+
+// A small vector microphone (capsule head + stand + base), drawn with primitives.
+draw_mic_icon :: proc(r: ^gpu.Renderer, cx, cy, s: f32, col: gpu.Color) {
+	bw := s * 0.60 // head width
+	bh := s * 0.70 // straight part of the capsule
+	top := cy - s * 0.68
+	// capsule head (rounded top + bottom)
+	gpu.draw_rect(r, {cx - bw / 2, top, bw, bh}, col)
+	gpu.draw_circle(r, cx, top, bw / 2, col)
+	gpu.draw_circle(r, cx, top + bh, bw / 2, col)
+	// stand (vertical neck)
+	gpu.draw_rect(r, {cx - s * 0.07, top + bh, s * 0.14, s * 0.42}, col)
+	// base
+	gpu.draw_rect(r, {cx - s * 0.34, cy + s * 0.60, s * 0.68, s * 0.15}, col)
 }
 
 join_identifier :: proc(parts: []string) -> string {
