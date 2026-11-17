@@ -37,6 +37,7 @@ Entry :: struct {
 	dim:            bool,
 	quit:           bool,
 	alias:          bool,   // if true, navigating this group sets import_alias mode
+	fill:           string, // "" = none; type name = fill slot with type; "__var__" = instantiate variable
 	children:       []Entry,
 }
 
@@ -84,6 +85,9 @@ App :: struct {
 
 	add_menu: []Entry, // built lazily per-app (no globals -> test-safe)
 	ide_menu: []Entry,
+	slot_menu: []Entry, // built on-demand for slot filling
+	slot_ni:   int,     // node index of slot being filled
+	slot_fi:   int,     // field index of slot being filled
 }
 
 Input :: struct {
@@ -163,6 +167,7 @@ free_entries :: proc(entries: []Entry) {
 free_menus :: proc(app: ^App) {
 	if app.add_menu != nil { free_entries(app.add_menu); app.add_menu = nil }
 	if app.ide_menu != nil { free_entries(app.ide_menu); app.ide_menu = nil }
+	if app.slot_menu != nil { free_entries(app.slot_menu); app.slot_menu = nil }
 }
 
 // ---- Build the core tree from the generated flat rows ----
@@ -209,7 +214,7 @@ tnodes_to_entries :: proc(nodes: []^TNode) -> []Entry {
 // ---- Helpers ----
 
 is_leaf :: proc(e: Entry) -> bool {
-	return len(e.children) == 0 && (e.insert != "" || e.import_path != "" || e.keyword != "" || e.proc_outline || e.type_construct != "" || e.value_construct != "")
+	return len(e.children) == 0 && (e.insert != "" || e.import_path != "" || e.keyword != "" || e.proc_outline || e.type_construct != "" || e.value_construct != "" || e.fill != "")
 }
 
 // Composed import statement for a leaf (uses the given allocator).
@@ -442,6 +447,112 @@ append_value_node :: proc(app: ^App, kind: string) {
 	}
 }
 
+// ---- Slot filling ----
+
+// Collect user-defined type names from the document (PascalCase identifiers).
+collect_user_types :: proc(app: ^App) -> []string {
+	result: [dynamic]string
+	for n in app.doc.nodes {
+		for f in n.fields {
+			if f.editable && len(f.text) > 0 {
+				// Check if first character is uppercase (A-Z)
+				if f.text[0] >= 'A' && f.text[0] <= 'Z' {
+					// Add if not already in list
+					already_added := false
+					for s in result {
+						if s == f.text {
+							already_added = true
+							break
+						}
+					}
+					if !already_added do append(&result, f.text)
+				}
+			}
+		}
+	}
+	return result[:]
+}
+
+// Create a fill leaf entry.
+fill_leaf :: proc(label, fill_type: string) -> Entry {
+	return Entry{label = label, fill = fill_type}
+}
+
+// Fill a slot with a type.
+set_slot_type :: proc(app: ^App, ni, fi: int, type_name: string) {
+	if len(app.doc.nodes[ni].fields[fi].text) > 0 {
+		delete(app.doc.nodes[ni].fields[fi].text)
+	}
+	app.doc.nodes[ni].fields[fi] = Field{strings.clone(type_name), true, false}
+}
+
+// Replace a slot with a variable instantiation (name + ": " + type slot).
+make_slot_variable :: proc(app: ^App, ni, fi: int) {
+	fields := &app.doc.nodes[ni].fields
+	// Remove the slot field
+	ordered_remove(fields, fi)
+	// Inject three fields at the same position
+	f1 := Field{strings.clone("value"), true, false}  // editable name
+	f2 := Field{strings.clone(": "), false, false}    // fixed separator
+	f3 := Field{"", false, true}                       // new type slot
+	inject_at(fields, fi, f3)
+	inject_at(fields, fi, f2)
+	inject_at(fields, fi, f1)
+}
+
+// Open the slot filling menu.
+open_slot_menu :: proc(app: ^App) {
+	ni, fi, ok := editor_target(app)
+	if !ok do return
+	
+	// Record which slot we're filling
+	app.slot_ni = ni
+	app.slot_fi = fi
+	
+	// Free any previous slot menu
+	if app.slot_menu != nil {
+		free_entries(app.slot_menu)
+		app.slot_menu = nil
+	}
+	
+	// Build type submenu with basic types + user types
+	type_entries: [dynamic]Entry
+	defer delete(type_entries)
+	
+	// Basic Odin types
+	basic_types := [?]string{
+		"int", "i8", "i16", "i32", "i64",
+		"u8", "u16", "u32", "u64", "uint", "uintptr",
+		"f32", "f64",
+		"bool", "string", "cstring", "rune", "byte", "rawptr",
+	}
+	for t in basic_types {
+		append(&type_entries, fill_leaf(t, t))
+	}
+	
+	// User-defined types
+	user_types := collect_user_types(app)
+	defer delete(user_types)
+	for t in user_types {
+		append(&type_entries, fill_leaf(t, t))
+	}
+	
+	// Build the slot menu
+	type_children := make([]Entry, len(type_entries))
+	copy(type_children, type_entries[:])
+	
+	app.slot_menu = make_slice(
+		Entry{label = "Type", children = type_children},
+		Entry{label = "Variable", fill = "__var__"},
+	)
+	
+	// Open the menu
+	clear_nav(app)
+	app.return_state = .Editor
+	app.state = .Radial
+	push_menu(app, "Fill slot", app.slot_menu)
+}
+
 // Count selectable fields (editable identifiers + slots).
 num_editable :: proc(app: ^App) -> int {
 	c := 0
@@ -546,6 +657,11 @@ doc_reset :: proc(app: ^App) {
 	clear(&app.doc.nodes)
 	app.editor_line = 0
 	app.editor_field = 0
+	// Free slot menu if allocated
+	if app.slot_menu != nil {
+		free_entries(app.slot_menu)
+		app.slot_menu = nil
+	}
 }
 
 active_bank :: proc(inp: Input) -> int {
@@ -678,7 +794,17 @@ menu_select :: proc(app: ^App) {
 	}
 	if len(e.children) > 0 {
 		if e.alias do app.import_alias = true
-		push_menu(app, e.label, e.children)
+		// For slot filling Type submenu, push directly without make_view to avoid bucketing
+		if app.slot_menu != nil && e.label == "Type" {
+			// Push the Type submenu directly without make_view
+			v_direct: MenuView
+			v_direct.title = e.label
+			v_direct.entries = make([]Entry, len(e.children))
+			copy(v_direct.entries, e.children)
+			append(&app.nav, v_direct)
+		} else {
+			push_menu(app, e.label, e.children)
+		}
 		return
 	}
 	if e.keyword != "" {
@@ -700,6 +826,22 @@ menu_select :: proc(app: ^App) {
 		app.import_alias = false
 	} else if e.insert != "" {
 		append_text_node(app, e.insert)
+	} else if e.fill != "" {
+		// Handle slot filling
+		if e.fill == "__var__" {
+			make_slot_variable(app, app.slot_ni, app.slot_fi)
+		} else {
+			set_slot_type(app, app.slot_ni, app.slot_fi, e.fill)
+		}
+		clear_nav(app)
+		clamp_field(app)
+		app.state = app.return_state
+		// Free the slot menu
+		if app.slot_menu != nil {
+			free_entries(app.slot_menu)
+			app.slot_menu = nil
+		}
+		return
 	} else {
 		return // placeholder, no-op
 	}
@@ -710,7 +852,14 @@ menu_select :: proc(app: ^App) {
 
 menu_cancel :: proc(app: ^App) {
 	pop_menu(app)
-	if len(app.nav) == 0 do app.state = app.return_state
+	if len(app.nav) == 0 {
+		app.state = app.return_state
+		// Free slot menu if we're canceling out of it
+		if app.slot_menu != nil {
+			free_entries(app.slot_menu)
+			app.slot_menu = nil
+		}
+	}
 }
 
 // ---- Top-level update ----
@@ -749,7 +898,17 @@ update :: proc(app: ^App, inp: Input) {
 		if inp.up   do editor_move_line(app, -1)
 		if inp.down do editor_move_line(app, +1)
 		if inp.cancel do app.state = .Menu
-		if inp.confirm && app.editor_line >= nlines do open_add_menu(app) // A on the dot = Add menu
+		if inp.confirm {
+			if app.editor_line >= nlines {
+				open_add_menu(app) // A on the green dot = Add menu
+			} else {
+				// Check if we're on a slot field
+				ni, fi, ok := editor_target(app)
+				if ok && app.doc.nodes[ni].fields[fi].slot {
+					open_slot_menu(app) // A on a slot = Fill menu
+				}
+			}
+		}
 	case .Radial:
 		v := current_view(app)
 		n := len(v.entries)

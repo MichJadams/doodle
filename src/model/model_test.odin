@@ -927,3 +927,144 @@ test_global_init_has_walrus :: proc(t: ^testing.T) {
 	// 1 editable name + 1 value slot = 2 selectable
 	testing.expect_value(t, num_editable(&app), 2)
 }
+
+// ---- Slot filling tests ----
+
+@(private = "file")
+add_struct :: proc(app: ^App) {
+	confirm(app)                     // Editor: open Add root
+	select_label(app, "Types")       // root: Types -> submenu
+	select_label(app, "Struct")      // submenu: Struct
+}
+
+@(test)
+test_slot_fill_proc_return_with_int :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate up to signature line
+	update(&app, Input{up = true})
+	// Should be on body slot, navigate to signature line
+	update(&app, Input{up = true})
+	// Now we're on the signature line, navigate right to return slot
+	// Fields: name (editable), " :: proc( ", params (slot), " ) -> ", return (slot), " {"
+	// Selectable: name, params, return (3 total)
+	// Start at index 0 (name), right to params (1), right to return (2)
+	update(&app, Input{right = true}) // to params slot
+	update(&app, Input{right = true}) // to return slot
+	// Confirm to open fill menu
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	v := current_view(&app)
+	testing.expect_value(t, v.title, "Fill slot")
+	// Select "Type" submenu
+	select_label(&app, "Type")
+	// Select "int"
+	select_label(&app, "int")
+	// Should be back in Editor
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that the return slot is now filled with "int"
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "-> int"), "return slot should contain 'int'")
+	// Verify the field is now editable (not a slot)
+	ni := 0
+	// Find the "int" field
+	found := false
+	for f, fi in app.doc.nodes[ni].fields {
+		if f.text == "int" {
+			testing.expect_value(t, f.editable, true)
+			testing.expect_value(t, f.slot, false)
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "should have found 'int' field")
+}
+
+@(test)
+test_slot_fill_variable_then_type :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_struct(&app)
+	// Navigate up to body slot line
+	update(&app, Input{up = true})
+	update(&app, Input{up = true}) // to struct name line
+	update(&app, Input{down = true}) // back to body line
+	// Confirm to open fill menu
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	// Select "Variable"
+	select_label(&app, "Variable")
+	// Should be back in Editor
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that the body line now contains "value:"
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "value:"), "body should contain 'value:'")
+	// Verify we have an editable "value" field and a new slot
+	ni := 1
+	found_value := false
+	found_separator := false
+	found_slot := false
+	for f in app.doc.nodes[ni].fields {
+		if f.text == "value" && f.editable && !f.slot {
+			found_value = true
+		}
+		if f.text == ": " && !f.editable && !f.slot {
+			found_separator = true
+		}
+		if f.text == "" && !f.editable && f.slot {
+			found_slot = true
+		}
+	}
+	testing.expect(t, found_value, "should have editable 'value' field")
+	testing.expect(t, found_separator, "should have ': ' separator")
+	testing.expect(t, found_slot, "should have new type slot")
+	// Now navigate right to the new type slot and fill it with "bool"
+	update(&app, Input{right = true}) // to separator (not selectable, stays on value)
+	update(&app, Input{right = true}) // to new type slot
+	// Confirm to open fill menu again
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	// Select "Type"
+	select_label(&app, "Type")
+	// Select "bool"
+	select_label(&app, "bool")
+	// Should be back in Editor
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that the body line now contains "value: bool"
+	txt2 := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt2, "value: bool"), "body should contain 'value: bool'")
+}
+
+@(test)
+test_user_defined_type_in_menu :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_struct(&app) // inserts MyType :: struct { ... }
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	update(&app, Input{up = true})
+	update(&app, Input{down = true})
+	// Open fill menu
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	// Select "Type"
+	select_label(&app, "Type")
+	// Now check that "MyType" appears in the Type submenu
+	v := current_view(&app)
+	found_mytype := false
+	for e in v.entries {
+		if e.label == "MyType" {
+			found_mytype = true
+			break
+		}
+	}
+	testing.expect(t, found_mytype, "Type menu should contain 'MyType'")
+	// Cancel back
+	update(&app, Input{cancel = true})
+	update(&app, Input{cancel = true})
+	testing.expect_value(t, app.state, State.Editor)
+}
