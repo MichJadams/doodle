@@ -41,6 +41,9 @@ State :: enum { Menu, Editor, Radial }
 
 GRID_COLS :: 3
 
+// UI/chrome font (smaller than the code font). Set in main().
+g_ui: ^text.Font
+
 // Identifies a face button so we can look up its current bound symbol.
 FaceBtn :: enum { A, B, X, Y }
 
@@ -83,8 +86,11 @@ active_bank :: proc(app: ^App) -> int {
 }
 
 Doc :: struct {
-	has_package:  bool,
-	package_name: string,
+	nodes: [dynamic]string, // each entry is an inserted Odin line/section
+}
+
+insert_node :: proc(app: ^App, s: string) {
+	append(&app.doc.nodes, s)
 }
 
 MenuKind :: enum { Add, Ide }
@@ -128,12 +134,16 @@ main :: proc() {
 	}
 	defer gpu.shutdown(r)
 
-	font := load_a_font(r)
+	font := load_a_font(r, 28) // code font
 	if font == nil {
 		fmt.eprintln("could not load any font")
 		return
 	}
 	defer text.shutdown(font)
+
+	g_ui = load_a_font(r, 18) // UI/chrome font
+	if g_ui == nil do g_ui = font
+	defer if g_ui != font do text.shutdown(g_ui)
 
 	app: App
 	app.state = .Menu
@@ -169,7 +179,7 @@ main :: proc() {
 	}
 }
 
-load_a_font :: proc(r: ^gpu.Renderer) -> ^text.Font {
+load_a_font :: proc(r: ^gpu.Renderer, px: f32) -> ^text.Font {
 	paths := [?]string{
 		"assets/fonts/mono.ttf",
 		"C:\\Windows\\Fonts\\consola.ttf",
@@ -178,7 +188,7 @@ load_a_font :: proc(r: ^gpu.Renderer) -> ^text.Font {
 		"/usr/share/fonts/TTF/DejaVuSansMono.ttf",
 	}
 	for p in paths {
-		if f, ok := text.load_font(r, p, 28); ok do return f
+		if f, ok := text.load_font(r, p, px); ok do return f
 	}
 	return nil
 }
@@ -255,7 +265,7 @@ update :: proc(app: ^App) {
 		if app.e_down do app.menu_index = (app.menu_index + 1) %% n
 		if app.e_confirm {
 			if app.menu_index == 0 { // New Project
-				app.doc = Doc{}
+				clear(&app.doc.nodes)
 				app.state = .Editor
 			}
 			// Recent / Open Folder: not wired yet.
@@ -319,13 +329,11 @@ radial_select :: proc(app: ^App) {
 		}
 	} else { // File Setup submenu
 		switch app.radial.index {
-		case 0: // Package declaration
-			app.doc.has_package = true
-			app.doc.package_name = "main"
-			app.state = app.return_state
-		case:
-			app.state = app.return_state
+		case 0: insert_node(app, "package main")   // Package declaration
+		case 1: insert_node(app, "#+build linux")  // File tags
+		case 2: insert_node(app, "// comment")     // Comments
 		}
+		app.state = app.return_state
 	}
 }
 
@@ -334,7 +342,7 @@ radial_select :: proc(app: ^App) {
 draw_menu :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 	fw, fh := f32(w), f32(h)
 	text.draw_centered(r, font, {0, fh * 0.20, fw, 60}, "DOODLE", COL_ACCENT)
-	text.draw_centered(r, font, {0, fh * 0.20 + 56, fw, 30}, "Odin IDE  -  gamepad native", COL_DIM)
+	text.draw_centered(r, g_ui, {0, fh * 0.20 + 56, fw, 30}, "Odin IDE  -  gamepad native", COL_DIM)
 
 	base_y := fh * 0.42
 	for item, i in MENU_ITEMS {
@@ -343,27 +351,26 @@ draw_menu :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 		enabled := i == 0
 		gpu.draw_rect(r, row, active ? COL_HILITE : COL_PANEL)
 		if active do gpu.draw_rect_outline(r, row, 2, COL_ACCENT)
-		text.draw_centered(r, font, row, item, enabled ? COL_TEXT : COL_DIM)
+		text.draw_centered(r, g_ui, row, item, enabled ? COL_TEXT : COL_DIM)
 	}
 
-	text.draw_centered(r, font, {0, fh * 0.84, fw, 30},
+	text.draw_centered(r, g_ui, {0, fh * 0.84, fw, 30},
 		"D-pad / Arrows to move    A / Enter to select    (only New Project is wired)", COL_DIM)
 }
 
 draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 	pad := f32(28)
-	text.draw_line(r, font, {pad, 14}, "untitled.odin", COL_DIM)
+	text.draw_line(r, g_ui, {pad, 14}, "untitled.odin", COL_DIM)
 	gpu.draw_rect(r, {0, 50, f32(w), 1}, {0.2, 0.22, 0.27, 1})
 
-	y := f32(96)
+	lh := text.line_height(font)
+	y0 := f32(96)
 	x := pad + 34
-	if app.doc.has_package {
-		line := fmt.tprintf("package %s", app.doc.package_name)
-		text.draw_line(r, font, {x, y}, line, COL_TEXT)
-		draw_green_dot(r, app, pad + 14, y + 58)
-	} else {
-		draw_green_dot(r, app, pad + 14, y + 16)
+	for node, i in app.doc.nodes {
+		text.draw_line(r, font, {x, y0 + f32(i) * lh}, node, COL_TEXT)
 	}
+	dot_y := y0 + f32(len(app.doc.nodes)) * lh + lh * 0.4
+	draw_green_dot(r, app, pad + 14, dot_y)
 }
 
 draw_green_dot :: proc(r: ^gpu.Renderer, app: ^App, cx, cy: f32) {
@@ -377,7 +384,7 @@ draw_green_dot :: proc(r: ^gpu.Renderer, app: ^App, cx, cy: f32) {
 draw_radial :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 	fw, fh := f32(w), f32(h)
 	gpu.draw_rect(r, {0, 0, fw, fh}, {0, 0, 0, 0.60})
-	text.draw_centered(r, font, {0, fh * 0.20, fw, 40}, app.radial.title, COL_ACCENT)
+	text.draw_centered(r, g_ui, {0, fh * 0.20, fw, 40}, app.radial.title, COL_ACCENT)
 
 	n := len(app.radial.options)
 	cols := GRID_COLS
@@ -397,9 +404,9 @@ draw_radial :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 		active := i == app.radial.index
 		gpu.draw_rect(r, box, active ? COL_HILITE : COL_PANEL)
 		if active do gpu.draw_rect_outline(r, box, 2, COL_ACCENT)
-		text.draw_centered(r, font, box, opt, COL_TEXT)
+		text.draw_centered(r, g_ui, box, opt, COL_TEXT)
 	}
-	text.draw_centered(r, font, {0, start_y + grid_h + 26, fw, 28}, "D-pad / Arrows to move     + : select     < : back", COL_DIM)
+	text.draw_centered(r, g_ui, {0, start_y + grid_h + 26, fw, 28}, "D-pad / Arrows to move     + : select     < : back", COL_DIM)
 }
 
 draw_hud :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
@@ -417,7 +424,7 @@ draw_hud :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 		cx := third * (f32(bank) + 0.5)
 		active := bank == cur_bank
 		draw_bank(r, font, app, bank, cx, cy, active ? 1.15 : 0.82, active)
-		text.draw_centered(r, font, {cx - 100, top + hud_h - 30, 200, 24},
+		text.draw_centered(r, g_ui, {cx - 100, top + hud_h - 30, 200, 24},
 			HUD_LABELS[bank], active ? COL_ACCENT : COL_DIM)
 	}
 }
@@ -437,18 +444,18 @@ draw_bank :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, bank: int, cx, 
 	// Overlay any bound d-pad direction glyphs.
 	gcol := gpu.Color{0.10, 0.11, 0.13, a}
 	half := arm / 2 - th / 2
-	if g := dpad_glyph(app, bank, .Left);  g != "" do text.draw_centered(r, font, {dpad_cx - arm / 2, cy - th / 2, half, th}, g, gcol)
-	if g := dpad_glyph(app, bank, .Right); g != "" do text.draw_centered(r, font, {dpad_cx + th / 2, cy - th / 2, half, th}, g, gcol)
-	if g := dpad_glyph(app, bank, .Up);    g != "" do text.draw_centered(r, font, {dpad_cx - th / 2, cy - arm / 2, th, half}, g, gcol)
-	if g := dpad_glyph(app, bank, .Down);  g != "" do text.draw_centered(r, font, {dpad_cx - th / 2, cy + th / 2, th, half}, g, gcol)
+	if g := dpad_glyph(app, bank, .Left);  g != "" do text.draw_centered(r, g_ui, {dpad_cx - arm / 2, cy - th / 2, half, th}, g, gcol)
+	if g := dpad_glyph(app, bank, .Right); g != "" do text.draw_centered(r, g_ui, {dpad_cx + th / 2, cy - th / 2, half, th}, g, gcol)
+	if g := dpad_glyph(app, bank, .Up);    g != "" do text.draw_centered(r, g_ui, {dpad_cx - th / 2, cy - arm / 2, th, half}, g, gcol)
+	if g := dpad_glyph(app, bank, .Down);  g != "" do text.draw_centered(r, g_ui, {dpad_cx - th / 2, cy + th / 2, th, half}, g, gcol)
 
 	// Face buttons (Y top, A bottom, X left, B right)
 	d := 32.0 * scale
 	rad := 16.0 * scale
-	draw_face(r, font, face_cx, cy - d, rad, {0.92, 0.78, 0.25, a}, face_glyph(app, bank, .Y))
-	draw_face(r, font, face_cx, cy + d, rad, {0.30, 0.78, 0.42, a}, face_glyph(app, bank, .A))
-	draw_face(r, font, face_cx - d, cy, rad, {0.28, 0.52, 0.90, a}, face_glyph(app, bank, .X))
-	draw_face(r, font, face_cx + d, cy, rad, {0.86, 0.30, 0.30, a}, face_glyph(app, bank, .B))
+	draw_face(r, g_ui, face_cx, cy - d, rad, {0.92, 0.78, 0.25, a}, face_glyph(app, bank, .Y))
+	draw_face(r, g_ui, face_cx, cy + d, rad, {0.30, 0.78, 0.42, a}, face_glyph(app, bank, .A))
+	draw_face(r, g_ui, face_cx - d, cy, rad, {0.28, 0.52, 0.90, a}, face_glyph(app, bank, .X))
+	draw_face(r, g_ui, face_cx + d, cy, rad, {0.86, 0.30, 0.30, a}, face_glyph(app, bank, .B))
 }
 
 draw_face :: proc(r: ^gpu.Renderer, font: ^text.Font, cx, cy, rad: f32, col: gpu.Color, label: string) {
