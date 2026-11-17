@@ -6,6 +6,27 @@ compiler plus SDL2. stb_truetype and the OpenGL bindings ship inside Odin's
 
 ---
 
+## 0. Windows-on-ARM note (THIS DEV MACHINE)
+
+The primary Windows dev box is a **Qualcomm Snapdragon (ARM64)** laptop. Odin
+publishes **no native windows-arm64 build** — only `windows-amd64`. Windows 11's
+x64 emulation runs the amd64 Odin toolchain transparently, and it was validated
+here end-to-end (compile + link + run a hello world and the project scaffold).
+
+- **Installed at:** `C:\Odin` (on user PATH).
+- **Target produced:** amd64 (x64) binaries, which also run under emulation.
+- **Implication:** SDL2/whisper/etc. vendored libs must be the **x64** builds,
+  not arm64, to match the emulated toolchain.
+- Native arm64 would require building the Odin compiler from source for
+  `windows_arm64` (experimental) — deferred unless emulation perf is a problem.
+- The **Steam Deck target is x86-64**, so the amd64 pipeline is the shared one.
+
+Quick validation used:
+```bash
+C:\Odin\odin.exe version      # dev-2026-11-nightly
+C:\Odin\odin.exe build src/app -out:bin/olympus.exe -debug
+```
+
 ## 1. Windows
 
 ### 1.1 Prerequisites
