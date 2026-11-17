@@ -1,6 +1,6 @@
-# Olympus — Editor Model (Projectional / Structured)
+# Doodle — Editor Model (Projectional / Structured)
 
-> MAJOR DESIGN DECISION: Olympus is **not** a free-text code editor. It is a
+> MAJOR DESIGN DECISION: Doodle is **not** a free-text code editor. It is a
 > **projectional (structured) editor**: you build an Odin program by inserting
 > and configuring *nodes*, not by typing characters. The textual Odin source is
 > a *rendering* of the underlying structure (and what we ultimately save/compile).

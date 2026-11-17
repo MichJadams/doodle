@@ -66,7 +66,7 @@ App :: struct {
 }
 
 main :: proc() {
-	win, ok := platform.init("Olympus IDE", WINDOW_W, WINDOW_H)
+	win, ok := platform.init("Doodle IDE", WINDOW_W, WINDOW_H)
 	if !ok {
 		fmt.eprintln("platform.init failed")
 		return
@@ -256,7 +256,7 @@ radial_select :: proc(app: ^App) {
 
 draw_menu :: proc(r: ^gpu.Renderer, font: ^text.Font, app: ^App, w, h: int) {
 	fw, fh := f32(w), f32(h)
-	text.draw_centered(r, font, {0, fh * 0.20, fw, 60}, "OLYMPUS", COL_ACCENT)
+	text.draw_centered(r, font, {0, fh * 0.20, fw, 60}, "DOODLE", COL_ACCENT)
 	text.draw_centered(r, font, {0, fh * 0.20 + 56, fw, 30}, "Odin IDE  -  gamepad native", COL_DIM)
 
 	base_y := fh * 0.42

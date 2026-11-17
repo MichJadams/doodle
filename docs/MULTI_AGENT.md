@@ -1,6 +1,6 @@
 # Multi-Agent Workflow
 
-How several agents (human or AI) work on Olympus IDE in parallel without
+How several agents (human or AI) work on Doodle IDE in parallel without
 stepping on each other.
 
 ## Principles
@@ -16,16 +16,16 @@ Each agent works in an isolated worktree so builds/branches never collide:
 
 ```bash
 # from the main clone
-git worktree add ../olympus-text   feat/text
-git worktree add ../olympus-input  feat/input
-git worktree add ../olympus-lsp    feat/lsp
+git worktree add ../doodle-text   feat/text
+git worktree add ../doodle-input  feat/input
+git worktree add ../doodle-lsp    feat/lsp
 # ...one per active area
 ```
 
 Work, commit, push the branch, open a PR. The integrator merges to `main`.
 
 ```bash
-cd ../olympus-text
+cd ../doodle-text
 # edit only src/text/**
 odin test src/text
 git add -A && git commit -m "text: glyph atlas shelf packer"
@@ -34,7 +34,7 @@ git push -u origin feat/text
 
 Remove a worktree when done:
 ```bash
-git worktree remove ../olympus-text
+git worktree remove ../doodle-text
 ```
 
 ## Suggested parallel work order (first wave)

@@ -1,4 +1,4 @@
-# Olympus IDE — Architecture
+# Doodle IDE — Architecture
 
 A gamepad-navigable IDE for the **Odin** programming language, written **in Odin**.
 Targets **Windows** and **Steam Deck (Linux)**. Voice input via local **Whisper**.
@@ -311,7 +311,7 @@ Target frame budget: 6.9 ms (144 Hz) on desktop, 16.6 ms (60 Hz) on Deck.
 
 ## 7. Multi-agent workflow
 
-- **Branch/worktree per agent**: `git worktree add ../olympus-<area> feat/<area>`.
+- **Branch/worktree per agent**: `git worktree add ../doodle-<area> feat/<area>`.
 - Each agent owns one package dir; cross-package needs go through the interfaces
   in §5. If you must change another package's interface, update §5 in the same PR.
 - `app/` is integration-only; one integrator merges and wires.

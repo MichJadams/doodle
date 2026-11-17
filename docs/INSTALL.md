@@ -1,6 +1,6 @@
 # Toolchain Setup
 
-Olympus IDE builds on **Windows** and **Steam Deck (Linux)**. You need the Odin
+Doodle IDE builds on **Windows** and **Steam Deck (Linux)**. You need the Odin
 compiler plus SDL2. stb_truetype and the OpenGL bindings ship inside Odin's
 `vendor` collection, so there's nothing extra to install for those.
 
@@ -24,7 +24,7 @@ here end-to-end (compile + link + run a hello world and the project scaffold).
 Quick validation used:
 ```bash
 C:\Odin\odin.exe version      # dev-2026-11-nightly
-C:\Odin\odin.exe build src/app -out:bin/olympus.exe -debug
+C:\Odin\odin.exe build src/app -out:bin/doodle.exe -debug
 ```
 
 ## 1. Windows
@@ -61,7 +61,7 @@ Odin ships SDL2 **bindings** in `vendor:sdl2`, but you still need the SDL2
 runtime DLL + import lib.
 - Download the SDL2 **VC** development package from https://libsdl.org
   (`SDL2-devel-<ver>-VC.zip`).
-- Copy `SDL2.dll` next to the built `bin\olympus.exe` (or onto PATH).
+- Copy `SDL2.dll` next to the built `bin\doodle.exe` (or onto PATH).
 - Odin's `vendor:sdl2` expects to find `SDL2.lib`; place it where the linker can
   see it, or point at it in the bindings' foreign import. (We'll pin the exact
   path in `src/platform` when we wire SDL up.)

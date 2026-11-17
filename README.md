@@ -1,4 +1,4 @@
-# Olympus IDE
+# Doodle IDE
 
 A **gamepad-navigable IDE for the Odin programming language**, written in Odin.
 Runs on **Windows** and **Steam Deck (Linux)**. Voice input via local **Whisper**.

@@ -1,4 +1,4 @@
-# Olympus IDE — User Experience & Interaction Model
+# Doodle IDE — User Experience & Interaction Model
 
 > STATUS: DRAFT for discussion. This defines how the IDE *feels* to use with a
 > gamepad + voice. It drives the `input` and `ui` package designs, so we want it

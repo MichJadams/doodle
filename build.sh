@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Olympus IDE build script (Linux / Steam Deck)
+# Doodle IDE build script (Linux / Steam Deck)
 # Usage: ./build.sh [run|test|release]
 set -euo pipefail
 
 SRC="src/app"
-OUT="bin/olympus"
+OUT="bin/doodle"
 mkdir -p bin
 
 case "${1:-}" in
