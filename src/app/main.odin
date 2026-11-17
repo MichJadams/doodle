@@ -47,6 +47,8 @@ g_mic_ready: bool            // a field is highlighted + whisper available
 g_stt_parts: [dynamic]string // dictated fragments joined by "_"
 g_stt_ni:    int             // target node/field captured at record start
 g_stt_fi:    int
+g_vocab:     []string        // per-utterance STT bias vocabulary (freed after)
+g_prompt:    string
 
 // Raw per-frame input accumulated from SDL events, converted to model.Input.
 Raw :: struct {
@@ -128,6 +130,10 @@ main :: proc() {
 
 		// Push-to-talk dictation into the highlighted field.
 		if mic_hold && g_mic_ready && !g_recording {
+			// Bias dictation toward known identifiers/keywords (fixes "maine"->"main").
+			g_vocab = model.collect_vocab(&m)
+			g_prompt = build_prompt(g_vocab)
+			stt.set_context(stt_e, g_prompt, g_vocab)
 			stt.begin(stt_e)
 			g_recording = true
 			g_stt_ni = tni
@@ -149,6 +155,8 @@ main :: proc() {
 			clear(&g_stt_parts)
 			delete(final)
 			g_recording = false
+			if g_vocab != nil { delete(g_vocab); g_vocab = nil }
+			if g_prompt != "" { delete(g_prompt); g_prompt = "" }
 		}
 
 		w, h := platform.get_size(win)
@@ -454,6 +462,11 @@ draw_mic_icon :: proc(r: ^gpu.Renderer, cx, cy, s: f32, col: gpu.Color) {
 	gpu.draw_rect(r, {cx - s * 0.07, top + bh, s * 0.14, s * 0.42}, col)
 	// base
 	gpu.draw_rect(r, {cx - s * 0.34, cy + s * 0.60, s * 0.68, s * 0.15}, col)
+}
+
+build_prompt :: proc(vocab: []string) -> string {
+	joined := strings.join(vocab, " ", context.temp_allocator)
+	return strings.concatenate({"lowercase Odin code identifiers: ", joined})
 }
 
 join_identifier :: proc(parts: []string) -> string {

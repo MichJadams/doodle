@@ -19,8 +19,18 @@ Config :: struct {
 	cli_path:     string, // path to whisper-cli(.exe)
 	model_path:   string, // path to ggml-*.bin
 	grammar_path: string, // optional GBNF grammar ("" = none)
+	prompt:       string, // optional initial prompt (soft bias toward these words)
+	vocabulary:   []string, // known identifiers/keywords; results snap to these
 	tmp_wav:      string,
 	tmp_txt:      string,
+}
+
+// Set per-utterance bias context (call before begin()). `prompt` softly nudges
+// Whisper; `vocabulary` deterministically snaps near-misses (e.g. "maine"->"main").
+set_context :: proc(e: ^Engine, prompt: string, vocabulary: []string) {
+	if e == nil do return
+	e.cfg.prompt = prompt
+	e.cfg.vocabulary = vocabulary
 }
 
 Engine :: struct {
@@ -111,7 +121,69 @@ transcribe_queued :: proc(e: ^Engine) -> string {
 	run_whisper(e.cfg)
 	data, _ := os.read_entire_file(e.cfg.tmp_txt, context.allocator)
 	defer if data != nil do delete(data)
-	return clean_identifier(string(data))
+	res := clean_identifier(string(data))
+	if len(e.cfg.vocabulary) > 0 {
+		snapped := snap_identifier(res, e.cfg.vocabulary)
+		delete(res)
+		return snapped
+	}
+	return res
+}
+
+// Snap each underscore-separated token to the nearest vocabulary word (edit
+// distance <= 1). Leaves novel/short tokens untouched. Caller owns the result.
+@(private)
+snap_identifier :: proc(word: string, vocab: []string) -> string {
+	out: [dynamic]u8
+	start := 0
+	for i := 0; i <= len(word); i += 1 {
+		if i == len(word) || word[i] == '_' {
+			tok := word[start:i]
+			rep := snap_token(tok, vocab)
+			if len(out) > 0 do append(&out, '_')
+			append(&out, ..transmute([]u8)rep)
+			start = i + 1
+		}
+	}
+	return string(out[:])
+}
+
+@(private)
+snap_token :: proc(tok: string, vocab: []string) -> string {
+	if len(tok) < 3 do return tok
+	for v in vocab do if v == tok do return tok // already exact
+	best := tok
+	best_d := 2 // snap only when distance <= 1
+	for v in vocab {
+		d := levenshtein(tok, v)
+		if d < best_d {
+			best_d = d
+			best = v
+		}
+	}
+	return best
+}
+
+@(private)
+levenshtein :: proc(a, b: string) -> int {
+	la, lb := len(a), len(b)
+	if la == 0 do return lb
+	if lb == 0 do return la
+	prev := make([]int, lb + 1, context.temp_allocator)
+	curr := make([]int, lb + 1, context.temp_allocator)
+	for j in 0 ..= lb do prev[j] = j
+	for i in 1 ..= la {
+		curr[0] = i
+		for j in 1 ..= lb {
+			cost := a[i - 1] == b[j - 1] ? 0 : 1
+			m := prev[j] + 1
+			if curr[j - 1] + 1 < m do m = curr[j - 1] + 1
+			if prev[j - 1] + cost < m do m = prev[j - 1] + cost
+			curr[j] = m
+		}
+		copy(prev, curr)
+	}
+	return prev[lb]
 }
 
 // Convenience for a fixed-window one-shot capture (used by the probe).
@@ -142,6 +214,9 @@ run_whisper :: proc(cfg: Config) {
 		cfg.cli_path, cfg.model_path, cfg.tmp_wav)
 	if cfg.grammar_path != "" {
 		fmt.sbprintf(&b, " --grammar \"%s\" --grammar-rule root --grammar-penalty 100", cfg.grammar_path)
+	}
+	if cfg.prompt != "" {
+		fmt.sbprintf(&b, " --prompt \"%s\"", cfg.prompt)
 	}
 	fmt.sbprintf(&b, redirect, cfg.tmp_txt)
 

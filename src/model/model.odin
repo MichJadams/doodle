@@ -254,6 +254,23 @@ set_field_text :: proc(app: ^App, ni, fi: int, text: string) {
 	app.doc.nodes[ni].fields[fi].text = strings.clone(text)
 }
 
+// Common words to bias dictation toward (keywords + frequent identifiers).
+COMMON_WORDS := [?]string{
+	"main", "package", "proc", "struct", "enum", "union", "import", "return",
+	"context", "string", "int", "bool", "true", "false", "append", "make",
+	"delete", "len", "cap", "nil", "defer", "for", "player", "health", "update",
+	"init", "index", "count", "value", "name", "result",
+}
+
+// Vocabulary for STT biasing: common words + identifiers already in the document.
+// Returned slice is allocated (free it); its elements reference existing strings.
+collect_vocab :: proc(app: ^App) -> []string {
+	out: [dynamic]string
+	for w in COMMON_WORDS do append(&out, w)
+	for n in app.doc.nodes do for f in n.fields do if f.editable do append(&out, f.text)
+	return out[:]
+}
+
 doc_reset :: proc(app: ^App) {
 	for &n in app.doc.nodes {
 		for f in n.fields do delete(f.text)
