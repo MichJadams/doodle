@@ -25,16 +25,17 @@ MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder"}
 //   proc_outline       -> inserts a procedure outline (3 nodes)
 //   quit               -> exits the app
 Entry :: struct {
-	label:         string,
-	insert:        string, // literal text (e.g. a comment)
-	import_path:   string, // e.g. "core:fmt" -> inserts import statement
-	keyword:       string, // e.g. "package" -> node = keyword + editable identifier
-	ident_default: string, // default identifier text for keyword leaves
-	proc_outline:  bool,   // inserts procedure outline (3 nodes, 1 editable + 3 slots)
-	platform:      string, // "" = all; else comma list of ODIN_OS names
-	dim:           bool,
-	quit:          bool,
-	children:      []Entry,
+	label:          string,
+	insert:         string, // literal text (e.g. a comment)
+	import_path:    string, // e.g. "core:fmt" -> inserts import statement
+	keyword:        string, // e.g. "package" -> node = keyword + editable identifier
+	ident_default:  string, // default identifier text for keyword leaves
+	proc_outline:   bool,   // inserts procedure outline (3 nodes, 1 editable + 3 slots)
+	type_construct: string, // "" = not a type; else "struct"/"enum"/"union"/"bit_set"/"distinct"/"alias"
+	platform:       string, // "" = all; else comma list of ODIN_OS names
+	dim:            bool,
+	quit:           bool,
+	children:       []Entry,
 }
 
 // A node is a line made of fields. Some fields are editable "slots" (identifiers),
@@ -103,11 +104,19 @@ ensure_menus :: proc(app: ^App) {
 	procedures := make_slice(
 		proc_leaf("Procedure"),
 	)
+	types := make_slice(
+		type_leaf("Struct", "struct"),
+		type_leaf("Enum", "enum"),
+		type_leaf("Union", "union"),
+		type_leaf("Bit set", "bit_set"),
+		type_leaf("Distinct type", "distinct"),
+		type_leaf("Type alias", "alias"),
+	)
 	app.add_menu = make_slice(
 		grp("File Setup", file_setup),
 		grp_dim("Dependencies"),
 		grp("Procedures", procedures),
-		grp_dim("Types"),
+		grp("Types", types),
 		grp_dim("Values"),
 	)
 	app.ide_menu = make_slice(Entry{label = "Exit", quit = true})
@@ -120,6 +129,7 @@ kw_leaf   :: proc(label, keyword, ident: string) -> Entry {
 	return Entry{label = label, keyword = keyword, ident_default = ident}
 }
 proc_leaf :: proc(label: string) -> Entry { return Entry{label = label, proc_outline = true} }
+type_leaf :: proc(label, kind: string) -> Entry { return Entry{label = label, type_construct = kind} }
 
 make_slice :: proc(items: ..Entry) -> []Entry {
 	s := make([]Entry, len(items))
@@ -182,7 +192,7 @@ tnodes_to_entries :: proc(nodes: []^TNode) -> []Entry {
 // ---- Helpers ----
 
 is_leaf :: proc(e: Entry) -> bool {
-	return len(e.children) == 0 && (e.insert != "" || e.import_path != "" || e.keyword != "" || e.proc_outline)
+	return len(e.children) == 0 && (e.insert != "" || e.import_path != "" || e.keyword != "" || e.proc_outline || e.type_construct != "")
 }
 
 // Composed import statement for a leaf (uses the given allocator).
@@ -261,6 +271,84 @@ append_proc_node :: proc(app: ^App, name := "do_thing") {
 	n3: Node
 	append(&n3.fields, Field{strings.clone("}"), false, false})           // closing brace
 	append(&app.doc.nodes, n3)
+}
+
+// Append type declaration nodes (struct/enum/union/bit_set/distinct/alias).
+append_type_node :: proc(app: ^App, kind: string) {
+	switch kind {
+	case "struct":
+		// Line 1: MyType :: struct {
+		n1: Node
+		append(&n1.fields, Field{strings.clone("MyType"), true, false})       // editable name
+		append(&n1.fields, Field{strings.clone(" :: struct {"), false, false}) // fixed
+		append(&app.doc.nodes, n1)
+		// Line 2: <indent><body slot>
+		n2: Node
+		append(&n2.fields, Field{strings.clone("    "), false, false})         // indent
+		append(&n2.fields, Field{"", false, true})                              // body slot
+		append(&app.doc.nodes, n2)
+		// Line 3: }
+		n3: Node
+		append(&n3.fields, Field{strings.clone("}"), false, false})            // closing brace
+		append(&app.doc.nodes, n3)
+
+	case "enum":
+		// Line 1: MyType :: enum {
+		n1: Node
+		append(&n1.fields, Field{strings.clone("MyType"), true, false})       // editable name
+		append(&n1.fields, Field{strings.clone(" :: enum {"), false, false})  // fixed
+		append(&app.doc.nodes, n1)
+		// Line 2: <indent><body slot>
+		n2: Node
+		append(&n2.fields, Field{strings.clone("    "), false, false})         // indent
+		append(&n2.fields, Field{"", false, true})                              // body slot
+		append(&app.doc.nodes, n2)
+		// Line 3: }
+		n3: Node
+		append(&n3.fields, Field{strings.clone("}"), false, false})            // closing brace
+		append(&app.doc.nodes, n3)
+
+	case "union":
+		// Line 1: MyType :: union {
+		n1: Node
+		append(&n1.fields, Field{strings.clone("MyType"), true, false})       // editable name
+		append(&n1.fields, Field{strings.clone(" :: union {"), false, false}) // fixed
+		append(&app.doc.nodes, n1)
+		// Line 2: <indent><body slot>
+		n2: Node
+		append(&n2.fields, Field{strings.clone("    "), false, false})         // indent
+		append(&n2.fields, Field{"", false, true})                              // body slot
+		append(&app.doc.nodes, n2)
+		// Line 3: }
+		n3: Node
+		append(&n3.fields, Field{strings.clone("}"), false, false})            // closing brace
+		append(&app.doc.nodes, n3)
+
+	case "bit_set":
+		// Single line: MyType :: bit_set[•]
+		n: Node
+		append(&n.fields, Field{strings.clone("MyType"), true, false})        // editable name
+		append(&n.fields, Field{strings.clone(" :: bit_set["), false, false}) // fixed
+		append(&n.fields, Field{"", false, true})                               // element type slot
+		append(&n.fields, Field{strings.clone("]"), false, false})             // fixed
+		append(&app.doc.nodes, n)
+
+	case "distinct":
+		// Single line: MyType :: distinct •
+		n: Node
+		append(&n.fields, Field{strings.clone("MyType"), true, false})        // editable name
+		append(&n.fields, Field{strings.clone(" :: distinct "), false, false}) // fixed
+		append(&n.fields, Field{"", false, true})                               // base type slot
+		append(&app.doc.nodes, n)
+
+	case "alias":
+		// Single line: MyType :: •
+		n: Node
+		append(&n.fields, Field{strings.clone("MyType"), true, false})        // editable name
+		append(&n.fields, Field{strings.clone(" :: "), false, false})          // fixed
+		append(&n.fields, Field{"", false, true})                               // type slot
+		append(&app.doc.nodes, n)
+	}
 }
 
 // Count selectable fields (editable identifiers + slots).
@@ -504,6 +592,8 @@ menu_select :: proc(app: ^App) {
 		append_kw_node(app, e.keyword, e.ident_default)
 	} else if e.proc_outline {
 		append_proc_node(app)
+	} else if e.type_construct != "" {
+		append_type_node(app, e.type_construct)
 	} else if e.import_path != "" {
 		node := import_text(e.import_path, context.temp_allocator)
 		append_text_node(app, node)

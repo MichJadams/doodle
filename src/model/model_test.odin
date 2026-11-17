@@ -458,3 +458,232 @@ test_bucketing_for_large_menu :: proc(t: ^testing.T) {
 			"bucket sizes should be roughly equal (within 3)")
 	}
 }
+
+// ---- Type construct tests ----
+
+@(private = "file")
+add_type :: proc(app: ^App, label: string) {
+	confirm(app)                    // Editor: open Add root
+	select_label(app, "Types")      // root: Types -> submenu
+	select_label(app, label)        // submenu: type construct
+}
+
+@(test)
+test_struct_inserts_three_nodes :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Struct")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 3)
+}
+
+@(test)
+test_struct_has_two_selectable_fields :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Struct")
+	// 1 editable name + 1 body slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
+
+@(test)
+test_struct_green_dot_focused_after_insert :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Struct")
+	// green insertion dot focused: editor_line is past the last node
+	testing.expect_value(t, app.editor_line, len(app.doc.nodes))
+	_, _, ok := editor_target(&app)
+	testing.expect(t, !ok, "green dot should be focused right after insert")
+}
+
+@(test)
+test_struct_first_line_text :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Struct")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "MyType"), "struct name should be MyType")
+	testing.expect(t, strings.contains(txt, "struct {"), "should contain struct {")
+}
+
+@(test)
+test_struct_name_editable_body_is_slot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Struct")
+	// Up from green dot -> body slot line (node 1)
+	update(&app, Input{up = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok)
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "body should be a slot")
+	testing.expect(t, !app.doc.nodes[ni].fields[fi].editable, "slot should not be editable")
+
+	// Up again -> name line (node 0), first dot = name
+	update(&app, Input{up = true})
+	ni, fi, ok = editor_target(&app)
+	testing.expect(t, ok)
+	testing.expect(t, app.doc.nodes[ni].fields[fi].editable, "name should be editable")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].text, "MyType")
+}
+
+@(test)
+test_enum_inserts_three_nodes :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Enum")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 3)
+}
+
+@(test)
+test_enum_has_two_selectable_fields :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Enum")
+	// 1 editable name + 1 body slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
+
+@(test)
+test_enum_first_line_text :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Enum")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "MyType"), "enum name should be MyType")
+	testing.expect(t, strings.contains(txt, "enum {"), "should contain enum {")
+}
+
+@(test)
+test_union_inserts_three_nodes :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Union")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 3)
+}
+
+@(test)
+test_union_has_two_selectable_fields :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Union")
+	// 1 editable name + 1 body slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
+
+@(test)
+test_union_first_line_text :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Union")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "MyType"), "union name should be MyType")
+	testing.expect(t, strings.contains(txt, "union {"), "should contain union {")
+}
+
+@(test)
+test_bit_set_inserts_one_node :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Bit set")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+}
+
+@(test)
+test_bit_set_has_two_selectable_fields :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Bit set")
+	// 1 editable name + 1 element type slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
+
+@(test)
+test_bit_set_text :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Bit set")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "MyType"), "bit_set name should be MyType")
+	testing.expect(t, strings.contains(txt, "bit_set["), "should contain bit_set[")
+	testing.expect(t, strings.contains(txt, "]"), "should contain ]")
+}
+
+@(test)
+test_distinct_inserts_one_node :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Distinct type")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+}
+
+@(test)
+test_distinct_has_two_selectable_fields :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Distinct type")
+	// 1 editable name + 1 base type slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
+
+@(test)
+test_distinct_text :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Distinct type")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "MyType"), "distinct name should be MyType")
+	testing.expect(t, strings.contains(txt, "distinct"), "should contain distinct")
+}
+
+@(test)
+test_alias_inserts_one_node :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Type alias")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+}
+
+@(test)
+test_alias_has_two_selectable_fields :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Type alias")
+	// 1 editable name + 1 type slot = 2 selectable
+	testing.expect_value(t, num_editable(&app), 2)
+}
+
+@(test)
+test_alias_text :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Type alias")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "MyType"), "alias name should be MyType")
+	testing.expect(t, strings.contains(txt, "::"), "should contain ::")
+}
