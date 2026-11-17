@@ -142,22 +142,7 @@ test_import_core_navigates_to_leaf :: proc(t: ^testing.T) {
 	testing.expect_value(t, txt, "import \"core:fmt\"")
 }
 
-@(test)
-test_bucketing_large_menu :: proc(t: ^testing.T) {
-	app: App
-	defer cleanup(&app)
-	raw := make([]Entry, 30)
-	defer delete(raw)
-	for i in 0 ..< 30 {
-		raw[i] = Entry{label = fmt.aprintf("a%02d", i), insert = fmt.aprintf("x%02d", i)}
-	}
-	defer for e in raw { delete(e.label); delete(e.insert) }
-	v := make_view(&app, "big", raw)
-	defer free_view(&v)
-	testing.expect(t, len(v.entries) < 30, "large menu should collapse into buckets")
-	testing.expect(t, len(v.entries) >= 2, "should have at least 2 buckets")
-	testing.expect(t, len(v.entries[0].children) > 0, "bucket should contain children")
-}
+
 
 @(test)
 test_usage_first :: proc(t: ^testing.T) {
@@ -235,4 +220,141 @@ tree_contains_path :: proc(entries: []Entry, path: string) -> bool {
 		if tree_contains_path(e.children, path) do return true
 	}
 	return false
+}
+
+// ---- Platform filtering tests ----
+
+@(test)
+test_platform_ok_empty_matches_all :: proc(t: ^testing.T) {
+	app: App
+	app.os_name = "linux"
+	e := Entry{label = "test", platform = ""}
+	testing.expect(t, platform_ok(&app, e), "empty platform should match all OS")
+}
+
+@(test)
+test_platform_ok_exact_match :: proc(t: ^testing.T) {
+	app: App
+	app.os_name = "linux"
+	e := Entry{label = "test", platform = "linux"}
+	testing.expect(t, platform_ok(&app, e), "linux platform should match linux OS")
+}
+
+@(test)
+test_platform_ok_no_match :: proc(t: ^testing.T) {
+	app: App
+	app.os_name = "linux"
+	e := Entry{label = "test", platform = "windows"}
+	testing.expect(t, !platform_ok(&app, e), "windows platform should not match linux OS")
+}
+
+@(test)
+test_platform_ok_comma_list :: proc(t: ^testing.T) {
+	app: App
+	app.os_name = "linux"
+	e := Entry{label = "test", platform = "darwin,freebsd,linux"}
+	testing.expect(t, platform_ok(&app, e), "comma-separated list should match if OS is in list")
+}
+
+@(test)
+test_platform_ok_comma_list_no_match :: proc(t: ^testing.T) {
+	app: App
+	app.os_name = "windows"
+	e := Entry{label = "test", platform = "darwin,freebsd,linux"}
+	testing.expect(t, !platform_ok(&app, e), "comma-separated list should not match if OS not in list")
+}
+
+@(test)
+test_make_view_filters_platforms :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.os_name = "linux"
+	
+	raw := make_slice(
+		imp("linux_only", "core:linux"),
+		imp("windows_only", "core:windows"),
+		imp("all_platforms", "core:fmt"),
+	)
+	raw[0].platform = "linux"
+	raw[1].platform = "windows"
+	raw[2].platform = ""
+	defer delete(raw)
+	
+	v := make_view(&app, "test", raw)
+	defer free_view(&v)
+	
+	// Should have linux_only and all_platforms, but not windows_only
+	testing.expect_value(t, len(v.entries), 2)
+	found_linux := false
+	found_all := false
+	for e in v.entries {
+		if e.label == "linux_only" do found_linux = true
+		if e.label == "all_platforms" do found_all = true
+		if e.label == "windows_only" do testing.fail(t)
+	}
+	testing.expect(t, found_linux, "should include linux-specific entry")
+	testing.expect(t, found_all, "should include all-platform entry")
+}
+
+// ---- Bucketing tests ----
+
+@(test)
+test_no_bucketing_for_small_menu :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	
+	// 10 items - below threshold
+	raw := make([]Entry, 10)
+	defer delete(raw)
+	for i in 0 ..< 10 {
+		raw[i] = Entry{label = fmt.aprintf("item_%02d", i), insert = "x"}
+	}
+	defer for e in raw { delete(e.label) }
+	
+	v := make_view(&app, "small", raw)
+	defer free_view(&v)
+	
+	// Should not create buckets
+	testing.expect_value(t, len(v.entries), 10)
+	testing.expect(t, len(v.entries[0].children) == 0, "no buckets for small menu")
+}
+
+@(test)
+test_bucketing_for_large_menu :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	
+	// 30 items - above threshold (12)
+	raw := make([]Entry, 30)
+	defer delete(raw)
+	for i in 0 ..< 30 {
+		// Use names that sort alphabetically: a00, a01, ..., a29
+		raw[i] = Entry{label = fmt.aprintf("item%02d", i), insert = "x"}
+	}
+	defer for e in raw { delete(e.label) }
+	
+	v := make_view(&app, "large", raw)
+	defer free_view(&v)
+	
+	// Should create buckets (less than 30 entries)
+	testing.expect(t, len(v.entries) < 30, "large menu should be bucketed")
+	testing.expect(t, len(v.entries) >= 2, "should have at least 2 buckets")
+	
+	// First entry should be a bucket (have children)
+	testing.expect(t, len(v.entries[0].children) > 0, "entries should be buckets with children")
+	
+	// Check bucket sizes are roughly equal (within 3 of each other)
+	if len(v.entries) >= 2 {
+		min_size := 999
+		max_size := 0
+		for e in v.entries {
+			if len(e.children) > 0 {
+				size := len(e.children)
+				if size < min_size do min_size = size
+				if size > max_size do max_size = size
+			}
+		}
+		testing.expect(t, max_size - min_size <= 3, 
+			"bucket sizes should be roughly equal (within 3)")
+	}
 }

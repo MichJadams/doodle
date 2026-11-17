@@ -37,11 +37,71 @@ def non_test(files):
     return [f for f in files if not f.endswith("_test.odin")]
 
 
-def parse_platform(folder, files):
+def platform_from_path(rel):
+    """Infer platform from path (e.g., sys/windows -> windows)."""
+    if not rel:
+        return ""
+    parts = rel.split("/")
+    # sys/<os> directories
+    if len(parts) >= 2 and parts[0] == "sys":
+        os_dir = parts[1]
+        if os_dir == "windows":
+            return "windows"
+        elif os_dir == "linux":
+            return "linux"
+        elif os_dir == "darwin":
+            return "darwin"
+        elif os_dir == "freebsd":
+            return "freebsd"
+        elif os_dir == "openbsd":
+            return "openbsd"
+        elif os_dir == "netbsd":
+            return "netbsd"
+        elif os_dir == "haiku":
+            return "haiku"
+        elif os_dir == "android":
+            return "android"
+        elif os_dir == "wasm":
+            # wasm/js or wasm/wasi
+            if len(parts) >= 3:
+                if parts[2] == "js":
+                    return "js"
+                elif parts[2] == "wasi":
+                    return "wasi"
+            return ""  # wasm root is not OS-specific by itself
+        elif os_dir in {"posix", "unix"}:
+            # POSIX/Unix apply to multiple platforms
+            return "linux,darwin,freebsd,openbsd,netbsd"
+        elif os_dir == "kqueue":
+            # kqueue is available on BSD systems + macOS
+            return "darwin,freebsd,netbsd,openbsd"
+        elif os_dir == "valgrind":
+            # valgrind is primarily Linux, but also some BSDs
+            return "linux,freebsd"
+    return ""
+
+
+def parse_platform(folder, files, rel=""):
     """Approximate allowed-OS set. '' means builds everywhere."""
     nt = non_test(files)
     if not nt:
         return ""
+    
+    # Check path-based platform first
+    path_platform = platform_from_path(rel)
+    
+    # For sys/* directories, path-based detection is authoritative
+    # (many sys/* packages have broader #+build tags than their directory suggests)
+    if path_platform and rel.startswith("sys/"):
+        path_parts = rel.split("/")
+        # For specific OS directories under sys/, prefer the path
+        if len(path_parts) >= 2 and path_parts[1] in {"windows", "linux", "darwin", "freebsd", 
+                                                         "openbsd", "netbsd", "haiku", "android"}:
+            return path_platform
+        # For wasm subdirs (js, wasi), also prefer path
+        if len(path_parts) >= 3 and path_parts[1] == "wasm" and path_parts[2] in {"js", "wasi"}:
+            return path_platform
+    
     allowed = set()
     any_unconstrained = False
     for f in nt:
@@ -65,9 +125,17 @@ def parse_platform(folder, files):
             pass
         if not constrained:
             any_unconstrained = True
-    if any_unconstrained or not allowed:
-        return ""
-    return ",".join(sorted(allowed))
+    
+    # If we have #+build constraints, use them (unless path override above applied)
+    if allowed and not any_unconstrained:
+        return ",".join(sorted(allowed))
+    
+    # If path-based detection found something, use it
+    if path_platform:
+        return path_platform
+    
+    # Otherwise unconstrained (builds everywhere)
+    return ""
 
 
 def parse_imports(folder, files):
@@ -107,7 +175,7 @@ def scan(folder, rel):
     files = odin_files(folder)
     nt = non_test(files)
     node.importable = len(nt) > 0
-    node.platform = parse_platform(folder, files)
+    node.platform = parse_platform(folder, files, rel)
     if files:
         imps = parse_imports(folder, files)
         myid = "core:" + rel
