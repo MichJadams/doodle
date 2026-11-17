@@ -2,14 +2,17 @@
 REM Olympus IDE build script (Windows)
 REM Usage: build.bat [run|test|release]
 
-setlocal
+setlocal enabledelayedexpansion
 set SRC=src\app
 set OUT=bin\olympus.exe
 
 if not exist bin mkdir bin
 
+REM Copy the SDL2 runtime DLL next to the exe (from the active Odin install).
+for /f "delims=" %%i in ('odin root') do set "ODIN_ROOT=%%i"
+if not exist bin\SDL2.dll copy /Y "!ODIN_ROOT!vendor\sdl2\SDL2.dll" bin\ >nul
+
 if "%1"=="test" (
-    REM Run package tests (expand as packages gain *_test.odin files)
     odin test src\buffer
     odin test src\input
     goto :eof
