@@ -35,6 +35,7 @@ Entry :: struct {
 	platform:       string, // "" = all; else comma list of ODIN_OS names
 	dim:            bool,
 	quit:           bool,
+	alias:          bool,   // if true, navigating this group sets import_alias mode
 	children:       []Entry,
 }
 
@@ -78,6 +79,7 @@ App :: struct {
 	want_quit:      bool,
 	editor_line:    int, // index into doc.nodes; == len(nodes) => green insertion dot focused
 	editor_field:   int, // selectable-field index within the current line (left/right)
+	import_alias:   bool, // set when navigating aliased import tree
 
 	add_menu: []Entry, // built lazily per-app (no globals -> test-safe)
 	ide_menu: []Entry,
@@ -100,9 +102,10 @@ ensure_menus :: proc(app: ^App) {
 		leaf("File tags", "#+build linux"),
 		leaf("Comments", "// comment"),
 	)
+	aliased_import_src := make_slice(grp("core", core))
 	dependencies := make_slice(
 		grp("Import", import_src),
-		leaf("Aliased import", "import str \"core:strings\""),
+		Entry{label = "Aliased import", alias = true, children = aliased_import_src},
 		leaf("Foreign import", "foreign import libc \"system:c\""),
 		leaf("Foreign block", "foreign libc { }"),
 	)
@@ -251,6 +254,33 @@ append_kw_node :: proc(app: ^App, keyword, ident: string) {
 	append(&n.fields, Field{strings.concatenate({keyword, " "}), false, false})
 	append(&n.fields, Field{strings.clone(ident), true, false})
 	append(&app.doc.nodes, n)
+}
+
+// Append an aliased import: `import <alias> "<path>"` with editable alias.
+append_aliased_import_node :: proc(app: ^App, path: string) {
+	n: Node
+	append(&n.fields, Field{strings.clone("import "), false, false})
+	append(&n.fields, Field{strings.clone(alias_default(path)), true, false})
+	append(&n.fields, Field{strings.concatenate({" \"", path, "\""}), false, false})
+	append(&app.doc.nodes, n)
+}
+
+// Extract the default alias from an import path (the last segment).
+alias_default :: proc(path: string) -> string {
+	// Find the last '/' or the ':' if no '/'.
+	last_slash := -1
+	for i := len(path) - 1; i >= 0; i -= 1 {
+		if path[i] == '/' {
+			last_slash = i
+			break
+		}
+	}
+	if last_slash >= 0 do return path[last_slash + 1:]
+	// No '/', so look for ':'
+	for i := len(path) - 1; i >= 0; i -= 1 {
+		if path[i] == ':' do return path[i + 1:]
+	}
+	return path
 }
 
 // Append a procedure outline (3 nodes: signature, body indent, closing brace).
@@ -563,6 +593,7 @@ clear_nav :: proc(app: ^App) {
 open_add_menu :: proc(app: ^App) {
 	ensure_menus(app)
 	clear_nav(app)
+	app.import_alias = false
 	app.return_state = .Editor
 	app.state = .Radial
 	push_menu(app, "Add  (insertion point)", app.add_menu)
@@ -590,6 +621,7 @@ menu_select :: proc(app: ^App) {
 		return
 	}
 	if len(e.children) > 0 {
+		if e.alias do app.import_alias = true
 		push_menu(app, e.label, e.children)
 		return
 	}
@@ -600,9 +632,14 @@ menu_select :: proc(app: ^App) {
 	} else if e.type_construct != "" {
 		append_type_node(app, e.type_construct)
 	} else if e.import_path != "" {
-		node := import_text(e.import_path, context.temp_allocator)
-		append_text_node(app, node)
+		if app.import_alias {
+			append_aliased_import_node(app, e.import_path)
+		} else {
+			node := import_text(e.import_path, context.temp_allocator)
+			append_text_node(app, node)
+		}
 		record_recent(app, e.import_path)
+		app.import_alias = false
 	} else if e.insert != "" {
 		append_text_node(app, e.insert)
 	} else {

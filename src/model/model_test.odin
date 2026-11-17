@@ -176,12 +176,83 @@ test_dependencies_contains_import_and_aliased :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, found_import, "Dependencies should contain Import")
-	// Test Aliased import leaf
+}
+
+@(test)
+test_aliased_import_inserts_with_editable_alias :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.os_name = "windows"
+	app.state = .Editor
+	confirm(&app)                 // Add root
+	select_label(&app, "Dependencies")
 	select_label(&app, "Aliased import")
+	select_label(&app, "core")
+	drill_to_path(&app, "core:fmt")
 	testing.expect_value(t, app.state, State.Editor)
 	testing.expect_value(t, len(app.doc.nodes), 1)
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect_value(t, txt, "import str \"core:strings\"")
+	testing.expect_value(t, txt, "import fmt \"core:fmt\"")
+	// Check that the second field (alias) is editable
+	testing.expect_value(t, len(app.doc.nodes[0].fields), 3)
+	testing.expect_value(t, app.doc.nodes[0].fields[1].editable, true)
+	testing.expect_value(t, app.doc.nodes[0].fields[1].text, "fmt")
+}
+
+@(test)
+test_aliased_import_alias_can_be_edited :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.os_name = "windows"
+	app.state = .Editor
+	confirm(&app)                 // Add root
+	select_label(&app, "Dependencies")
+	select_label(&app, "Aliased import")
+	select_label(&app, "core")
+	drill_to_path(&app, "core:fmt")
+	// Navigate to the alias field and edit it
+	update(&app, Input{up = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should have selected the alias field")
+	set_field_text(&app, ni, fi, "f")
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect_value(t, txt, "import f \"core:fmt\"")
+}
+
+@(test)
+test_plain_import_still_works :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.os_name = "windows"
+	app.state = .Editor
+	confirm(&app)                 // Add root
+	select_label(&app, "Dependencies")
+	select_label(&app, "Import")
+	select_label(&app, "core")
+	drill_to_path(&app, "core:fmt")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect_value(t, txt, "import \"core:fmt\"")
+}
+
+@(test)
+test_alias_default_extracts_last_segment :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.os_name = "windows"
+	app.state = .Editor
+	confirm(&app)                 // Add root
+	select_label(&app, "Dependencies")
+	select_label(&app, "Aliased import")
+	select_label(&app, "core")
+	// Navigate to sys/windows if reachable
+	drill_to_path(&app, "core:sys/windows")
+	if len(app.doc.nodes) == 1 {
+		txt := node_text(app.doc.nodes[0], context.temp_allocator)
+		testing.expect_value(t, txt, "import windows \"core:sys/windows\"")
+		testing.expect_value(t, app.doc.nodes[0].fields[1].text, "windows")
+	}
 }
 
 
