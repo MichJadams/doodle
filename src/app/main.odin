@@ -133,22 +133,35 @@ main :: proc() {
 			inp.confirm = false; inp.cancel = false
 			inp.up = false; inp.down = false; inp.left = false; inp.right = false
 		}
-		// LT+A edits the currently selected item.
-		if inp.lt_held && raw.e_a && m.state == .Editor {
-			model.edit_selected(&m)
-			raw.e_a = false // consume the edge
+		
+		// --- FILE NAVIGATION MODE: RT+B toggles file-nav overlay ---
+		if inp.rt_held && raw.e_b && !g_filenav && m.state == .Editor {
+			filenav_enter()
+			raw.e_b = false
 		}
-		// LT+B deletes the currently selected item.
-		if inp.lt_held && raw.e_b && m.state == .Editor {
-			model.delete_selected(&m)
-			raw.e_b = false // consume the edge
+		
+		// Route input to file-nav handler when active (suppresses normal editor input).
+		if g_filenav {
+			handle_filenav(&m, &raw, inp)
+			// Suppress model.update for editor navigation while in file-nav mode.
+		} else {
+			// LT+A edits the currently selected item.
+			if inp.lt_held && raw.e_a && m.state == .Editor {
+				model.edit_selected(&m)
+				raw.e_a = false // consume the edge
+			}
+			// LT+B deletes the currently selected item.
+			if inp.lt_held && raw.e_b && m.state == .Editor {
+				model.delete_selected(&m)
+				raw.e_b = false // consume the edge
+			}
+			// RT+Y saves the current project.
+			if inp.rt_held && raw.e_y && m.state == .Editor {
+				save_current(&m)
+				raw.e_y = false // consume the edge
+			}
+			model.update(&m, inp)
 		}
-		// RT+Y saves the current project.
-		if inp.rt_held && raw.e_y && m.state == .Editor {
-			save_current(&m)
-			raw.e_y = false // consume the edge
-		}
-		model.update(&m, inp)
 
 		// New Project: when transitioning from Menu to Editor with an empty doc,
 		// set up a random project name and folder.
@@ -208,6 +221,8 @@ main :: proc() {
 			draw_menu(r, font, &m, w, h)
 		case .Editor:
 			draw_editor(r, font, &m, w, h)
+			// FILE NAVIGATION MODE: draw overlay after editor.
+			if g_filenav do draw_filenav(r, w, h)
 		case .Radial:
 			draw_editor(r, font, &m, w, h)
 			draw_radial(r, &m, w, h)
@@ -323,6 +338,7 @@ face_glyph :: proc(m: ^model.App, bank: int, face: FaceBtn) -> string {
 	if bank == 0 && face == .A do return "e" // LT + A = edit
 	if bank == 0 && face == .B do return "x" // LT + B = delete
 	if bank == 2 && face == .Y do return "S" // RT + Y = save
+	if bank == 2 && face == .B do return "F" // RT + B = files (file-nav mode)
 	if bank == 1 { // middle bank = default (no trigger) context
 		switch face {
 		case .A: return "+" // select / confirm
