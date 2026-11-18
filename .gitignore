@@ -30,3 +30,5 @@ Thumbs.db
 # STT: cloned whisper.cpp + large models/binaries (recreate via tools/stt/setup_whisper.sh)
 /third_party/
 bin/_stt_*
+DoodleProjects/
+test_project_temp/
