@@ -14,7 +14,8 @@ State :: enum { Menu, Editor, Radial }
 GRID_COLS        :: 8
 BUCKET_THRESHOLD :: 12
 BUCKET_TARGET    :: 9
-PAGE             :: 12  // Max items per menu level before grouping
+PAGE             :: 12  // Alpha-bucket page size
+FLAT_MAX         :: 60  // Show a group flat (scrollable) up to this size; only split beyond it
 MIN_PREFIX_SHARE :: 3   // Min procs sharing a prefix to form a group
 
 MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder"}
@@ -1354,7 +1355,7 @@ build_import_proc_menu :: proc(app: ^App, ref: string, path: string) -> []Entry 
 // Applies rules 2-6: file grouping, block grouping, prefix splitting, alpha buckets, flat list.
 build_proc_hierarchy :: proc(ref: string, procs: []CoreProc) -> []Entry {
 	if len(procs) == 0 do return nil
-	if len(procs) <= PAGE {
+	if len(procs) <= FLAT_MAX {
 		// Rule 6: Small enough, return flat sorted leaves
 		return build_flat_leaves(ref, procs)
 	}
@@ -1398,7 +1399,7 @@ build_proc_hierarchy :: proc(ref: string, procs: []CoreProc) -> []Entry {
 // Applies rules 3-6: block grouping, prefix splitting, alpha buckets, flat list.
 build_file_children :: proc(ref: string, procs: []CoreProc) -> []Entry {
 	if len(procs) == 0 do return nil
-	if len(procs) <= PAGE do return build_flat_leaves(ref, procs)
+	if len(procs) <= FLAT_MAX do return build_flat_leaves(ref, procs)
 	
 	// Rule 3: Group by foreign block
 	block_groups := group_by_block(procs)
@@ -1456,7 +1457,7 @@ build_file_children :: proc(ref: string, procs: []CoreProc) -> []Entry {
 // Applies rules 4-6: prefix splitting, alpha buckets, flat list.
 build_block_children :: proc(ref: string, procs: []CoreProc) -> []Entry {
 	if len(procs) == 0 do return nil
-	if len(procs) <= PAGE do return build_flat_leaves(ref, procs)
+	if len(procs) <= FLAT_MAX do return build_flat_leaves(ref, procs)
 	
 	// Rule 4: Split by name prefix
 	prefix_groups := find_prefix_groups(procs)
@@ -1474,7 +1475,7 @@ build_block_children :: proc(ref: string, procs: []CoreProc) -> []Entry {
 		for prefix, prefix_procs in prefix_groups {
 			// Build exactly one representation (don't build-then-discard -> leak).
 			prefix_children: []Entry
-			if len(prefix_procs) > PAGE {
+			if len(prefix_procs) > FLAT_MAX {
 				prefix_children = build_alpha_buckets(ref, prefix_procs[:])
 			} else {
 				prefix_children = build_flat_leaves(ref, prefix_procs[:])
@@ -1534,7 +1535,7 @@ build_flat_leaves :: proc(ref: string, procs: []CoreProc) -> []Entry {
 
 // Build alphabetical bucket submenus for a large list of procedures.
 build_alpha_buckets :: proc(ref: string, procs: []CoreProc) -> []Entry {
-	if len(procs) <= PAGE do return build_flat_leaves(ref, procs)
+	if len(procs) <= FLAT_MAX do return build_flat_leaves(ref, procs)
 	
 	// Sort by name
 	sorted := make([dynamic]CoreProc, len(procs))
@@ -1604,7 +1605,7 @@ group_by_block :: proc(procs: []CoreProc) -> map[string][dynamic]CoreProc {
 // Only includes prefixes shared by >= MIN_PREFIX_SHARE procedures.
 // Excludes procedures that don't belong to any qualifying prefix group.
 find_prefix_groups :: proc(procs: []CoreProc) -> map[string][dynamic]CoreProc {
-	if len(procs) <= PAGE do return nil
+	if len(procs) <= FLAT_MAX do return nil
 	
 	// Count prefix occurrences
 	prefix_counts: map[string]int
