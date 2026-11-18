@@ -959,6 +959,191 @@ make_call_import :: proc(app: ^App, ni, fi: int, pkg_name: string) {
 	inject_at(&app.doc.nodes, ni + 1, new_body)
 }
 
+// Transform a body slot into a jump/cleanup statement.
+make_jump_statement :: proc(app: ^App, ni, fi: int, kind: string) {
+	fields := &app.doc.nodes[ni].fields
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	switch kind {
+	case "__jmp_return__": // return •
+		f1 := Field{strings.clone("return "), false, false, ""} // fixed
+		f2 := Field{"", false, true, "value"}                     // value slot
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+	case "__jmp_break__": // break
+		f1 := Field{strings.clone("break"), false, false, ""} // fixed
+		inject_at(fields, fi, f1)
+		
+	case "__jmp_continue__": // continue
+		f1 := Field{strings.clone("continue"), false, false, ""} // fixed
+		inject_at(fields, fi, f1)
+		
+	case "__jmp_fallthrough__": // fallthrough
+		f1 := Field{strings.clone("fallthrough"), false, false, ""} // fixed
+		inject_at(fields, fi, f1)
+		
+	case "__jmp_defer__": // defer •
+		f1 := Field{strings.clone("defer "), false, false, ""} // fixed
+		f2 := Field{"", false, true, "value"}                    // value slot
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+	}
+	
+	// Insert a new body slot line after the current node
+	new_body: Node
+	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
+	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+	inject_at(&app.doc.nodes, ni + 1, new_body)
+}
+
+// Transform a body slot into an error handling statement.
+make_error_statement :: proc(app: ^App, ni, fi: int, kind: string) {
+	fields := &app.doc.nodes[ni].fields
+	// Get current indent from the body slot line
+	indent := ""
+	if len(fields^) > 0 && !fields[0].slot {
+		indent = fields[0].text
+	}
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	switch kind {
+	case "__err_orreturn__": // • or_return
+		f1 := Field{"", false, true, "value"}                      // expr slot
+		f2 := Field{strings.clone(" or_return"), false, false, ""} // fixed
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Insert a new body slot line after the current node
+		new_body: Node
+		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		inject_at(&app.doc.nodes, ni + 1, new_body)
+		
+	case "__err_orelse__": // • or_else •
+		f1 := Field{"", false, true, "value"}                      // first expr slot
+		f2 := Field{strings.clone(" or_else "), false, false, ""} // fixed
+		f3 := Field{"", false, true, "value"}                      // second expr slot
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Insert a new body slot line after the current node
+		new_body: Node
+		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		inject_at(&app.doc.nodes, ni + 1, new_body)
+		
+	case "__err_iferr__": // Multi-line: if • != nil { / indented body / }
+		// Header line: if • != nil {
+		f1 := Field{strings.clone("if "), false, false, ""}    // fixed
+		f2 := Field{"", false, true, "value"}                    // err expr slot
+		f3 := Field{strings.clone(" != nil {"), false, false, ""} // fixed
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Inner body slot line (indented)
+		inner_indent := strings.concatenate({indent, "    "})
+		n2: Node
+		append(&n2.fields, Field{inner_indent, false, false, ""})
+		append(&n2.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n2)
+		
+		// Closing brace line
+		n3: Node
+		append(&n3.fields, Field{strings.clone(indent), false, false, ""}) // indent
+		append(&n3.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n3)
+		
+		// Trailing continuation body slot line
+		new_body: Node
+		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		inject_at(&app.doc.nodes, ni + 3, new_body)
+	}
+}
+
+// Transform a body slot into a scope/block statement.
+make_scope_statement :: proc(app: ^App, ni, fi: int, kind: string) {
+	fields := &app.doc.nodes[ni].fields
+	// Get current indent from the body slot line
+	indent := ""
+	if len(fields^) > 0 && !fields[0].slot {
+		indent = fields[0].text
+	}
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	switch kind {
+	case "__scope_block__": // Multi-line: { / indented body / }
+		// Header line: {
+		f1 := Field{strings.clone("{"), false, false, ""} // fixed
+		inject_at(fields, fi, f1)
+		
+		// Inner body slot line (indented)
+		inner_indent := strings.concatenate({indent, "    "})
+		n2: Node
+		append(&n2.fields, Field{inner_indent, false, false, ""})
+		append(&n2.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n2)
+		
+		// Closing brace line
+		n3: Node
+		append(&n3.fields, Field{strings.clone(indent), false, false, ""}) // indent
+		append(&n3.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n3)
+		
+		// Trailing continuation body slot line
+		new_body: Node
+		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		inject_at(&app.doc.nodes, ni + 3, new_body)
+		
+	case "__scope_using__": // using •
+		f1 := Field{strings.clone("using "), false, false, ""} // fixed
+		f2 := Field{"", false, true, "value"}                     // value slot
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Insert a new body slot line after the current node
+		new_body: Node
+		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		inject_at(&app.doc.nodes, ni + 1, new_body)
+		
+	case "__scope_label__": // Multi-line: ‹label›: { / indented body / }
+		// Header line: label: {
+		label_name := generate_ident(app)
+		defer delete(label_name)
+		f1 := Field{strings.clone(label_name), true, false, ""} // editable label
+		f2 := Field{strings.clone(": {"), false, false, ""}    // fixed
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Inner body slot line (indented)
+		inner_indent := strings.concatenate({indent, "    "})
+		n2: Node
+		append(&n2.fields, Field{inner_indent, false, false, ""})
+		append(&n2.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n2)
+		
+		// Closing brace line
+		n3: Node
+		append(&n3.fields, Field{strings.clone(indent), false, false, ""}) // indent
+		append(&n3.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n3)
+		
+		// Trailing continuation body slot line
+		new_body: Node
+		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		inject_at(&app.doc.nodes, ni + 3, new_body)
+	}
+}
+
 // Open the slot filling menu.
 open_slot_menu :: proc(app: ^App) {
 	ni, fi, ok := editor_target(app)
@@ -1043,19 +1228,33 @@ open_slot_menu :: proc(app: ^App) {
 		calls_children := make([]Entry, len(call_entries))
 		copy(calls_children, call_entries[:])
 		
-		// Branching category
 		branching := make_slice(
 			Entry{label = "If", fill = "__br_if__"},
 			Entry{label = "If / Else", fill = "__br_ifelse__"},
 			Entry{label = "Switch", fill = "__br_switch__"},
 			Entry{label = "When", fill = "__br_when__"},
 		)
-		
-		// Loops category
 		loops := make_slice(
 			Entry{label = "For (condition)", fill = "__loop_for__"},
 			Entry{label = "For ... in", fill = "__loop_forin__"},
 			Entry{label = "For (infinite)", fill = "__loop_forinf__"},
+		)
+		jumps := make_slice(
+			Entry{label = "Return", fill = "__jmp_return__"},
+			Entry{label = "Break", fill = "__jmp_break__"},
+			Entry{label = "Continue", fill = "__jmp_continue__"},
+			Entry{label = "Fallthrough", fill = "__jmp_fallthrough__"},
+			Entry{label = "Defer", fill = "__jmp_defer__"},
+		)
+		errors := make_slice(
+			Entry{label = "or_return", fill = "__err_orreturn__"},
+			Entry{label = "or_else", fill = "__err_orelse__"},
+			Entry{label = "if err != nil", fill = "__err_iferr__"},
+		)
+		scopes := make_slice(
+			Entry{label = "Block", fill = "__scope_block__"},
+			Entry{label = "Using", fill = "__scope_using__"},
+			Entry{label = "Labeled block", fill = "__scope_label__"},
 		)
 		
 		app.slot_menu = make_slice(
@@ -1064,9 +1263,9 @@ open_slot_menu :: proc(app: ^App) {
 			grp("Calls", calls_children),
 			grp("Branching", branching),
 			grp("Loops", loops),
-			grp_dim("Jumps and cleanup"),
-			grp_dim("Error handling"),
-			grp_dim("Scope and blocks"),
+			grp("Jumps and cleanup", jumps),
+			grp("Error handling", errors),
+			grp("Scope and blocks", scopes),
 		)
 	} else {
 		// Generic Type/Variable menu for other slots
@@ -1492,6 +1691,12 @@ menu_select :: proc(app: ^App) {
 			make_branch_statement(app, app.slot_ni, app.slot_fi, e.fill)
 		} else if e.fill == "__loop_for__" || e.fill == "__loop_forin__" || e.fill == "__loop_forinf__" {
 			make_loop_statement(app, app.slot_ni, app.slot_fi, e.fill)
+		} else if e.fill == "__jmp_return__" || e.fill == "__jmp_break__" || e.fill == "__jmp_continue__" || e.fill == "__jmp_fallthrough__" || e.fill == "__jmp_defer__" {
+			make_jump_statement(app, app.slot_ni, app.slot_fi, e.fill)
+		} else if e.fill == "__err_orreturn__" || e.fill == "__err_orelse__" || e.fill == "__err_iferr__" {
+			make_error_statement(app, app.slot_ni, app.slot_fi, e.fill)
+		} else if e.fill == "__scope_block__" || e.fill == "__scope_using__" || e.fill == "__scope_label__" {
+			make_scope_statement(app, app.slot_ni, app.slot_fi, e.fill)
 		} else {
 			set_slot_type(app, app.slot_ni, app.slot_fi, e.fill)
 		}

@@ -1930,6 +1930,7 @@ test_delete_focused_construct_removes_whole_proc :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(txt, "package"), "package should remain")
 }
 
+
 // ---- Branching and Loops tests ----
 
 @(test)
@@ -2153,4 +2154,334 @@ test_block_has_trailing_body_slot :: proc(t: ^testing.T) {
 		if found_trailing_body do break
 	}
 	testing.expect(t, found_trailing_body, "should have trailing body slot after block for adding more statements")
+}
+
+
+// ---- Tests for Jumps and Cleanup, Error Handling, and Scope and Blocks ----
+
+@(test)
+test_body_menu_has_jumps_category :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to the body slot
+	update(&app, Input{up = true}) // focus body slot
+	confirm(&app) // open slot menu
+	testing.expect_value(t, app.state, State.Radial)
+	// Check that "Jumps and cleanup" is present and not dim
+	v := current_view(&app)
+	found := false
+	for e in v.entries {
+		if e.label == "Jumps and cleanup" {
+			found = true
+			testing.expect(t, !e.dim, "Jumps and cleanup should not be dim")
+			break
+		}
+	}
+	testing.expect(t, found, "Jumps and cleanup category should exist")
+}
+
+@(test)
+test_body_menu_has_error_handling_category :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	v := current_view(&app)
+	found := false
+	for e in v.entries {
+		if e.label == "Error handling" {
+			found = true
+			testing.expect(t, !e.dim, "Error handling should not be dim")
+			break
+		}
+	}
+	testing.expect(t, found, "Error handling category should exist")
+}
+
+@(test)
+test_body_menu_has_scope_category :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	v := current_view(&app)
+	found := false
+	for e in v.entries {
+		if e.label == "Scope and blocks" {
+			found = true
+			testing.expect(t, !e.dim, "Scope and blocks should not be dim")
+			break
+		}
+	}
+	testing.expect(t, found, "Scope and blocks category should exist")
+}
+
+@(test)
+test_jump_return_inserts_return_with_slot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true}) // body slot
+	confirm(&app) // open slot menu
+	select_label(&app, "Jumps and cleanup")
+	select_label(&app, "Return")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check the body line
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "return"), "should contain 'return'")
+	// Should have a value slot
+	has_value_slot := false
+	for f in app.doc.nodes[1].fields {
+		if f.slot && f.kind == "value" {
+			has_value_slot = true
+			break
+		}
+	}
+	testing.expect(t, has_value_slot, "return should have a value slot")
+}
+
+@(test)
+test_jump_break_inserts_break :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Jumps and cleanup")
+	select_label(&app, "Break")
+	testing.expect_value(t, app.state, State.Editor)
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "break"), "should contain 'break'")
+}
+
+@(test)
+test_jump_continue_inserts_continue :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Jumps and cleanup")
+	select_label(&app, "Continue")
+	testing.expect_value(t, app.state, State.Editor)
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "continue"), "should contain 'continue'")
+}
+
+@(test)
+test_jump_fallthrough_inserts_fallthrough :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Jumps and cleanup")
+	select_label(&app, "Fallthrough")
+	testing.expect_value(t, app.state, State.Editor)
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "fallthrough"), "should contain 'fallthrough'")
+}
+
+@(test)
+test_jump_defer_inserts_defer_with_slot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Jumps and cleanup")
+	select_label(&app, "Defer")
+	testing.expect_value(t, app.state, State.Editor)
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "defer"), "should contain 'defer'")
+	// Should have a value slot
+	has_value_slot := false
+	for f in app.doc.nodes[1].fields {
+		if f.slot && f.kind == "value" {
+			has_value_slot = true
+			break
+		}
+	}
+	testing.expect(t, has_value_slot, "defer should have a value slot")
+}
+
+@(test)
+test_error_or_return_inserts_or_return :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Error handling")
+	select_label(&app, "or_return")
+	testing.expect_value(t, app.state, State.Editor)
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "or_return"), "should contain 'or_return'")
+}
+
+@(test)
+test_error_or_else_inserts_or_else :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Error handling")
+	select_label(&app, "or_else")
+	testing.expect_value(t, app.state, State.Editor)
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "or_else"), "should contain 'or_else'")
+}
+
+@(test)
+test_error_if_err_inserts_multiline :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Error handling")
+	select_label(&app, "if err != nil")
+	testing.expect_value(t, app.state, State.Editor)
+	// Header line should contain "if" and "!= nil" and "{"
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "if"), "header should contain 'if'")
+	testing.expect(t, strings.contains(txt, "!= nil"), "header should contain '!= nil'")
+	testing.expect(t, strings.contains(txt, "{"), "header should contain '{'")
+	// Should have an inner body slot line
+	has_body_slot := false
+	for f in app.doc.nodes[2].fields {
+		if f.slot && f.kind == "body" {
+			has_body_slot = true
+			break
+		}
+	}
+	testing.expect(t, has_body_slot, "should have inner body slot")
+	// Should have closing brace
+	txt3 := node_text(app.doc.nodes[3], context.temp_allocator)
+	testing.expect(t, strings.contains(txt3, "}"), "should have closing brace")
+}
+
+@(test)
+test_scope_block_inserts_multiline :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Scope and blocks")
+	select_label(&app, "Block")
+	testing.expect_value(t, app.state, State.Editor)
+	// First line should contain "{"
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "{"), "should contain '{'")
+	// Should have an inner body slot line
+	has_body_slot := false
+	for f in app.doc.nodes[2].fields {
+		if f.slot && f.kind == "body" {
+			has_body_slot = true
+			break
+		}
+	}
+	testing.expect(t, has_body_slot, "should have inner body slot")
+	// Should have closing brace
+	txt3 := node_text(app.doc.nodes[3], context.temp_allocator)
+	testing.expect(t, strings.contains(txt3, "}"), "should have closing brace")
+}
+
+@(test)
+test_scope_using_inserts_using :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Scope and blocks")
+	select_label(&app, "Using")
+	testing.expect_value(t, app.state, State.Editor)
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "using"), "should contain 'using'")
+}
+
+@(test)
+test_scope_labeled_block_inserts_label :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Scope and blocks")
+	select_label(&app, "Labeled block")
+	testing.expect_value(t, app.state, State.Editor)
+	// Header line should have an editable label field and ": {"
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, ": {"), "header should contain ': {'")
+	// Should have an editable field (the label)
+	has_editable := false
+	for f in app.doc.nodes[1].fields {
+		if f.editable {
+			has_editable = true
+			break
+		}
+	}
+	testing.expect(t, has_editable, "should have an editable label field")
+}
+
+@(test)
+test_all_jump_statements_add_continuation_body_slot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Jumps and cleanup")
+	select_label(&app, "Break")
+	// After inserting break, there should be a trailing body slot line
+	has_body_slot := false
+	for f in app.doc.nodes[2].fields {
+		if f.slot && f.kind == "body" {
+			has_body_slot = true
+			break
+		}
+	}
+	testing.expect(t, has_body_slot, "should have continuation body slot after break")
+}
+
+@(test)
+test_error_or_return_adds_continuation_body_slot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Error handling")
+	select_label(&app, "or_return")
+	// After inserting or_return, there should be a trailing body slot line
+	has_body_slot := false
+	for f in app.doc.nodes[2].fields {
+		if f.slot && f.kind == "body" {
+			has_body_slot = true
+			break
+		}
+	}
+	testing.expect(t, has_body_slot, "should have continuation body slot after or_return")
 }
