@@ -12,6 +12,7 @@ import "../stt"
 import "core:math"
 import "core:fmt"
 import "core:strings"
+import "core:os"
 
 WINDOW_W :: 1280
 WINDOW_H :: 800 // Steam Deck native resolution
@@ -105,6 +106,11 @@ main :: proc() {
 	events: [dynamic]platform.Event
 	defer delete(events)
 
+	// Initialize project directories on startup.
+	ensure_projects_dir()
+
+	prev_state := m.state // Track state transitions for new project setup.
+
 	for !m.want_quit {
 		g_time = platform.now_seconds()
 		reset_edges(&raw)
@@ -137,7 +143,19 @@ main :: proc() {
 			model.delete_selected(&m)
 			raw.e_b = false // consume the edge
 		}
+		// RT+Y saves the current project.
+		if inp.rt_held && raw.e_y && m.state == .Editor {
+			save_current(&m)
+			raw.e_y = false // consume the edge
+		}
 		model.update(&m, inp)
+
+		// New Project: when transitioning from Menu to Editor with an empty doc,
+		// set up a random project name and folder.
+		if prev_state == .Menu && m.state == .Editor && len(m.doc.nodes) == 0 {
+			new_project_setup()
+		}
+		prev_state = m.state
 
 		// Mic is available only when an editable field is highlighted.
 		tni, tfi, has_target := model.editor_target(&m)
@@ -304,6 +322,7 @@ face_glyph :: proc(m: ^model.App, bank: int, face: FaceBtn) -> string {
 	if bank == 0 && face == .X do return "" // LT + X = talk: drawn as a mic icon, no letter
 	if bank == 0 && face == .A do return "e" // LT + A = edit
 	if bank == 0 && face == .B do return "x" // LT + B = delete
+	if bank == 2 && face == .Y do return "S" // RT + Y = save
 	if bank == 1 { // middle bank = default (no trigger) context
 		switch face {
 		case .A: return "+" // select / confirm
