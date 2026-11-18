@@ -3381,3 +3381,116 @@ test_edit_selected_type_field :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.replace_fi, 4)
 }
 
+// ---- Parse Tests ----
+
+@(test)
+test_parse_round_trip :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	
+	// Source with various line types
+	src := "package main\n\nimport \"core:fmt\"\n\nmain :: proc() {\n\tfmt.println(\"hello\")\n}"
+	
+	doc_from_source(&app, src)
+	
+	// Round-trip: serialize back and compare
+	result := doc_to_source(&app, context.temp_allocator)
+	testing.expect_value(t, result, src)
+}
+
+@(test)
+test_parse_package_line :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	
+	src := "package main"
+	doc_from_source(&app, src)
+	
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	node := app.doc.nodes[0]
+	
+	// Should have two fields
+	testing.expect_value(t, len(node.fields), 2)
+	
+	// First field: fixed "package "
+	testing.expect_value(t, node.fields[0].text, "package ")
+	testing.expect_value(t, node.fields[0].editable, false)
+	
+	// Second field: editable "main"
+	testing.expect_value(t, node.fields[1].text, "main")
+	testing.expect_value(t, node.fields[1].editable, true)
+}
+
+@(test)
+test_parse_top_level_declaration :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	
+	src := "foo :: proc() {"
+	doc_from_source(&app, src)
+	
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	node := app.doc.nodes[0]
+	
+	// Should have two fields
+	testing.expect_value(t, len(node.fields), 2)
+	
+	// First field: editable "foo"
+	testing.expect_value(t, node.fields[0].text, "foo")
+	testing.expect_value(t, node.fields[0].editable, true)
+	
+	// Second field: fixed " :: proc() {"
+	testing.expect_value(t, node.fields[1].text, " :: proc() {")
+	testing.expect_value(t, node.fields[1].editable, false)
+}
+
+@(test)
+test_load_file_nonexistent :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	
+	// Try to load a file that doesn't exist
+	ok := load_file(&app, "nonexistent_file_12345.odin")
+	testing.expect_value(t, ok, false)
+}
+
+@(test)
+test_parse_various_lines :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	
+	// Test imports, comments, indented lines, closing braces
+	src := "import \"core:fmt\"\n// comment\n\tfmt.println()\n}"
+	doc_from_source(&app, src)
+	
+	testing.expect_value(t, len(app.doc.nodes), 4)
+	
+	// All should be single fixed fields
+	for node, i in app.doc.nodes {
+		testing.expect_value(t, len(node.fields), 1)
+		testing.expect_value(t, node.fields[0].editable, false)
+	}
+	
+	// Verify exact text
+	testing.expect_value(t, app.doc.nodes[0].fields[0].text, "import \"core:fmt\"")
+	testing.expect_value(t, app.doc.nodes[1].fields[0].text, "// comment")
+	testing.expect_value(t, app.doc.nodes[2].fields[0].text, "\tfmt.println()")
+	testing.expect_value(t, app.doc.nodes[3].fields[0].text, "}")
+}
+
+@(test)
+test_parse_trailing_newline :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	
+	// Source with trailing newline
+	src := "package main\n"
+	doc_from_source(&app, src)
+	
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	
+	// Round-trip should produce src without the trailing newline
+	result := doc_to_source(&app, context.temp_allocator)
+	testing.expect_value(t, result, "package main")
+}
+
