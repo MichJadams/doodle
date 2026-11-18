@@ -76,6 +76,16 @@ load_run_cmds :: proc() {
 		}
 		append(&g_run_cmds, cmd)
 	}
+	
+	// If no commands were loaded, seed with default
+	ensure_default_run()
+}
+
+// ensure_default_run seeds a default favorite command if the list is empty.
+ensure_default_run :: proc() {
+	if len(g_run_cmds) == 0 {
+		append(&g_run_cmds, Run_Cmd{strings.clone("odin run ."), true})
+	}
 }
 
 // save_run_cmds writes run commands to disk.
@@ -104,7 +114,7 @@ save_run_cmds :: proc() {
 
 // --- Running commands ---
 
-// run_command executes a command with cwd = g_project_dir.
+// run_command executes a command with cwd = g_project_dir in a visible console window.
 run_command :: proc(cmd: string) {
 	if cmd == "" do return
 	
@@ -114,8 +124,10 @@ run_command :: proc(cmd: string) {
 		dir = "."
 	}
 	
-	// Build the command string: cmd /c "cd /d <dir> && <cmd>"
-	full_cmd := fmt.tprintf("cmd /c \"cd /d %s && %s\"", dir, cmd)
+	// Build command to open a new visible console that stays open:
+	// cmd /c start "Doodle Run" cmd /k "cd /d <dir> && <cmd>"
+	// /k keeps the console open after the command finishes
+	full_cmd := fmt.tprintf("cmd /c start \"Doodle Run\" cmd /k \"cd /d %s && %s\"", dir, cmd)
 	
 	// Convert to C string and execute
 	cstr := strings.clone_to_cstring(full_cmd, context.temp_allocator)
@@ -130,6 +142,7 @@ run_command :: proc(cmd: string) {
 // run_favorite runs the command marked as favorite.
 run_favorite :: proc() {
 	load_run_cmds()
+	ensure_default_run()
 	
 	for cmd in g_run_cmds {
 		if cmd.favorite {
@@ -138,7 +151,7 @@ run_favorite :: proc() {
 		}
 	}
 	
-	// No favorite found
+	// No favorite found (shouldn't happen with ensure_default_run)
 	if g_run_msg != "" do delete(g_run_msg)
 	g_run_msg = strings.clone("No favorite command set")
 	g_run_msg_time = g_time

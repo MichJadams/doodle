@@ -3381,3 +3381,94 @@ test_edit_selected_type_field :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.replace_fi, 4)
 }
 
+// --- Serialization tests ---
+
+@(test)
+test_serialize_empty_proc :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	
+	// Add package main and an empty procedure
+	append_kw_node(&app, "package", "main")
+	append_proc_node(&app)
+	
+	// Serialize to source
+	source := doc_to_source(&app)
+	defer delete(source)
+	
+	// Should contain valid package declaration
+	testing.expect(t, strings.contains(source, "package main"), "should contain package main")
+	
+	// Should contain valid proc declaration with no params or return
+	testing.expect(t, strings.contains(source, "main :: proc() {"), "should contain 'main :: proc() {'" )
+	
+	// Should contain closing brace
+	testing.expect(t, strings.contains(source, "}"), "should contain closing brace")
+	
+	// Should NOT contain malformed syntax
+	testing.expect(t, !strings.contains(source, "->"), "should NOT contain ->")
+	testing.expect(t, !strings.contains(source, "( )"), "should NOT contain '( )'")
+	testing.expect(t, !strings.contains(source, "(  )"), "should NOT contain '(  )'")
+}
+
+@(test)
+test_serialize_proc_with_return :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	
+	// Add package and procedure
+	append_kw_node(&app, "package", "main")
+	append_proc_node(&app)
+	
+	// Fill the return type slot (node 1 is proc header, field 4 is the return type slot)
+	set_slot_type(&app, 1, 4, "int")
+	
+	// Serialize
+	source := doc_to_source(&app)
+	defer delete(source)
+	
+	// Should preserve the return type
+	testing.expect(t, strings.contains(source, "-> int"), "should contain '-> int' for filled return type")
+	testing.expect(t, strings.contains(source, "main :: proc() -> int {"), "should have full proc signature")
+}
+
+@(test)
+test_fixup_line_empty_params :: proc(t: ^testing.T) {
+	// Test normalizing empty parameters
+	input1 := "main :: proc(  ) -> {}"
+	result1 := fixup_line(input1, context.temp_allocator)
+	testing.expect(t, strings.contains(result1, "()"), "should normalize (  ) to ()")
+	
+	input2 := "foo :: proc( ) {}"
+	result2 := fixup_line(input2, context.temp_allocator)
+	testing.expect(t, strings.contains(result2, "()"), "should normalize ( ) to ()")
+}
+
+@(test)
+test_fixup_line_drop_arrow :: proc(t: ^testing.T) {
+	// Test dropping -> before { when empty
+	input := "main :: proc() ->  {"
+	result := fixup_line(input, context.temp_allocator)
+	testing.expect(t, !strings.contains(result, "->"), "should drop -> before {")
+	testing.expect(t, strings.contains(result, "main :: proc() {"), "should have valid proc signature")
+}
+
+@(test)
+test_fixup_line_preserve_filled_return :: proc(t: ^testing.T) {
+	// Test that filled return types are preserved
+	input := "foo :: proc() -> int {"
+	result := fixup_line(input, context.temp_allocator)
+	testing.expect(t, strings.contains(result, "-> int"), "should preserve -> int")
+}
+
+@(test)
+test_fixup_line_trim_trailing :: proc(t: ^testing.T) {
+	// Test trailing space removal
+	input := "package main   "
+	result := fixup_line(input, context.temp_allocator)
+	testing.expect(t, !strings.has_suffix(result, " "), "should trim trailing spaces")
+	testing.expect_value(t, result, "package main")
+}
+
