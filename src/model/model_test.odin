@@ -1068,3 +1068,150 @@ test_user_defined_type_in_menu :: proc(t: ^testing.T) {
 	update(&app, Input{cancel = true})
 	testing.expect_value(t, app.state, State.Editor)
 }
+
+// ---- Param slot filling tests ----
+
+@(test)
+test_params_slot_opens_param_menu :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to signature line
+	update(&app, Input{up = true}) // to body slot
+	update(&app, Input{up = true}) // to signature line (name field)
+	// Navigate right to params slot
+	update(&app, Input{right = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should be on a field")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be on params slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "params")
+	// Confirm to open menu
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	v := current_view(&app)
+	// Check for "Add parameter" entry
+	found := false
+	for e in v.entries {
+		if e.label == "Add parameter" {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "params menu should contain 'Add parameter'")
+	// Cancel back
+	update(&app, Input{cancel = true})
+	testing.expect_value(t, app.state, State.Editor)
+}
+
+@(test)
+test_add_parameter_transforms_slot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to params slot
+	update(&app, Input{up = true})
+	update(&app, Input{up = true})
+	update(&app, Input{right = true})
+	// Confirm and select "Add parameter"
+	update(&app, Input{confirm = true})
+	select_label(&app, "Add parameter")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check the signature line now contains "param: "
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "param"), "should contain param name")
+	testing.expect(t, strings.contains(txt, ": "), "should contain colon separator")
+	// Verify fields: should have editable "param", fixed ": ", type slot, fixed ", ", params slot
+	ni := 0
+	found_param := false
+	found_separator := false
+	found_type_slot := false
+	found_comma := false
+	found_params_slot := false
+	for f in app.doc.nodes[ni].fields {
+		if f.text == "param" && f.editable && !f.slot {
+			found_param = true
+		}
+		if f.text == ": " && !f.editable && !f.slot {
+			found_separator = true
+		}
+		if f.text == "" && !f.editable && f.slot && f.kind == "type" {
+			found_type_slot = true
+		}
+		if f.text == ", " && !f.editable && !f.slot {
+			found_comma = true
+		}
+		if f.text == "" && !f.editable && f.slot && f.kind == "params" {
+			found_params_slot = true
+		}
+	}
+	testing.expect(t, found_param, "should have editable param field")
+	testing.expect(t, found_separator, "should have : separator")
+	testing.expect(t, found_type_slot, "should have type slot")
+	testing.expect(t, found_comma, "should have comma separator")
+	testing.expect(t, found_params_slot, "should have trailing params slot")
+}
+
+@(test)
+test_param_type_slot_fills_with_int :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to params slot and add parameter
+	update(&app, Input{up = true})
+	update(&app, Input{up = true})
+	update(&app, Input{right = true})
+	update(&app, Input{confirm = true})
+	select_label(&app, "Add parameter")
+	// Now navigate to the type slot (right from param name)
+	update(&app, Input{right = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should be on type slot")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "type")
+	// Fill with int
+	update(&app, Input{confirm = true})
+	select_label(&app, "Type")
+	select_label(&app, "int")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check the signature contains "param: int"
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "param: int"), "should contain 'param: int'")
+}
+
+@(test)
+test_add_second_parameter :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to params slot and add first parameter
+	update(&app, Input{up = true})
+	update(&app, Input{up = true})
+	update(&app, Input{right = true})
+	update(&app, Input{confirm = true})
+	select_label(&app, "Add parameter")
+	// Navigate to the trailing params slot (right twice from param name: once to type, once more to trailing params)
+	update(&app, Input{right = true}) // to type slot
+	update(&app, Input{right = true}) // to trailing params slot
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should be on trailing params slot")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "params")
+	// Add second parameter
+	update(&app, Input{confirm = true})
+	select_label(&app, "Add parameter")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check the signature contains two "param" names and two ": " patterns
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	// Count occurrences of ": "
+	colon_count := 0
+	for i := 0; i < len(txt) - 1; i += 1 {
+		if txt[i] == ':' && txt[i+1] == ' ' {
+			colon_count += 1
+		}
+	}
+	testing.expect(t, colon_count >= 2, "should have at least 2 ': ' patterns (for two params)")
+}
