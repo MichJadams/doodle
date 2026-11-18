@@ -336,6 +336,17 @@ tree_contains_path :: proc(entries: []Entry, path: string) -> bool {
 	return false
 }
 
+@(private = "file")
+num_editable :: proc(app: ^App) -> int {
+	count := 0
+	for n in app.doc.nodes {
+		for f in n.fields {
+			if f.editable || f.slot do count += 1
+		}
+	}
+	return count
+}
+
 // ---- Procedure construct tests ----
 
 @(private = "file")
@@ -3210,3 +3221,163 @@ test_value_literal_rune :: proc(t: ^testing.T) {
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
 	testing.expect(t, strings.contains(txt, "''"), "rune uses single quotes")
 }
+
+// ---- Feature A: doc_insert and insertion points tests ----
+
+@(test)
+test_doc_insert_at_position :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	
+	// Add a package line
+	add_package(&app)
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	
+	// Insert at position 0 (before the package line)
+	app.insert_at = 0
+	n: Node
+	append(&n.fields, Field{strings.clone("// comment"), false, false, ""})
+	doc_insert(&app, n)
+	
+	testing.expect_value(t, len(app.doc.nodes), 2)
+	txt0 := node_text(app.doc.nodes[0], context.temp_allocator)
+	txt1 := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect_value(t, txt0, "// comment")
+	testing.expect_value(t, txt1, "package main")
+	testing.expect_value(t, app.insert_at, 1) // insert_at incremented
+}
+
+@(test)
+test_construct_insertion_at_chosen_position :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	
+	// Add package first
+	app.insert_at = 0
+	append_kw_node(&app, "package", "main")
+	
+	// Add a proc at the end
+	app.insert_at = len(app.doc.nodes)
+	append_proc_node(&app)
+	testing.expect_value(t, len(app.doc.nodes), 4) // package + 3 proc lines
+	
+	// Now insert a type between them
+	app.insert_at = 1 // after package, before proc
+	append_type_node(&app, "struct")
+	testing.expect_value(t, len(app.doc.nodes), 7) // package + 3 struct + 3 proc
+	
+	// Verify order
+	txt0 := node_text(app.doc.nodes[0], context.temp_allocator)
+	txt1 := node_text(app.doc.nodes[1], context.temp_allocator)
+	txt4 := node_text(app.doc.nodes[4], context.temp_allocator)
+	
+	testing.expect_value(t, txt0, "package main")
+	testing.expect(t, strings.contains(txt1, "struct"), "struct should be after package")
+	testing.expect(t, strings.contains(txt4, "proc"), "proc should be after struct")
+}
+
+// ---- Feature C: delete_selected tests ----
+
+@(test)
+test_delete_selected_single_import :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	
+	// Add package and two imports
+	add_package(&app)
+	app.insert_at = len(app.doc.nodes)
+	append_text_node(&app, "import \"core:fmt\"")
+	app.insert_at = len(app.doc.nodes)
+	append_text_node(&app, "import \"core:os\"")
+	
+	testing.expect_value(t, len(app.doc.nodes), 3)
+	
+	// Focus the first import and delete it
+	app.editor_line = 1
+	delete_selected(&app)
+	
+	testing.expect_value(t, len(app.doc.nodes), 2)
+	txt1 := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect_value(t, txt1, "import \"core:os\"")
+}
+
+@(test)
+test_delete_selected_proc_body_line :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	
+	// Add a proc
+	app.insert_at = 0
+	append_proc_node(&app)
+	
+	// Fill the body slot with a statement
+	app.slot_ni = 1
+	app.slot_fi = 1
+	make_body_statement(&app, 1, 1, "__stmt_decl__")
+	
+	initial_count := len(app.doc.nodes)
+	testing.expect(t, initial_count > 3, "should have proc + body statements")
+	
+	// Delete the body statement line
+	app.editor_line = 1
+	delete_selected(&app)
+	
+	testing.expect(t, len(app.doc.nodes) < initial_count, "body line should be deleted")
+}
+
+@(test)
+test_delete_selected_block_header_deletes_whole_block :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	
+	// Add a proc (3 nodes: header, body, closing brace)
+	app.insert_at = 0
+	append_proc_node(&app)
+	testing.expect_value(t, len(app.doc.nodes), 3)
+	
+	// Delete from the header line (contains '{')
+	app.editor_line = 0
+	delete_selected(&app)
+	
+	testing.expect_value(t, len(app.doc.nodes), 0)
+}
+
+// ---- Feature B: edit_selected tests ----
+
+@(test)
+test_edit_selected_type_field :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	
+	// Add a proc
+	app.insert_at = 0
+	append_proc_node(&app)
+	
+	// Fill the return type slot with "int"
+	set_slot_type(&app, 0, 4, "int")
+	
+	// Verify it was tagged with kind "type"
+	testing.expect_value(t, app.doc.nodes[0].fields[4].kind, "type")
+	
+	// Focus the return type field
+	app.editor_line = 0
+	app.editor_field = 0 // first selectable (the proc name)
+	update(&app, Input{right = true}) // move to params slot
+	update(&app, Input{right = true}) // move to return type
+	
+	// Call edit_selected
+	edit_selected(&app)
+	
+	// Should have opened a menu
+	testing.expect_value(t, app.state, State.Radial)
+	testing.expect(t, app.replacing, "should be in replacing mode")
+	testing.expect_value(t, app.replace_ni, 0)
+	testing.expect_value(t, app.replace_fi, 4)
+}
+

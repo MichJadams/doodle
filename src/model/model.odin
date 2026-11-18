@@ -132,6 +132,10 @@ App :: struct {
 	editor_line:    int, // index into doc.nodes; == len(nodes) => green insertion dot focused
 	editor_field:   int, // selectable-field index within the current line (left/right)
 	import_alias:   bool, // set when navigating aliased import tree
+	insert_at:      int, // node index where new constructs are inserted (0=top, len=bottom)
+	replacing:      bool, // if true, menu selection replaces the current item instead of inserting
+	replace_ni:     int,     // node index being replaced
+	replace_fi:     int,     // field index being replaced
 
 	add_menu: []Entry, // built lazily per-app (no globals -> test-safe)
 	ide_menu: []Entry,
@@ -314,11 +318,19 @@ record_recent :: proc(app: ^App, path: string) {
 	inject_at(&app.recent_imports, 0, path)
 }
 
+// Insert a node at app.insert_at and increment insert_at.
+doc_insert :: proc(app: ^App, n: Node) {
+	if app.insert_at < 0 do app.insert_at = 0
+	if app.insert_at > len(app.doc.nodes) do app.insert_at = len(app.doc.nodes)
+	inject_at(&app.doc.nodes, app.insert_at, n)
+	app.insert_at += 1
+}
+
 // Append a single fixed (non-editable) line node.
 append_text_node :: proc(app: ^App, text: string) {
 	n: Node
 	append(&n.fields, Field{strings.clone(text), false, false, ""})
-	append(&app.doc.nodes, n)
+	doc_insert(app, n)
 }
 
 // Append `keyword <editable ident>` (e.g. package main).
@@ -326,7 +338,7 @@ append_kw_node :: proc(app: ^App, keyword, ident: string) {
 	n: Node
 	append(&n.fields, Field{strings.concatenate({keyword, " "}), false, false, ""})
 	append(&n.fields, Field{strings.clone(ident), true, false, ""})
-	append(&app.doc.nodes, n)
+	doc_insert(app, n)
 }
 
 // Append an aliased import: `import <alias> "<path>"` with editable alias.
@@ -335,7 +347,7 @@ append_aliased_import_node :: proc(app: ^App, path: string) {
 	append(&n.fields, Field{strings.clone("import "), false, false, ""})
 	append(&n.fields, Field{strings.clone(alias_default(path)), true, false, ""})
 	append(&n.fields, Field{strings.concatenate({" \"", path, "\""}), false, false, ""})
-	append(&app.doc.nodes, n)
+	doc_insert(app, n)
 }
 
 // Extract the default alias from an import path (the last segment).
@@ -388,18 +400,18 @@ append_proc_node :: proc(app: ^App, name := "") {
 	append(&n1.fields, Field{strings.clone(" ) -> "), false, false, ""}) // fixed
 	append(&n1.fields, Field{"", false, true, "type"})                    // return slot
 	append(&n1.fields, Field{strings.clone(" {"), false, false, ""})     // fixed
-	append(&app.doc.nodes, n1)
+	doc_insert(app, n1)
 
 	// Line 2: <indent><body>
 	n2: Node
 	append(&n2.fields, Field{strings.clone("    "), false, false, ""})   // indent
 	append(&n2.fields, Field{"", false, true, "body"})                    // body slot
-	append(&app.doc.nodes, n2)
+	doc_insert(app, n2)
 
 	// Line 3: }
 	n3: Node
 	append(&n3.fields, Field{strings.clone("}"), false, false, ""})      // closing brace
-	append(&app.doc.nodes, n3)
+	doc_insert(app, n3)
 }
 
 // Append type declaration nodes (struct/enum/union/bit_set/distinct/alias).
@@ -412,48 +424,48 @@ append_type_node :: proc(app: ^App, kind: string) {
 		n1: Node
 		append(&n1.fields, Field{strings.clone(type_name), true, false, ""})       // editable name
 		append(&n1.fields, Field{strings.clone(" :: struct {"), false, false, ""}) // fixed
-		append(&app.doc.nodes, n1)
+		doc_insert(app, n1)
 		// Line 2: <indent><body slot>
 		n2: Node
 		append(&n2.fields, Field{strings.clone("    "), false, false, ""})         // indent
 		append(&n2.fields, Field{"", false, true, "body"})                         // body slot
-		append(&app.doc.nodes, n2)
+		doc_insert(app, n2)
 		// Line 3: }
 		n3: Node
 		append(&n3.fields, Field{strings.clone("}"), false, false, ""})            // closing brace
-		append(&app.doc.nodes, n3)
+		doc_insert(app, n3)
 
 	case "enum":
 		// Line 1: <type_name> :: enum {
 		n1: Node
 		append(&n1.fields, Field{strings.clone(type_name), true, false, ""})       // editable name
 		append(&n1.fields, Field{strings.clone(" :: enum {"), false, false, ""})  // fixed
-		append(&app.doc.nodes, n1)
+		doc_insert(app, n1)
 		// Line 2: <indent><body slot>
 		n2: Node
 		append(&n2.fields, Field{strings.clone("    "), false, false, ""})         // indent
 		append(&n2.fields, Field{"", false, true, "body"})                         // body slot
-		append(&app.doc.nodes, n2)
+		doc_insert(app, n2)
 		// Line 3: }
 		n3: Node
 		append(&n3.fields, Field{strings.clone("}"), false, false, ""})            // closing brace
-		append(&app.doc.nodes, n3)
+		doc_insert(app, n3)
 
 	case "union":
 		// Line 1: <type_name> :: union {
 		n1: Node
 		append(&n1.fields, Field{strings.clone(type_name), true, false, ""})       // editable name
 		append(&n1.fields, Field{strings.clone(" :: union {"), false, false, ""}) // fixed
-		append(&app.doc.nodes, n1)
+		doc_insert(app, n1)
 		// Line 2: <indent><body slot>
 		n2: Node
 		append(&n2.fields, Field{strings.clone("    "), false, false, ""})         // indent
 		append(&n2.fields, Field{"", false, true, "body"})                         // body slot
-		append(&app.doc.nodes, n2)
+		doc_insert(app, n2)
 		// Line 3: }
 		n3: Node
 		append(&n3.fields, Field{strings.clone("}"), false, false, ""})            // closing brace
-		append(&app.doc.nodes, n3)
+		doc_insert(app, n3)
 
 	case "bit_set":
 		// Single line: <type_name> :: bit_set[•]
@@ -462,7 +474,7 @@ append_type_node :: proc(app: ^App, kind: string) {
 		append(&n.fields, Field{strings.clone(" :: bit_set["), false, false, ""}) // fixed
 		append(&n.fields, Field{"", false, true, "type"})                          // element type slot
 		append(&n.fields, Field{strings.clone("]"), false, false, ""})             // fixed
-		append(&app.doc.nodes, n)
+		doc_insert(app, n)
 
 	case "distinct":
 		// Single line: <type_name> :: distinct •
@@ -470,7 +482,7 @@ append_type_node :: proc(app: ^App, kind: string) {
 		append(&n.fields, Field{strings.clone(type_name), true, false, ""})        // editable name
 		append(&n.fields, Field{strings.clone(" :: distinct "), false, false, ""}) // fixed
 		append(&n.fields, Field{"", false, true, "type"})                          // base type slot
-		append(&app.doc.nodes, n)
+		doc_insert(app, n)
 
 	case "alias":
 		// Single line: <type_name> :: •
@@ -478,7 +490,7 @@ append_type_node :: proc(app: ^App, kind: string) {
 		append(&n.fields, Field{strings.clone(type_name), true, false, ""})        // editable name
 		append(&n.fields, Field{strings.clone(" :: "), false, false, ""})          // fixed
 		append(&n.fields, Field{"", false, true, "type"})                          // type slot
-		append(&app.doc.nodes, n)
+		doc_insert(app, n)
 	}
 }
 
@@ -492,7 +504,7 @@ append_value_node :: proc(app: ^App, kind: string) {
 		append(&n.fields, Field{strings.clone(const_name), true, false, ""})    // editable name
 		append(&n.fields, Field{strings.clone(" :: "), false, false, ""})      // fixed
 		append(&n.fields, Field{"", false, true, "value"})                     // value slot
-		append(&app.doc.nodes, n)
+		doc_insert(app, n)
 
 	case "typed_const":
 		// Single line: <const_name> : • : •
@@ -504,7 +516,7 @@ append_value_node :: proc(app: ^App, kind: string) {
 		append(&n.fields, Field{"", false, true, "type"})                      // type slot
 		append(&n.fields, Field{strings.clone(" : "), false, false, ""})       // fixed
 		append(&n.fields, Field{"", false, true, "value"})                     // value slot
-		append(&app.doc.nodes, n)
+		doc_insert(app, n)
 
 	case "config":
 		// Single line: <const_name> :: #config(<const_name>, •)
@@ -517,7 +529,7 @@ append_value_node :: proc(app: ^App, kind: string) {
 		append(&n.fields, Field{strings.clone(config_text), false, false, ""}) // fixed
 		append(&n.fields, Field{"", false, true, "value"})                     // default value slot
 		append(&n.fields, Field{strings.clone(")"), false, false, ""})         // fixed
-		append(&app.doc.nodes, n)
+		doc_insert(app, n)
 
 	case "global_typed":
 		// Single line: <var_name>: •
@@ -527,7 +539,7 @@ append_value_node :: proc(app: ^App, kind: string) {
 		append(&n.fields, Field{strings.clone(var_name), true, false, ""})     // editable name
 		append(&n.fields, Field{strings.clone(": "), false, false, ""})        // fixed
 		append(&n.fields, Field{"", false, true, "type"})                      // type slot
-		append(&app.doc.nodes, n)
+		doc_insert(app, n)
 
 	case "global_init":
 		// Single line: <var_name> := •
@@ -537,7 +549,7 @@ append_value_node :: proc(app: ^App, kind: string) {
 		append(&n.fields, Field{strings.clone(var_name), true, false, ""})     // editable name
 		append(&n.fields, Field{strings.clone(" := "), false, false, ""})      // fixed
 		append(&n.fields, Field{"", false, true, "value"})                     // value slot
-		append(&app.doc.nodes, n)
+		doc_insert(app, n)
 	}
 }
 
@@ -772,7 +784,7 @@ set_slot_type :: proc(app: ^App, ni, fi: int, type_name: string) {
 	if len(app.doc.nodes[ni].fields[fi].text) > 0 {
 		delete(app.doc.nodes[ni].fields[fi].text)
 	}
-	app.doc.nodes[ni].fields[fi] = Field{strings.clone(type_name), true, false, ""}
+	app.doc.nodes[ni].fields[fi] = Field{strings.clone(type_name), true, false, "type"}
 }
 
 // Fill a value slot with a literal value.
@@ -2262,6 +2274,116 @@ delete_construct :: proc(app: ^App, start, end_param: int) {
 	clamp_field(app)
 }
 
+// Delete the currently highlighted item (LT+B). Pragmatic rule: if the cursor is on a
+// top-level single-node statement, delete that node; if on a body-statement line, delete
+// just that line; if the line is a block header (contains '{'), delete the whole block.
+delete_selected :: proc(app: ^App) {
+	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return
+	
+	// If the line contains '{', it's a block header -> delete the whole block
+	txt := node_text(app.doc.nodes[app.editor_line], context.temp_allocator)
+	if strings.contains(txt, "{") {
+		s, e := construct_range(app, app.editor_line)
+		delete_construct(app, s, e)
+		return
+	}
+	
+	// Otherwise delete just this single node
+	for f in app.doc.nodes[app.editor_line].fields {
+		if len(f.text) > 0 do delete(f.text)
+	}
+	delete(app.doc.nodes[app.editor_line].fields)
+	ordered_remove(&app.doc.nodes, app.editor_line)
+	
+	// Clamp editor position
+	app.editor_line = min(app.editor_line, len(app.doc.nodes))
+	app.editor_field = 0
+	clamp_field(app)
+}
+
+// Edit the currently selected item (LT+A). Reopen the menu that created it for replacement.
+edit_selected :: proc(app: ^App) {
+	ni, fi, ok := editor_target(app)
+	if !ok do return
+	
+	field := &app.doc.nodes[ni].fields[fi]
+	
+	// Case 1: Type field -> reopen Type menu
+	if field.kind == "type" && !field.slot {
+		// Save the target for replacement
+		app.replacing = true
+		app.replace_ni = ni
+		app.replace_fi = fi
+		// Open the Type slot menu
+		app.slot_ni = ni
+		app.slot_fi = fi
+		open_type_menu_for_edit(app)
+		return
+	}
+	
+	// Case 2: Import node -> reopen Dependencies > Import menu
+	txt := node_text(app.doc.nodes[ni], context.temp_allocator)
+	if strings.has_prefix(txt, "import ") {
+		// Save the target for replacement
+		app.replacing = true
+		app.replace_ni = ni
+		app.replace_fi = -1 // whole node replacement
+		// Open the import menu
+		ensure_menus(app)
+		clear_nav(app)
+		app.import_alias = false
+		app.return_state = .Editor
+		app.state = .Radial
+		push_menu(app, "Edit import", app.add_menu)
+		// Navigate to Dependencies -> Import
+		v := current_view(app)
+		for e, i in v.entries {
+			if e.label == "Dependencies" {
+				v.index = i
+				break
+			}
+		}
+		return
+	}
+	
+	// Case 3: Editable identifier -> no-op (dictation handles it)
+}
+
+// Open the type menu for editing a type field
+open_type_menu_for_edit :: proc(app: ^App) {
+	ensure_menus(app)
+	app.return_state = .Editor
+	app.state = .Radial
+	
+	// Build type menu
+	type_entries: [dynamic]Entry
+	defer delete(type_entries)
+	
+	// Basic Odin types
+	basic_types := [?]string{
+		"int", "i8", "i16", "i32", "i64",
+		"u8", "u16", "u32", "u64", "uint", "uintptr",
+		"f32", "f64",
+		"bool", "string", "cstring", "rune", "byte", "rawptr",
+	}
+	for t in basic_types {
+		append(&type_entries, fill_leaf(t, t))
+	}
+	
+	// User-defined types
+	user_types := collect_user_types(app)
+	defer delete(user_types)
+	for t in user_types {
+		append(&type_entries, fill_leaf(t, t))
+	}
+	
+	type_children := make([]Entry, len(type_entries))
+	copy(type_children, type_entries[:])
+	
+	app.slot_menu = make_slice(Entry{label = "Type", children = type_children})
+	push_menu(app, "Edit Type", app.slot_menu)
+}
+
 // Common words to bias dictation toward (keywords + frequent identifiers).
 COMMON_WORDS := [?]string{
 	"main", "package", "proc", "struct", "enum", "union", "import", "return",
@@ -2386,6 +2508,15 @@ open_add_menu :: proc(app: ^App) {
 	ensure_menus(app)
 	clear_nav(app)
 	app.import_alias = false
+	// Set insert_at based on current editor position
+	if app.editor_line >= len(app.doc.nodes) {
+		// Green dot at the bottom
+		app.insert_at = len(app.doc.nodes)
+	} else {
+		// Insert after the current construct
+		_, e := construct_range(app, app.editor_line)
+		app.insert_at = e + 1
+	}
 	app.return_state = .Editor
 	app.state = .Radial
 	push_menu(app, "Add  (insertion point)", app.add_menu)
@@ -2436,6 +2567,33 @@ menu_select :: proc(app: ^App) {
 	} else if e.value_construct != "" {
 		append_value_node(app, e.value_construct)
 	} else if e.import_path != "" {
+		// Handle replacement mode (from edit_selected)
+		if app.replacing && app.replace_fi < 0 {
+			// Replace the entire import node
+			ni := app.replace_ni
+			// Free the old node
+			for f in app.doc.nodes[ni].fields {
+				if len(f.text) > 0 do delete(f.text)
+			}
+			delete(app.doc.nodes[ni].fields)
+			// Build the new import node
+			n: Node
+			if app.import_alias {
+				append(&n.fields, Field{strings.clone("import "), false, false, ""})
+				append(&n.fields, Field{strings.clone(alias_default(e.import_path)), true, false, ""})
+				append(&n.fields, Field{strings.concatenate({" \"", e.import_path, "\""}), false, false, ""})
+			} else {
+				node_txt := import_text(e.import_path, context.temp_allocator)
+				append(&n.fields, Field{strings.clone(node_txt), false, false, ""})
+			}
+			app.doc.nodes[ni] = n
+			record_recent(app, e.import_path)
+			app.import_alias = false
+			app.replacing = false
+			clear_nav(app)
+			app.state = app.return_state
+			return
+		}
 		if app.import_alias {
 			append_aliased_import_node(app, e.import_path)
 		} else {
@@ -2447,6 +2605,25 @@ menu_select :: proc(app: ^App) {
 	} else if e.insert != "" {
 		append_text_node(app, e.insert)
 	} else if e.fill != "" {
+		// Handle replacement mode (from edit_selected)
+		if app.replacing {
+			if app.replace_fi >= 0 {
+				// Replace a field (e.g. a type)
+				if len(app.doc.nodes[app.replace_ni].fields[app.replace_fi].text) > 0 {
+					delete(app.doc.nodes[app.replace_ni].fields[app.replace_fi].text)
+				}
+				app.doc.nodes[app.replace_ni].fields[app.replace_fi] = Field{strings.clone(e.fill), true, false, "type"}
+			}
+			app.replacing = false
+			clear_nav(app)
+			clamp_field(app)
+			app.state = app.return_state
+			if app.slot_menu != nil {
+				free_entries(app.slot_menu)
+				app.slot_menu = nil
+			}
+			return
+		}
 		// Handle slot filling
 		if e.fill == "__var__" {
 			make_slot_variable(app, app.slot_ni, app.slot_fi)

@@ -60,6 +60,7 @@ Raw :: struct {
 
 	e_confirm, e_cancel:           bool,
 	e_up, e_down, e_left, e_right: bool,
+	e_a, e_b:                      bool,  // A and B edges (for LT+A, LT+B)
 	e_y:                           bool,
 }
 
@@ -126,9 +127,15 @@ main :: proc() {
 			inp.confirm = false; inp.cancel = false
 			inp.up = false; inp.down = false; inp.left = false; inp.right = false
 		}
-		// RT+Y deletes the currently selected statement.
-		if inp.rt_held && raw.e_y && m.state == .Editor && m.editor_line < len(m.doc.nodes) {
-			model.delete_focused_construct(&m)
+		// LT+A edits the currently selected item.
+		if inp.lt_held && raw.e_a && m.state == .Editor {
+			model.edit_selected(&m)
+			raw.e_a = false // consume the edge
+		}
+		// LT+B deletes the currently selected item.
+		if inp.lt_held && raw.e_b && m.state == .Editor {
+			model.delete_selected(&m)
+			raw.e_b = false // consume the edge
 		}
 		model.update(&m, inp)
 
@@ -227,6 +234,8 @@ reset_edges :: proc(raw: ^Raw) {
 	raw.e_down = false
 	raw.e_left = false
 	raw.e_right = false
+	raw.e_a = false
+	raw.e_b = false
 	raw.e_y = false
 }
 
@@ -249,8 +258,8 @@ handle_event :: proc(raw: ^Raw, e: platform.Event) {
 		if ev.button == .X do raw.x_held = ev.pressed
 		if ev.pressed {
 			#partial switch ev.button {
-			case .A:     raw.e_confirm = true
-			case .B:     raw.e_cancel = true
+			case .A:     raw.e_confirm = true; raw.e_a = true
+			case .B:     raw.e_cancel = true; raw.e_b = true
 			case .Up:    raw.e_up = true
 			case .Down:  raw.e_down = true
 			case .Left:  raw.e_left = true
@@ -278,8 +287,8 @@ handle_key :: proc(raw: ^Raw, sym: i32, pressed: bool) {
 	}
 	if !pressed do return
 	switch sym {
-	case KEY_RETURN, KEY_SPACE: raw.e_confirm = true
-	case KEY_BACKSPACE, KEY_ESCAPE: raw.e_cancel = true
+	case KEY_RETURN, KEY_SPACE: raw.e_confirm = true; raw.e_a = true
+	case KEY_BACKSPACE, KEY_ESCAPE: raw.e_cancel = true; raw.e_b = true
 	case KEY_UP, 'w':    raw.e_up = true
 	case KEY_DOWN, 's':  raw.e_down = true
 	case KEY_LEFT, 'a':  raw.e_left = true
@@ -293,7 +302,8 @@ handle_key :: proc(raw: ^Raw, sym: i32, pressed: bool) {
 // actions, the on-pad symbol changes (e.g. A -> "+"). ASCII only (atlas 32..127).
 face_glyph :: proc(m: ^model.App, bank: int, face: FaceBtn) -> string {
 	if bank == 0 && face == .X do return "" // LT + X = talk: drawn as a mic icon, no letter
-	if bank == 2 && face == .Y do return "" // RT + Y = delete: drawn as a trash icon, no letter
+	if bank == 0 && face == .A do return "e" // LT + A = edit
+	if bank == 0 && face == .B do return "x" // LT + B = delete
 	if bank == 1 { // middle bank = default (no trigger) context
 		switch face {
 		case .A: return "+" // select / confirm
@@ -366,6 +376,15 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 		end_y := y0 + f32(end) * lh + lh
 		gpu.draw_rect(r, {pad, start_y, f32(w) - pad * 2, end_y - start_y}, {0.22, 0.40, 0.70, 0.25})
 	}
+	// Draw insertion dot before first construct (always at position 0)
+	focused_at_top := !has_target && m.editor_line == 0 && len(m.doc.nodes) > 0
+	top_dot_y := y0 - lh * 0.3
+	if focused_at_top {
+		draw_green_dot_highlighted(r, pad + 14, top_dot_y)
+	} else {
+		draw_green_dot(r, pad + 14, top_dot_y)
+	}
+	
 	for node, ni in m.doc.nodes {
 		x := x0
 		y := y0 + f32(ni) * lh
@@ -394,9 +413,19 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 				x += wsz
 			}
 		}
+		
+		// Draw insertion dot after each construct's last line
+		_, e := model.construct_range(m, ni)
+		if ni == e {
+			dot_y := y + lh + lh * 0.3
+			focused_here := !has_target && m.editor_line == e + 1
+			if focused_here {
+				draw_green_dot_highlighted(r, pad + 14, dot_y)
+			} else {
+				draw_green_dot(r, pad + 14, dot_y)
+			}
+		}
 	}
-	dot_y := y0 + f32(len(m.doc.nodes)) * lh + lh * 0.4
-	draw_green_dot(r, pad + 14, dot_y)
 
 	// STT push-to-talk indicator / last heard word.
 	if g_recording {
@@ -425,6 +454,16 @@ slot_dot_color :: proc(kind: string) -> (outer_col, inner_col: gpu.Color) {
 
 draw_green_dot :: proc(r: ^gpu.Renderer, cx, cy: f32) {
 	draw_colored_dot(r, cx, cy, {0.20, 0.90, 0.45, 1.0}, {0.25, 0.95, 0.50, 1})
+}
+
+draw_green_dot_highlighted :: proc(r: ^gpu.Renderer, cx, cy: f32) {
+	// Highlighted version: brighter and slightly larger
+	pulse := 0.5 + 0.5 * math.sin(f32(g_time) * 3.0)
+	radius := 11.0 + 4.0 * pulse // Slightly larger than normal
+	outer := gpu.Color{0.20, 0.90, 0.45, 0.25 + 0.30 * pulse} // Brighter
+	inner := gpu.Color{0.30, 1.00, 0.60, 1.0} // Brighter inner
+	gpu.draw_circle(r, cx, cy, radius + 11, outer)
+	gpu.draw_circle(r, cx, cy, radius, inner)
 }
 
 draw_orange_dot :: proc(r: ^gpu.Renderer, cx, cy: f32) {
