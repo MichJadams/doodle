@@ -65,6 +65,13 @@ Raw :: struct {
 	e_y:                           bool,
 	e_x:                           bool,  // X button edge
 	e_rb:                          bool,  // Right bumper edge
+
+	// Text entry (used by the Save-as name box).
+	pad_x_held:  bool,      // gamepad X held (dictation), as opposed to the keyboard 'x' key
+	typed:       [32]u8,    // filename-safe characters typed this frame (keyboard)
+	n_typed:     int,
+	e_backspace: bool,      // Backspace pressed (it also raises e_cancel/e_b)
+	e_space:     bool,      // Space pressed (it also raises e_confirm/e_a)
 }
 
 FaceBtn :: enum { A, B, X, Y }
@@ -91,6 +98,7 @@ main :: proc() {
 		return
 	}
 	defer text.shutdown(font)
+	defer if g_code != nil do text.shutdown(g_code)
 
 	g_ui = load_a_font(r, 18) // UI/chrome font
 	if g_ui == nil do g_ui = font
@@ -115,7 +123,10 @@ main :: proc() {
 	// Initialize project directories on startup.
 	ensure_projects_dir()
 
-	prev_state := m.state // Track state transitions for new project setup.
+	// `doodle.exe path\to\file.odin` (or "Open with" from Explorer) opens that file.
+	if len(os.args) > 1 && os.exists(os.args[1]) {
+		filenav_load(os.args[1])
+	}
 
 	for !m.want_quit {
 		g_time = platform.now_seconds()
@@ -141,55 +152,77 @@ main :: proc() {
 		}
 		
 		// --- FILE NAVIGATION MODE: RT+B toggles file-nav overlay ---
-		if inp.rt_held && raw.e_b && !g_filenav && m.state == .Editor {
+		if inp.rt_held && raw.e_b && !g_filenav && !g_save_open && m.state == .Editor {
 			filenav_enter()
 			raw.e_b = false
 		}
 		
+		// Main menu actions handled here (they need disk I/O): A on "Recent Projects"
+		// opens the project picker; A on "New Project" sets up a fresh project folder.
+		new_project := false
+		if m.state == .Menu && !g_proj_open && raw.e_confirm {
+			switch model.MENU_ITEMS[m.menu_index] {
+			case "Recent Projects":
+				projects_open()
+				raw.e_confirm = false; raw.e_a = false
+			case "New Project":
+				new_project = true // model.update resets the doc + enters the editor
+			}
+		}
+
 		// Route input to file-nav handler when active (suppresses normal editor input).
 		if g_filenav {
 			handle_filenav(&m, &raw, inp)
 			// Suppress model.update for editor navigation while in file-nav mode.
+		} else if g_proj_open {
+			// The project picker owns all input while it's open.
+			handle_projects_input(&raw)
+		} else if g_save_open {
+			// The Save-as dialog owns all input while it's open.
+			handle_save_input(&m, &raw)
 		} else {
-			// LT+A edits the currently selected item.
-			if inp.lt_held && raw.e_a && m.state == .Editor {
-				model.edit_selected(&m)
-				raw.e_a = false // consume the edge
+			if m.state == .Editor && !g_run_open && !g_recording {
+				// LT+A edits the currently selected item.
+				if inp.lt_held && raw.e_a {
+					model.edit_selected(&m)
+					raw.e_a = false; raw.e_confirm = false // consume (A is also "confirm")
+				}
+				// LT+B deletes the currently selected item.
+				if inp.lt_held && raw.e_b {
+					model.delete_selected(&m)
+					raw.e_b = false; raw.e_cancel = false // consume (B is also "cancel")
+				}
+				// RT+Y opens the Save-as dialog (name the file, A save / B cancel).
+				if inp.rt_held && raw.e_y {
+					save_dialog_open()
+					raw.e_y = false
+				}
+				// RT+X opens the run command list.
+				if inp.rt_held && raw.e_x {
+					g_run_open = true
+					g_run_index = 0
+					raw.e_x = false
+				}
+				// RB saves, then runs the favorite command.
+				if raw.e_rb {
+					run_favorite()
+					raw.e_rb = false
+				}
 			}
-			// LT+B deletes the currently selected item.
-			if inp.lt_held && raw.e_b && m.state == .Editor {
-				model.delete_selected(&m)
-				raw.e_b = false // consume the edge
-			}
-			// RT+Y saves the current project.
-			if inp.rt_held && raw.e_y && m.state == .Editor {
-				save_current(&m)
-				raw.e_y = false // consume the edge
-			}
-			// RT+X opens the run command list.
-			if inp.rt_held && raw.e_x && m.state == .Editor && !g_run_open {
-				g_run_open = true
-				g_run_index = 0
-				raw.e_x = false // consume the edge
-			}
-			// RB runs the favorite command.
-			if raw.e_rb && m.state == .Editor && !g_run_open {
-				run_favorite()
-				raw.e_rb = false
-			}
-			// Run overlay input (consume edges so they don't leak to the editor).
 			if g_run_open {
+				// The run overlay owns all input while it's open.
 				handle_run_input(&raw)
+			} else {
+				// Rebuild from raw so edges consumed above don't leak into the editor
+				// (e.g. LT+B must not also act as "back to main menu").
+				model.update(&m, editor_input(&raw))
 			}
-			model.update(&m, inp)
 		}
 
-		// New Project: when transitioning from Menu to Editor with an empty doc,
-		// set up a random project name and folder.
-		if prev_state == .Menu && m.state == .Editor && len(m.doc.nodes) == 0 {
+		// New Project: set up a random project name and folder.
+		if new_project && m.state == .Editor {
 			new_project_setup()
 		}
-		prev_state = m.state
 
 		// Mic is available only when an editable field is highlighted.
 		tni, tfi, has_target := model.editor_target(&m)
@@ -198,7 +231,7 @@ main :: proc() {
 		g_mic_ready = target_editable && stt_e != nil && m.state == .Editor
 
 		// Push-to-talk dictation into the highlighted field (not in file-nav mode).
-		if mic_hold && g_mic_ready && !g_recording && !g_filenav {
+		if mic_hold && g_mic_ready && !g_recording && !g_filenav && !g_save_open {
 			// Free-text for string literals (preserve spaces); snake_case for identifiers.
 			g_stt_free = has_target && m.doc.nodes[tni].fields[tfi].kind == "string"
 			stt.set_free_text(stt_e, g_stt_free)
@@ -236,10 +269,12 @@ main :: proc() {
 		}
 
 		w, h := platform.get_size(win)
+		ensure_code_font(r, w) // 80 columns fit across; re-baked when the window resizes
 		gpu.begin_frame(r, w, h, COL_BG)
 		switch m.state {
 		case .Menu:
 			draw_menu(r, font, &m, w, h)
+			if g_proj_open do draw_projects_overlay(r, w, h)
 		case .Editor:
 			draw_editor(r, font, &m, w, h)
 			// FILE NAVIGATION MODE: draw overlay after editor.
@@ -252,6 +287,7 @@ main :: proc() {
 		if g_run_open {
 			draw_run_overlay(r, w, h)
 		}
+		if g_save_open do draw_save_dialog(r, w, h)
 		draw_hud(r, &m, inp, w, h)
 		// Show run message if recent.
 		if g_run_msg != "" && (g_time - g_run_msg_time) < RUN_MSG_DURATION {
@@ -301,6 +337,20 @@ reset_edges :: proc(raw: ^Raw) {
 	raw.e_y = false
 	raw.e_x = false
 	raw.e_rb = false
+	raw.n_typed = 0
+	raw.e_backspace = false
+	raw.e_space = false
+}
+
+// Input for model.update: same as build_input, but navigation is masked while
+// dictating (the d-pad/buttons drive dictation then, not navigation).
+editor_input :: proc(raw: ^Raw) -> model.Input {
+	inp := build_input(raw)
+	if g_recording {
+		inp.confirm = false; inp.cancel = false
+		inp.up = false; inp.down = false; inp.left = false; inp.right = false
+	}
+	return inp
 }
 
 build_input :: proc(raw: ^Raw) -> model.Input {
@@ -321,6 +371,7 @@ handle_event :: proc(raw: ^Raw, e: platform.Event) {
 	case platform.Button_Event:
 		if ev.button == .X {
 			raw.x_held = ev.pressed
+			raw.pad_x_held = ev.pressed
 			if ev.pressed do raw.e_x = true
 		}
 		if ev.pressed {
@@ -357,6 +408,15 @@ handle_key :: proc(raw: ^Raw, sym: i32, pressed: bool) {
 		if pressed do raw.e_rb = true
 	}
 	if !pressed do return
+	// Record filename-safe characters for text boxes (Save as). SDL keysyms for
+	// letters/digits are their lowercase ASCII codes.
+	is_text := (sym >= 'a' && sym <= 'z') || (sym >= '0' && sym <= '9') || sym == '-' || sym == '.'
+	if is_text && raw.n_typed < len(raw.typed) {
+		raw.typed[raw.n_typed] = u8(sym)
+		raw.n_typed += 1
+	}
+	if sym == KEY_BACKSPACE do raw.e_backspace = true
+	if sym == KEY_SPACE do raw.e_space = true
 	switch sym {
 	case KEY_RETURN, KEY_SPACE: raw.e_confirm = true; raw.e_a = true
 	case KEY_BACKSPACE, KEY_ESCAPE: raw.e_cancel = true; raw.e_b = true
@@ -422,7 +482,7 @@ draw_menu :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int) 
 		row := i / cols
 		box := gpu.Rect{start_x + f32(col) * (cellw + gap), start_y + f32(row) * (cellh + vgap), cellw, cellh}
 		active := i == m.menu_index
-		enabled := i == 0
+		enabled := item == "New Project" || item == "Recent Projects"
 		gpu.draw_rect(r, box, active ? COL_HILITE : COL_PANEL)
 		if active do gpu.draw_rect_outline(r, box, 2, COL_ACCENT)
 		text.draw_centered(r, g_ui, box, item, enabled ? COL_TEXT : COL_DIM)
@@ -430,83 +490,19 @@ draw_menu :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int) 
 	_ = rows
 
 	text.draw_centered(r, g_ui, {0, fh * 0.84, fw, 30},
-		"D-pad / Arrows to move    A / Enter to select    (only New Project is wired)", COL_DIM)
+		"D-pad / Arrows to move    A / Enter to select    (Open Folder not wired yet)", COL_DIM)
 }
 
-draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int) {
-	pad := f32(28)
-	text.draw_line(r, g_ui, {pad, 14}, "untitled.odin", COL_DIM)
-	gpu.draw_rect(r, {0, 50, f32(w), 1}, {0.2, 0.22, 0.27, 1})
+// draw_editor: see editor_view.odin (layout, wrapping, highlighting, scrolling).
 
-	lh := text.line_height(font)
-	y0 := f32(96)
-	x0 := pad + 34
-	tni, tfi, has_target := model.editor_target(m)
-	
-	// Statement highlight when RT held in editor.
-	if g_rt_held && m.state == .Editor && m.editor_line >= 0 && m.editor_line < len(m.doc.nodes) {
-		start, end := model.construct_range(m, m.editor_line)
-		start_y := y0 + f32(start) * lh
-		end_y := y0 + f32(end) * lh + lh
-		gpu.draw_rect(r, {pad, start_y, f32(w) - pad * 2, end_y - start_y}, {0.22, 0.40, 0.70, 0.25})
-	}
-	// Draw insertion dot before first construct (always at position 0)
-	focused_at_top := !has_target && m.editor_line == 0 && len(m.doc.nodes) > 0
-	top_dot_y := y0 - lh * 0.3
-	if focused_at_top {
-		draw_green_dot_highlighted(r, pad + 14, top_dot_y)
-	} else {
-		draw_green_dot(r, pad + 14, top_dot_y)
-	}
-	
-	for node, ni in m.doc.nodes {
-		x := x0
-		y := y0 + f32(ni) * lh
-		for field, fi in node.fields {
-			if field.slot {
-				// Slot: render as orange dot
-				dot_w := f32(24) // dot diameter + padding
-				dot_cx := x + dot_w / 2
-				dot_cy := y + lh / 2
-				if has_target && ni == tni && fi == tfi {
-					gpu.draw_rect(r, {x - 4, y, dot_w + 8, lh}, {0.22, 0.40, 0.70, 0.55})
-					gpu.draw_rect_outline(r, {x - 4, y, dot_w + 8, lh}, 2, COL_ACCENT)
-				}
-				outer, inner := slot_dot_color(field.kind)
-				draw_colored_dot(r, dot_cx, dot_cy, outer, inner)
-				x += dot_w
-			} else {
-				// Regular field: render as text
-				wsz := text.measure(font, field.text).x
-				if has_target && ni == tni && fi == tfi {
-					gpu.draw_rect(r, {x - 4, y, wsz + 8, lh}, {0.22, 0.40, 0.70, 0.55})
-					gpu.draw_rect_outline(r, {x - 4, y, wsz + 8, lh}, 2, COL_ACCENT)
-				}
-				col := field.editable ? COL_ACCENT : COL_TEXT
-				text.draw_line(r, font, {x, y}, field.text, col)
-				x += wsz
-			}
-		}
-		
-		// Draw insertion dot after each construct's last line
-		_, e := model.construct_range(m, ni)
-		if ni == e {
-			dot_y := y + lh + lh * 0.3
-			focused_here := !has_target && m.editor_line == e + 1
-			if focused_here {
-				draw_green_dot_highlighted(r, pad + 14, dot_y)
-			} else {
-				draw_green_dot(r, pad + 14, dot_y)
-			}
-		}
-	}
+HINT_COL :: gpu.Color{0.62, 0.66, 0.74, 1} // expected-type labels next to dots
 
-	// STT push-to-talk indicator / last heard word.
-	if g_recording {
-		text.draw_line(r, g_ui, {f32(w) - 150, 14}, "[REC]", {0.90, 0.30, 0.30, 1})
-	} else if g_heard != "" {
-		text.draw_line(r, g_ui, {f32(w) - 320, 14}, fmt.tprintf("heard: %s", g_heard), COL_ACCENT)
-	}
+// The label shown next to a slot dot: its expected type ("LPCWSTR"), "..T" for a
+// variadic dot, or "" when unknown. ("..any" is shown too: anything fits.)
+slot_hint_label :: proc(f: model.Field) -> string {
+	if f.hint == "" do return ""
+	if f.kind == "args" do return fmt.tprintf("..%s", f.hint)
+	return f.hint
 }
 
 // Return colors for a slot dot based on field kind.
@@ -518,6 +514,9 @@ slot_dot_color :: proc(kind: string) -> (outer_col, inner_col: gpu.Color) {
 		return {0.35, 0.70, 1.00, 1.0}, {0.40, 0.75, 1.00, 1.0}
 	case "body":
 		return {0.35, 0.85, 0.45, 1.0}, {0.40, 0.90, 0.50, 1.0}
+	case "args":
+		// Optional extra call argument (variadic): green = "add another", like insertion dots.
+		return {0.20, 0.90, 0.45, 1.0}, {0.25, 0.95, 0.50, 1.0}
 	case "params":
 		return {0.80, 0.45, 0.95, 1.0}, {0.85, 0.50, 1.00, 1.0}
 	case:
@@ -571,6 +570,16 @@ draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
 	fw, fh := f32(w), f32(h)
 	gpu.draw_rect(r, {0, 0, fw, fh}, {0, 0, 0, 0.60})
 	text.draw_centered(r, g_ui, {0, fh * 0.07, fw, 36}, v.title, COL_ACCENT)
+	// Filling a typed dot: say what it expects (options that can't fit are grayed).
+	if m.slot_menu != nil && m.slot_ni >= 0 && m.slot_ni < len(m.doc.nodes) {
+		fs := m.doc.nodes[m.slot_ni].fields
+		if m.slot_fi >= 0 && m.slot_fi < len(fs) && fs[m.slot_fi].slot {
+			if label := slot_hint_label(fs[m.slot_fi]); label != "" {
+				text.draw_centered(r, g_ui, {0, fh * 0.07 + 30, fw, 24},
+					fmt.tprintf("expects %s  -  grayed options don't fit", label), HINT_COL)
+			}
+		}
+	}
 
 	n := len(v.entries)
 	if n == 0 do return
@@ -682,10 +691,7 @@ draw_bank :: proc(r: ^gpu.Renderer, m: ^model.App, bank: int, cx, cy, scale: f32
 	if bank == 0 {
 		draw_mic_icon(r, face_cx - d, cy, rad * 0.82, {0.97, 0.98, 1.0, a})
 	}
-	// RT+Y (right bank, Y) = delete: draw a trash icon.
-	if bank == 2 {
-		draw_trash_icon(r, face_cx, cy - d, rad * 0.78, {0.97, 0.98, 1.0, a})
-	}
+	// (RT+Y is Save now - its "S" glyph is drawn by draw_face; delete moved to LT+B.)
 }
 
 // A small vector trash can (lid + body) for the delete control.

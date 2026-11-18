@@ -7,6 +7,7 @@ import "core:os"
 import "core:fmt"
 import "core:strings"
 import "core:math/rand"
+import "core:path/filepath"
 
 // --- Project directory globals (exposed for use by other features) ---
 
@@ -30,11 +31,13 @@ ensure_projects_dir :: proc() {
 	
 	// Get user home directory from USERPROFILE env var (Windows).
 	home := os.get_env("USERPROFILE", context.temp_allocator)
+	// NOTE: these globals must outlive the frame, so they are heap-allocated
+	// (a tprintf here is freed by free_all(temp_allocator) at the end of the frame).
 	if home == "" {
 		// Fallback to current directory if USERPROFILE is not set.
-		g_projects_dir = "./DoodleProjects"
+		g_projects_dir = strings.clone("./DoodleProjects")
 	} else {
-		g_projects_dir = fmt.tprintf("%s/DoodleProjects", home)
+		g_projects_dir = fmt.aprintf("%s/DoodleProjects", home)
 	}
 	
 	// Create the directory if it doesn't exist (ignore errors if it already exists).
@@ -73,35 +76,72 @@ new_project_setup :: proc() {
 	ensure_projects_dir()
 	
 	// Generate a random name and create the project directory.
-	g_project_name = gen_project_name()
-	g_project_dir = fmt.tprintf("%s/%s", g_projects_dir, g_project_name)
-	
+	set_project_dir(fmt.tprintf("%s/%s", g_projects_dir, gen_project_name()))
+
+	// A brand-new project has no file yet; the first save creates main.odin.
+	set_current_file("")
+
 	// Create the project directory (ignore errors if it already exists).
 	os.make_directory(g_project_dir)
 }
 
+// set_project_dir points the project (save target + run cwd) at `dir`.
+// Takes its own copy; the run-command list is reloaded for the new project.
+set_project_dir :: proc(dir: string) {
+	if dir == g_project_dir do return
+	if g_project_dir != "" do delete(g_project_dir)
+	if g_project_name != "" do delete(g_project_name)
+	g_project_dir = strings.clone(dir)
+	g_project_name = strings.clone(filepath.base(dir))
+	g_run_loaded = false // run.txt is per project
+}
+
+// set_current_file records the file the editor is showing ("" = none yet).
+set_current_file :: proc(path: string) {
+	if path == g_current_file do return
+	if g_current_file != "" do delete(g_current_file)
+	g_current_file = path == "" ? "" : strings.clone(path)
+}
+
+// editor_title is the header text: the open file, else the project, else untitled.
+editor_title :: proc() -> string {
+	if g_current_file != "" do return g_current_file
+	if g_project_dir != "" do return fmt.tprintf("%s/main.odin  (unsaved)", g_project_dir)
+	return "untitled.odin"
+}
+
 // --- Saving ---
 
-// save_current writes the current document to disk as main.odin.
-// If the project has no name yet, it generates one first.
-save_current :: proc(m: ^model.App) {
-	// If no project directory yet, set it up.
-	if g_project_dir == "" {
-		new_project_setup()
-	}
-	
-	// Generate the full source text from the document.
+// save_folder is where a save goes: the open file's folder, else the project
+// folder (creating a fresh project if there is none yet).
+save_folder :: proc() -> string {
+	if g_current_file != "" do return filepath.dir(g_current_file)
+	if g_project_dir == "" do new_project_setup()
+	os.make_directory(g_project_dir)
+	return g_project_dir
+}
+
+// write_doc writes the document's source to `path` and makes it the current file.
+// Returns "" on success, else a short error message (temp-allocated).
+write_doc :: proc(m: ^model.App, path: string) -> string {
 	source := model.doc_to_source(m, context.temp_allocator)
-	
-	// Write to main.odin in the project directory.
-	filepath := fmt.tprintf("%s/main.odin", g_project_dir)
-	err := os.write_entire_file(filepath, transmute([]byte)source)
-	
-	if err == nil {
-		// Optional: Set a saved confirmation message/timestamp for display.
-		// For now, just print to console (silent success).
-		fmt.printf("Saved to %s\n", filepath)
-	} else {
-		fmt.eprintf("Failed to save to %s: %v\n", filepath, err)
+	if err := os.write_entire_file(path, transmute([]byte)source); err != nil {
+		fmt.eprintf("Failed to save to %s: %v\n", path, err)
+		return fmt.tprintf("could not save: %v", err)
 	}
+	set_current_file(path)
+	return ""
+}
+
+// save_current saves without asking (used before running): back to the open
+// file, or <project>/main.odin if nothing has been saved yet. RT+Y uses the
+// Save-as dialog instead (save_dialog.odin). Returns true on success.
+save_current :: proc(m: ^model.App) -> bool {
+	target := g_current_file
+	if target == "" do target = fmt.tprintf("%s/main.odin", save_folder())
+	if msg := write_doc(m, target); msg != "" {
+		set_status(fmt.tprintf("SAVE FAILED: %s", msg))
+		return false
+	}
+	return true
 }

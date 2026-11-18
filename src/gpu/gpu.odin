@@ -235,6 +235,14 @@ texture_create :: proc(w, h: int, pixels: []u8, channels: int) -> Texture {
 	return t
 }
 
+texture_destroy :: proc(r: ^Renderer, t: ^Texture) {
+	if t.id == 0 do return
+	flush(r) // anything batched with this texture must be drawn first
+	if r.cur_tex == t.id do r.cur_tex = 0
+	gl.DeleteTextures(1, &t.id)
+	t.id = 0
+}
+
 texture_update :: proc(t: ^Texture, x, y, w, h: int, pixels: []u8) {
 	gl.BindTexture(gl.TEXTURE_2D, t.id)
 	gl.TexSubImage2D(gl.TEXTURE_2D, 0, i32(x), i32(y), i32(w), i32(h), gl.RGBA, gl.UNSIGNED_BYTE, rawptr(raw_data(pixels)))

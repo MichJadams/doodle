@@ -86,7 +86,10 @@ Entry :: struct {
 	fill:           string, // "" = none; type name = fill slot with type; "__var__" = instantiate variable
 	call_name:      string, // proc or package name for call statements
 	call_pkg:       string, // package name for import calls; "" for this-package calls
+	ret:            string, // import-proc leaves: return type text (static CORE_PROCS data)
+	ret_pkg:        string, // import-proc leaves: import path `ret` is written in
 	owned_label:    bool,   // if true, label was cloned and should be freed
+	pinned:         bool,   // listed first, in given order, even in long sorted lists (e.g. "used in this file")
 	children:       []Entry,
 }
 
@@ -97,7 +100,9 @@ Field :: struct {
 	text:     string,
 	editable: bool,
 	slot:     bool,   // orange placeholder dot (params/return/body slots, etc.)
-	kind:     string, // only for slots: ""=generic, "params", "type", "value", "body"
+	kind:     string, // only for slots: ""=generic, "params", "type", "value", "body", "args"
+	hint:     string, // slots: the type expected here, e.g. "LPCWSTR" ("" = unknown). Not owned.
+	hint_pkg: string, // import path `hint` is written in ("" = this file / builtin). Not owned.
 }
 Node :: struct {
 	fields: [dynamic]Field,
@@ -131,6 +136,7 @@ App :: struct {
 	want_quit:      bool,
 	editor_line:    int, // index into doc.nodes; == len(nodes) => green insertion dot focused
 	editor_field:   int, // selectable-field index within the current line (left/right)
+	editor_dot:     bool, // cursor is on the green insertion dot *before* node editor_line
 	import_alias:   bool, // set when navigating aliased import tree
 	insert_at:      int, // node index where new constructs are inserted (0=top, len=bottom)
 	replacing:      bool, // if true, menu selection replaces the current item instead of inserting
@@ -144,6 +150,8 @@ App :: struct {
 	slot_fi:   int,     // field index of slot being filled
 
 	name_counter: int, // deterministic name generation counter
+
+	hint_pool: [dynamic]string, // owned Field.hint strings read from document text (freed by doc_reset)
 }
 
 Input :: struct {
@@ -329,24 +337,24 @@ doc_insert :: proc(app: ^App, n: Node) {
 // Append a single fixed (non-editable) line node.
 append_text_node :: proc(app: ^App, text: string) {
 	n: Node
-	append(&n.fields, Field{strings.clone(text), false, false, ""})
+	append(&n.fields, Field{strings.clone(text), false, false, "", "", ""})
 	doc_insert(app, n)
 }
 
 // Append `keyword <editable ident>` (e.g. package main).
 append_kw_node :: proc(app: ^App, keyword, ident: string) {
 	n: Node
-	append(&n.fields, Field{strings.concatenate({keyword, " "}), false, false, ""})
-	append(&n.fields, Field{strings.clone(ident), true, false, ""})
+	append(&n.fields, Field{strings.concatenate({keyword, " "}), false, false, "", "", ""})
+	append(&n.fields, Field{strings.clone(ident), true, false, "", "", ""})
 	doc_insert(app, n)
 }
 
 // Append an aliased import: `import <alias> "<path>"` with editable alias.
 append_aliased_import_node :: proc(app: ^App, path: string) {
 	n: Node
-	append(&n.fields, Field{strings.clone("import "), false, false, ""})
-	append(&n.fields, Field{strings.clone(alias_default(path)), true, false, ""})
-	append(&n.fields, Field{strings.concatenate({" \"", path, "\""}), false, false, ""})
+	append(&n.fields, Field{strings.clone("import "), false, false, "", "", ""})
+	append(&n.fields, Field{strings.clone(alias_default(path)), true, false, "", "", ""})
+	append(&n.fields, Field{strings.concatenate({" \"", path, "\""}), false, false, "", "", ""})
 	doc_insert(app, n)
 }
 
@@ -393,24 +401,24 @@ append_proc_node :: proc(app: ^App, name := "") {
 		}
 	}
 	n1: Node
-	append(&n1.fields, Field{strings.clone(proc_name), true, false, ""})       // editable name
+	append(&n1.fields, Field{strings.clone(proc_name), true, false, "", "", ""})       // editable name
 	if generated do delete(proc_name) // free generated name after clone
-	append(&n1.fields, Field{strings.clone(" :: proc( "), false, false, ""})  // fixed
-	append(&n1.fields, Field{"", false, true, "params"})                  // params slot
-	append(&n1.fields, Field{strings.clone(" ) -> "), false, false, ""}) // fixed
-	append(&n1.fields, Field{"", false, true, "type"})                    // return slot
-	append(&n1.fields, Field{strings.clone(" {"), false, false, ""})     // fixed
+	append(&n1.fields, Field{strings.clone(" :: proc( "), false, false, "", "", ""})  // fixed
+	append(&n1.fields, Field{"", false, true, "params", "", ""})                  // params slot
+	append(&n1.fields, Field{strings.clone(" ) -> "), false, false, "", "", ""}) // fixed
+	append(&n1.fields, Field{"", false, true, "type", "", ""})                    // return slot
+	append(&n1.fields, Field{strings.clone(" {"), false, false, "", "", ""})     // fixed
 	doc_insert(app, n1)
 
 	// Line 2: <indent><body>
 	n2: Node
-	append(&n2.fields, Field{strings.clone("    "), false, false, ""})   // indent
-	append(&n2.fields, Field{"", false, true, "body"})                    // body slot
+	append(&n2.fields, Field{strings.clone("    "), false, false, "", "", ""})   // indent
+	append(&n2.fields, Field{"", false, true, "body", "", ""})                    // body slot
 	doc_insert(app, n2)
 
 	// Line 3: }
 	n3: Node
-	append(&n3.fields, Field{strings.clone("}"), false, false, ""})      // closing brace
+	append(&n3.fields, Field{strings.clone("}"), false, false, "", "", ""})      // closing brace
 	doc_insert(app, n3)
 }
 
@@ -422,74 +430,74 @@ append_type_node :: proc(app: ^App, kind: string) {
 	case "struct":
 		// Line 1: <type_name> :: struct {
 		n1: Node
-		append(&n1.fields, Field{strings.clone(type_name), true, false, ""})       // editable name
-		append(&n1.fields, Field{strings.clone(" :: struct {"), false, false, ""}) // fixed
+		append(&n1.fields, Field{strings.clone(type_name), true, false, "", "", ""})       // editable name
+		append(&n1.fields, Field{strings.clone(" :: struct {"), false, false, "", "", ""}) // fixed
 		doc_insert(app, n1)
 		// Line 2: <indent><body slot>
 		n2: Node
-		append(&n2.fields, Field{strings.clone("    "), false, false, ""})         // indent
-		append(&n2.fields, Field{"", false, true, "body"})                         // body slot
+		append(&n2.fields, Field{strings.clone("    "), false, false, "", "", ""})         // indent
+		append(&n2.fields, Field{"", false, true, "body", "", ""})                         // body slot
 		doc_insert(app, n2)
 		// Line 3: }
 		n3: Node
-		append(&n3.fields, Field{strings.clone("}"), false, false, ""})            // closing brace
+		append(&n3.fields, Field{strings.clone("}"), false, false, "", "", ""})            // closing brace
 		doc_insert(app, n3)
 
 	case "enum":
 		// Line 1: <type_name> :: enum {
 		n1: Node
-		append(&n1.fields, Field{strings.clone(type_name), true, false, ""})       // editable name
-		append(&n1.fields, Field{strings.clone(" :: enum {"), false, false, ""})  // fixed
+		append(&n1.fields, Field{strings.clone(type_name), true, false, "", "", ""})       // editable name
+		append(&n1.fields, Field{strings.clone(" :: enum {"), false, false, "", "", ""})  // fixed
 		doc_insert(app, n1)
 		// Line 2: <indent><body slot>
 		n2: Node
-		append(&n2.fields, Field{strings.clone("    "), false, false, ""})         // indent
-		append(&n2.fields, Field{"", false, true, "body"})                         // body slot
+		append(&n2.fields, Field{strings.clone("    "), false, false, "", "", ""})         // indent
+		append(&n2.fields, Field{"", false, true, "body", "", ""})                         // body slot
 		doc_insert(app, n2)
 		// Line 3: }
 		n3: Node
-		append(&n3.fields, Field{strings.clone("}"), false, false, ""})            // closing brace
+		append(&n3.fields, Field{strings.clone("}"), false, false, "", "", ""})            // closing brace
 		doc_insert(app, n3)
 
 	case "union":
 		// Line 1: <type_name> :: union {
 		n1: Node
-		append(&n1.fields, Field{strings.clone(type_name), true, false, ""})       // editable name
-		append(&n1.fields, Field{strings.clone(" :: union {"), false, false, ""}) // fixed
+		append(&n1.fields, Field{strings.clone(type_name), true, false, "", "", ""})       // editable name
+		append(&n1.fields, Field{strings.clone(" :: union {"), false, false, "", "", ""}) // fixed
 		doc_insert(app, n1)
 		// Line 2: <indent><body slot>
 		n2: Node
-		append(&n2.fields, Field{strings.clone("    "), false, false, ""})         // indent
-		append(&n2.fields, Field{"", false, true, "body"})                         // body slot
+		append(&n2.fields, Field{strings.clone("    "), false, false, "", "", ""})         // indent
+		append(&n2.fields, Field{"", false, true, "body", "", ""})                         // body slot
 		doc_insert(app, n2)
 		// Line 3: }
 		n3: Node
-		append(&n3.fields, Field{strings.clone("}"), false, false, ""})            // closing brace
+		append(&n3.fields, Field{strings.clone("}"), false, false, "", "", ""})            // closing brace
 		doc_insert(app, n3)
 
 	case "bit_set":
 		// Single line: <type_name> :: bit_set[•]
 		n: Node
-		append(&n.fields, Field{strings.clone(type_name), true, false, ""})        // editable name
-		append(&n.fields, Field{strings.clone(" :: bit_set["), false, false, ""}) // fixed
-		append(&n.fields, Field{"", false, true, "type"})                          // element type slot
-		append(&n.fields, Field{strings.clone("]"), false, false, ""})             // fixed
+		append(&n.fields, Field{strings.clone(type_name), true, false, "", "", ""})        // editable name
+		append(&n.fields, Field{strings.clone(" :: bit_set["), false, false, "", "", ""}) // fixed
+		append(&n.fields, Field{"", false, true, "type", "", ""})                          // element type slot
+		append(&n.fields, Field{strings.clone("]"), false, false, "", "", ""})             // fixed
 		doc_insert(app, n)
 
 	case "distinct":
 		// Single line: <type_name> :: distinct •
 		n: Node
-		append(&n.fields, Field{strings.clone(type_name), true, false, ""})        // editable name
-		append(&n.fields, Field{strings.clone(" :: distinct "), false, false, ""}) // fixed
-		append(&n.fields, Field{"", false, true, "type"})                          // base type slot
+		append(&n.fields, Field{strings.clone(type_name), true, false, "", "", ""})        // editable name
+		append(&n.fields, Field{strings.clone(" :: distinct "), false, false, "", "", ""}) // fixed
+		append(&n.fields, Field{"", false, true, "type", "", ""})                          // base type slot
 		doc_insert(app, n)
 
 	case "alias":
 		// Single line: <type_name> :: •
 		n: Node
-		append(&n.fields, Field{strings.clone(type_name), true, false, ""})        // editable name
-		append(&n.fields, Field{strings.clone(" :: "), false, false, ""})          // fixed
-		append(&n.fields, Field{"", false, true, "type"})                          // type slot
+		append(&n.fields, Field{strings.clone(type_name), true, false, "", "", ""})        // editable name
+		append(&n.fields, Field{strings.clone(" :: "), false, false, "", "", ""})          // fixed
+		append(&n.fields, Field{"", false, true, "type", "", ""})                          // type slot
 		doc_insert(app, n)
 	}
 }
@@ -501,9 +509,9 @@ append_value_node :: proc(app: ^App, kind: string) {
 		const_name := generate_const(app)
 		defer delete(const_name)
 		n: Node
-		append(&n.fields, Field{strings.clone(const_name), true, false, ""})    // editable name
-		append(&n.fields, Field{strings.clone(" :: "), false, false, ""})      // fixed
-		append(&n.fields, Field{"", false, true, "value"})                     // value slot
+		append(&n.fields, Field{strings.clone(const_name), true, false, "", "", ""})    // editable name
+		append(&n.fields, Field{strings.clone(" :: "), false, false, "", "", ""})      // fixed
+		append(&n.fields, Field{"", false, true, "value", "", ""})                     // value slot
 		doc_insert(app, n)
 
 	case "typed_const":
@@ -511,11 +519,11 @@ append_value_node :: proc(app: ^App, kind: string) {
 		const_name := generate_const(app)
 		defer delete(const_name)
 		n: Node
-		append(&n.fields, Field{strings.clone(const_name), true, false, ""})    // editable name
-		append(&n.fields, Field{strings.clone(" : "), false, false, ""})       // fixed
-		append(&n.fields, Field{"", false, true, "type"})                      // type slot
-		append(&n.fields, Field{strings.clone(" : "), false, false, ""})       // fixed
-		append(&n.fields, Field{"", false, true, "value"})                     // value slot
+		append(&n.fields, Field{strings.clone(const_name), true, false, "", "", ""})    // editable name
+		append(&n.fields, Field{strings.clone(" : "), false, false, "", "", ""})       // fixed
+		append(&n.fields, Field{"", false, true, "type", "", ""})                      // type slot
+		append(&n.fields, Field{strings.clone(" : "), false, false, "", "", ""})       // fixed
+		append(&n.fields, Field{"", false, true, "value", "", ""})                     // value slot
 		doc_insert(app, n)
 
 	case "config":
@@ -523,12 +531,12 @@ append_value_node :: proc(app: ^App, kind: string) {
 		const_name := generate_const(app)
 		defer delete(const_name)
 		n: Node
-		append(&n.fields, Field{strings.clone(const_name), true, false, ""})     // editable name
+		append(&n.fields, Field{strings.clone(const_name), true, false, "", "", ""})     // editable name
 		config_text := fmt.aprintf(" :: #config(%s, ", const_name)
 		defer delete(config_text)
-		append(&n.fields, Field{strings.clone(config_text), false, false, ""}) // fixed
-		append(&n.fields, Field{"", false, true, "value"})                     // default value slot
-		append(&n.fields, Field{strings.clone(")"), false, false, ""})         // fixed
+		append(&n.fields, Field{strings.clone(config_text), false, false, "", "", ""}) // fixed
+		append(&n.fields, Field{"", false, true, "value", "", ""})                     // default value slot
+		append(&n.fields, Field{strings.clone(")"), false, false, "", "", ""})         // fixed
 		doc_insert(app, n)
 
 	case "global_typed":
@@ -536,9 +544,9 @@ append_value_node :: proc(app: ^App, kind: string) {
 		var_name := generate_ident(app)
 		defer delete(var_name)
 		n: Node
-		append(&n.fields, Field{strings.clone(var_name), true, false, ""})     // editable name
-		append(&n.fields, Field{strings.clone(": "), false, false, ""})        // fixed
-		append(&n.fields, Field{"", false, true, "type"})                      // type slot
+		append(&n.fields, Field{strings.clone(var_name), true, false, "", "", ""})     // editable name
+		append(&n.fields, Field{strings.clone(": "), false, false, "", "", ""})        // fixed
+		append(&n.fields, Field{"", false, true, "type", "", ""})                      // type slot
 		doc_insert(app, n)
 
 	case "global_init":
@@ -546,9 +554,9 @@ append_value_node :: proc(app: ^App, kind: string) {
 		var_name := generate_ident(app)
 		defer delete(var_name)
 		n: Node
-		append(&n.fields, Field{strings.clone(var_name), true, false, ""})     // editable name
-		append(&n.fields, Field{strings.clone(" := "), false, false, ""})      // fixed
-		append(&n.fields, Field{"", false, true, "value"})                     // value slot
+		append(&n.fields, Field{strings.clone(var_name), true, false, "", "", ""})     // editable name
+		append(&n.fields, Field{strings.clone(" := "), false, false, "", "", ""})      // fixed
+		append(&n.fields, Field{"", false, true, "value", "", ""})                     // value slot
 		doc_insert(app, n)
 	}
 }
@@ -666,54 +674,27 @@ ImportRef :: struct {
 collect_imports :: proc(app: ^App) -> []ImportRef {
 	result: [dynamic]ImportRef
 	for n in app.doc.nodes {
-		txt := node_text(n, context.temp_allocator)
-		if strings.has_prefix(txt, "import ") {
-			// Check if it's an aliased import: has an editable field
-			has_alias := false
-			for f in n.fields {
-				if f.editable && len(f.text) > 0 {
-					// Aliased import: extract the alias and path
-					start := strings.index(txt, "\"")
-					if start >= 0 {
-						start += 1
-						end := strings.last_index(txt, "\"")
-						if end > start {
-							path := txt[start:end]
-							already_added := false
-							for existing in result {
-								if existing.ref == f.text && existing.path == path {
-									already_added = true
-									break
-								}
-							}
-							if !already_added do append(&result, ImportRef{f.text, path})
-						}
-					}
-					has_alias = true
-					break
-				}
-			}
-			if !has_alias {
-				// Plain import: extract path and get last segment
-				start := strings.index(txt, "\"")
-				if start >= 0 {
-					start += 1
-					end := strings.last_index(txt, "\"")
-					if end > start {
-						path := txt[start:end]
-						ref_name := alias_default(path)
-						already_added := false
-						for existing in result {
-							if existing.ref == ref_name && existing.path == path {
-								already_added = true
-								break
-							}
-						}
-						if !already_added do append(&result, ImportRef{ref_name, path})
-					}
-				}
+		txt := strings.trim_space(node_text(n, context.temp_allocator))
+		if !strings.has_prefix(txt, "import ") do continue
+		// `import "core:fmt"` (ref = last path segment) or `import win "core:sys/windows"`
+		// (ref = alias). Read from the text so imports loaded from a file work too.
+		rest := strings.trim_space(txt[len("import "):])
+		q := strings.index_byte(rest, '"')
+		if q < 0 do continue
+		end := strings.index_byte(rest[q + 1:], '"')
+		if end <= 0 do continue
+		path := rest[q + 1:q + 1 + end]
+		alias := strings.trim_space(rest[:q])
+		ref := alias != "" ? alias : alias_default(path)
+		if ref == "_" do continue // blank import: nothing to call through
+		already_added := false
+		for existing in result {
+			if existing.ref == ref && existing.path == path {
+				already_added = true
+				break
 			}
 		}
+		if !already_added do append(&result, ImportRef{ref, path})
 	}
 	return result[:]
 }
@@ -784,7 +765,7 @@ set_slot_type :: proc(app: ^App, ni, fi: int, type_name: string) {
 	if len(app.doc.nodes[ni].fields[fi].text) > 0 {
 		delete(app.doc.nodes[ni].fields[fi].text)
 	}
-	app.doc.nodes[ni].fields[fi] = Field{strings.clone(type_name), true, false, "type"}
+	app.doc.nodes[ni].fields[fi] = Field{strings.clone(type_name), true, false, "type", "", ""}
 }
 
 // Fill a value slot with a literal value.
@@ -800,7 +781,7 @@ set_slot_literal :: proc(app: ^App, ni, fi: int, kind_marker: string) {
 	switch kind_marker {
 	case "__lit_num__":
 		// Replace with a single editable field, default "0"
-		f := Field{strings.clone("0"), true, false, ""}
+		f := Field{strings.clone("0"), true, false, "", "", ""}
 		inject_at(fields, fi, f)
 		
 	case "__lit_str__":
@@ -817,33 +798,33 @@ set_slot_literal :: proc(app: ^App, ni, fi: int, kind_marker: string) {
 		
 	case "__lit_true__":
 		// Replace with a single fixed field "true"
-		f := Field{strings.clone("true"), false, false, ""}
+		f := Field{strings.clone("true"), false, false, "", "", ""}
 		inject_at(fields, fi, f)
 		
 	case "__lit_false__":
 		// Replace with a single fixed field "false"
-		f := Field{strings.clone("false"), false, false, ""}
+		f := Field{strings.clone("false"), false, false, "", "", ""}
 		inject_at(fields, fi, f)
 		
 	case "__lit_nil__":
 		// Replace with a single fixed field "nil"
-		f := Field{strings.clone("nil"), false, false, ""}
+		f := Field{strings.clone("nil"), false, false, "", "", ""}
 		inject_at(fields, fi, f)
 		
 	case "__lit_ref__":
 		// Replace with a single editable field, default generated name
 		ref_name := generate_ident(app)
 		defer delete(ref_name)
-		f := Field{strings.clone(ref_name), true, false, ""}
+		f := Field{strings.clone(ref_name), true, false, "", "", ""}
 		inject_at(fields, fi, f)
 	}
 }
 
 // Insert `open + <editable free-text> + close` fields at index fi (order preserved).
 inject_string_lit :: proc(fields: ^[dynamic]Field, fi: int, open, close: string) {
-	inject_at(fields, fi, Field{strings.clone(close), false, false, ""})
-	inject_at(fields, fi, Field{strings.clone(""), true, false, "string"}) // free-text content
-	inject_at(fields, fi, Field{strings.clone(open), false, false, ""})
+	inject_at(fields, fi, Field{strings.clone(close), false, false, "", "", ""})
+	inject_at(fields, fi, Field{strings.clone(""), true, false, "string", "", ""}) // free-text content
+	inject_at(fields, fi, Field{strings.clone(open), false, false, "", "", ""})
 }
 
 // Replace a slot with a variable instantiation (name + ": " + type slot).
@@ -854,9 +835,9 @@ make_slot_variable :: proc(app: ^App, ni, fi: int) {
 	// Inject three fields at the same position
 	var_name := generate_ident(app)
 	defer delete(var_name)
-	f1 := Field{strings.clone(var_name), true, false, ""}  // editable name
-	f2 := Field{strings.clone(": "), false, false, ""}    // fixed separator
-	f3 := Field{"", false, true, "type"}                   // new type slot
+	f1 := Field{strings.clone(var_name), true, false, "", "", ""}  // editable name
+	f2 := Field{strings.clone(": "), false, false, "", "", ""}    // fixed separator
+	f3 := Field{"", false, true, "type", "", ""}                   // new type slot
 	inject_at(fields, fi, f3)
 	inject_at(fields, fi, f2)
 	inject_at(fields, fi, f1)
@@ -871,11 +852,11 @@ make_slot_param :: proc(app: ^App, ni, fi: int) {
 	// param name, ": ", type slot, ", ", trailing params slot
 	param_name := generate_ident(app)
 	defer delete(param_name)
-	f1 := Field{strings.clone(param_name), true, false, ""}  // editable param name
-	f2 := Field{strings.clone(": "), false, false, ""}    // fixed
-	f3 := Field{"", false, true, "type"}                   // type slot
-	f4 := Field{strings.clone(", "), false, false, ""}    // separator
-	f5 := Field{"", false, true, "params"}                 // new trailing params slot
+	f1 := Field{strings.clone(param_name), true, false, "", "", ""}  // editable param name
+	f2 := Field{strings.clone(": "), false, false, "", "", ""}    // fixed
+	f3 := Field{"", false, true, "type", "", ""}                   // type slot
+	f4 := Field{strings.clone(", "), false, false, "", "", ""}    // separator
+	f5 := Field{"", false, true, "params", "", ""}                 // new trailing params slot
 	inject_at(fields, fi, f5)
 	inject_at(fields, fi, f4)
 	inject_at(fields, fi, f3)
@@ -911,105 +892,105 @@ make_branch_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	switch kind {
 	case "__br_if__": // if • {
 		// Header: if • {
-		f1 := Field{strings.clone("if "), false, false, ""}
-		f2 := Field{"", false, true, "value"} // condition slot
-		f3 := Field{strings.clone(" {"), false, false, ""}
+		f1 := Field{strings.clone("if "), false, false, "", "", ""}
+		f2 := Field{"", false, true, "value", "", ""} // condition slot
+		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 		// Inner body line: <inner_indent><body slot>
 		n_body: Node
-		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
-		append(&n_body.fields, Field{"", false, true, "body"})
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
+		append(&n_body.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n_body)
 		
 		// Closing brace: <indent>}
 		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n_close)
 		
 	case "__br_ifelse__": // if • { / body / } else { / body2 / }
 		// Header: if • {
-		f1 := Field{strings.clone("if "), false, false, ""}
-		f2 := Field{"", false, true, "value"} // condition slot
-		f3 := Field{strings.clone(" {"), false, false, ""}
+		f1 := Field{strings.clone("if "), false, false, "", "", ""}
+		f2 := Field{"", false, true, "value", "", ""} // condition slot
+		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 		// Inner body line 1: <inner_indent><body slot>
 		n_body1: Node
-		append(&n_body1.fields, Field{strings.clone(inner_indent), false, false, ""})
-		append(&n_body1.fields, Field{"", false, true, "body"})
+		append(&n_body1.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
+		append(&n_body1.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n_body1)
 		
 		// Else line: <indent>} else {
 		n_else: Node
-		append(&n_else.fields, Field{strings.clone(indent), false, false, ""})
-		append(&n_else.fields, Field{strings.clone("} else {"), false, false, ""})
+		append(&n_else.fields, Field{strings.clone(indent), false, false, "", "", ""})
+		append(&n_else.fields, Field{strings.clone("} else {"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n_else)
 		
 		// Inner body line 2: <inner_indent><body slot>
 		n_body2: Node
-		append(&n_body2.fields, Field{strings.clone(inner_indent), false, false, ""})
-		append(&n_body2.fields, Field{"", false, true, "body"})
+		append(&n_body2.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
+		append(&n_body2.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 3, n_body2)
 		
 		// Closing brace: <indent>}
 		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 4, n_close)
 		
 	case "__br_switch__": // switch • {
 		// Header: switch • {
-		f1 := Field{strings.clone("switch "), false, false, ""}
-		f2 := Field{"", false, true, "value"} // expr slot
-		f3 := Field{strings.clone(" {"), false, false, ""}
+		f1 := Field{strings.clone("switch "), false, false, "", "", ""}
+		f2 := Field{"", false, true, "value", "", ""} // expr slot
+		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 		// Inner body line: <inner_indent><body slot>
 		n_body: Node
-		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
-		append(&n_body.fields, Field{"", false, true, "body"})
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
+		append(&n_body.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n_body)
 		
 		// Closing brace: <indent>}
 		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n_close)
 		
 	case "__br_when__": // when • {
 		// Header: when • {
-		f1 := Field{strings.clone("when "), false, false, ""}
-		f2 := Field{"", false, true, "value"} // compile-time condition slot
-		f3 := Field{strings.clone(" {"), false, false, ""}
+		f1 := Field{strings.clone("when "), false, false, "", "", ""}
+		f2 := Field{"", false, true, "value", "", ""} // compile-time condition slot
+		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 		// Inner body line: <inner_indent><body slot>
 		n_body: Node
-		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
-		append(&n_body.fields, Field{"", false, true, "body"})
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
+		append(&n_body.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n_body)
 		
 		// Closing brace: <indent>}
 		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n_close)
 	}
 	
 	// Insert a trailing continuation body-slot line after the block
 	new_body: Node
-	append(&new_body.fields, Field{strings.clone(indent), false, false, ""})
-	append(&new_body.fields, Field{"", false, true, "body"})
+	append(&new_body.fields, Field{strings.clone(indent), false, false, "", "", ""})
+	append(&new_body.fields, Field{"", false, true, "body", "", ""})
 	// For if/else with 4 inner nodes, insert after ni+4; else after ni+2
 	if kind == "__br_ifelse__" {
 		inject_at(&app.doc.nodes, ni + 5, new_body)
@@ -1032,32 +1013,32 @@ make_loop_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	switch kind {
 	case "__loop_for__": // for • {
 		// Header: for • {
-		f1 := Field{strings.clone("for "), false, false, ""}
-		f2 := Field{"", false, true, "value"} // condition slot
-		f3 := Field{strings.clone(" {"), false, false, ""}
+		f1 := Field{strings.clone("for "), false, false, "", "", ""}
+		f2 := Field{"", false, true, "value", "", ""} // condition slot
+		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 		// Inner body line: <inner_indent><body slot>
 		n_body: Node
-		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
-		append(&n_body.fields, Field{"", false, true, "body"})
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
+		append(&n_body.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n_body)
 		
 		// Closing brace: <indent>}
 		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n_close)
 		
 	case "__loop_forin__": // for • in • {
 		// Header: for • in • {
-		f1 := Field{strings.clone("for "), false, false, ""}
-		f2 := Field{"", false, true, "value"} // iter-var slot
-		f3 := Field{strings.clone(" in "), false, false, ""}
-		f4 := Field{"", false, true, "value"} // range slot
-		f5 := Field{strings.clone(" {"), false, false, ""}
+		f1 := Field{strings.clone("for "), false, false, "", "", ""}
+		f2 := Field{"", false, true, "value", "", ""} // iter-var slot
+		f3 := Field{strings.clone(" in "), false, false, "", "", ""}
+		f4 := Field{"", false, true, "value", "", ""} // range slot
+		f5 := Field{strings.clone(" {"), false, false, "", "", ""}
 		inject_at(fields, fi, f5)
 		inject_at(fields, fi, f4)
 		inject_at(fields, fi, f3)
@@ -1066,38 +1047,38 @@ make_loop_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		
 		// Inner body line: <inner_indent><body slot>
 		n_body: Node
-		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
-		append(&n_body.fields, Field{"", false, true, "body"})
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
+		append(&n_body.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n_body)
 		
 		// Closing brace: <indent>}
 		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n_close)
 		
 	case "__loop_forinf__": // for {
 		// Header: for {
-		f1 := Field{strings.clone("for {"), false, false, ""}
+		f1 := Field{strings.clone("for {"), false, false, "", "", ""}
 		inject_at(fields, fi, f1)
 		
 		// Inner body line: <inner_indent><body slot>
 		n_body: Node
-		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
-		append(&n_body.fields, Field{"", false, true, "body"})
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
+		append(&n_body.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n_body)
 		
 		// Closing brace: <indent>}
 		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n_close)
 	}
 	
 	// Insert a trailing continuation body-slot line after the block
 	new_body: Node
-	append(&new_body.fields, Field{strings.clone(indent), false, false, ""})
-	append(&new_body.fields, Field{"", false, true, "body"})
+	append(&new_body.fields, Field{strings.clone(indent), false, false, "", "", ""})
+	append(&new_body.fields, Field{"", false, true, "body", "", ""})
 	inject_at(&app.doc.nodes, ni + 3, new_body)
 }
 
@@ -1110,9 +1091,9 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	case "__stmt_decl__": // Variable (:=) -> name := •
 		var_name := generate_ident(app)
 		defer delete(var_name)
-		f1 := Field{strings.clone(var_name), true, false, ""} // editable name
-		f2 := Field{strings.clone(" := "), false, false, ""} // fixed
-		f3 := Field{"", false, true, "value"}                 // value slot
+		f1 := Field{strings.clone(var_name), true, false, "", "", ""} // editable name
+		f2 := Field{strings.clone(" := "), false, false, "", "", ""} // fixed
+		f3 := Field{"", false, true, "value", "", ""}                 // value slot
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
@@ -1120,11 +1101,11 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	case "__stmt_typed__": // Variable (typed) -> name: • = •
 		var_name := generate_ident(app)
 		defer delete(var_name)
-		f1 := Field{strings.clone(var_name), true, false, ""} // editable name
-		f2 := Field{strings.clone(": "), false, false, ""}   // fixed
-		f3 := Field{"", false, true, "type"}                  // type slot
-		f4 := Field{strings.clone(" = "), false, false, ""}  // fixed
-		f5 := Field{"", false, true, "value"}                 // value slot
+		f1 := Field{strings.clone(var_name), true, false, "", "", ""} // editable name
+		f2 := Field{strings.clone(": "), false, false, "", "", ""}   // fixed
+		f3 := Field{"", false, true, "type", "", ""}                  // type slot
+		f4 := Field{strings.clone(" = "), false, false, "", "", ""}  // fixed
+		f5 := Field{"", false, true, "value", "", ""}                 // value slot
 		inject_at(fields, fi, f5)
 		inject_at(fields, fi, f4)
 		inject_at(fields, fi, f3)
@@ -1134,9 +1115,9 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	case "__stmt_assign__": // Assignment -> name = •
 		var_name := generate_ident(app)
 		defer delete(var_name)
-		f1 := Field{strings.clone(var_name), true, false, ""} // editable name
-		f2 := Field{strings.clone(" = "), false, false, ""}  // fixed
-		f3 := Field{"", false, true, "value"}                 // value slot
+		f1 := Field{strings.clone(var_name), true, false, "", "", ""} // editable name
+		f2 := Field{strings.clone(" = "), false, false, "", "", ""}  // fixed
+		f3 := Field{"", false, true, "value", "", ""}                 // value slot
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
@@ -1144,10 +1125,10 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	case "__stmt_call__": // Procedure call -> name( • )
 		call_name := generate_ident(app)
 		defer delete(call_name)
-		f1 := Field{strings.clone(call_name), true, false, ""} // editable name
-		f2 := Field{strings.clone("( "), false, false, ""}      // fixed
-		f3 := Field{"", false, true, "value"}                    // value slot for arg
-		f4 := Field{strings.clone(" )"), false, false, ""}      // fixed
+		f1 := Field{strings.clone(call_name), true, false, "", "", ""} // editable name
+		f2 := Field{strings.clone("("), false, false, "", "", ""}       // fixed
+		f3 := Field{"", false, true, "value", "", ""}                    // value slot for arg
+		f4 := Field{strings.clone(")"), false, false, "", "", ""}       // fixed
 		inject_at(fields, fi, f4)
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
@@ -1156,8 +1137,8 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	
 	// Insert a new body slot line after the current node
 	new_body: Node
-	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
-	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+	append(&new_body.fields, Field{strings.clone("    "), false, false, "", "", ""}) // indent
+	append(&new_body.fields, Field{"", false, true, "body", "", ""})                  // body slot
 	inject_at(&app.doc.nodes, ni + 1, new_body)
 }
 
@@ -1174,13 +1155,13 @@ make_multi_decl :: proc(app: ^App, ni, fi: int) {
 	defer delete(name2)
 	
 	// Build fields: name1 + ", " + name2 + " := " + value_slot1 + ", " + value_slot2
-	f1 := Field{strings.clone(name1), true, false, ""}  // editable name 1
-	f2 := Field{strings.clone(", "), false, false, ""}  // fixed comma
-	f3 := Field{strings.clone(name2), true, false, ""}  // editable name 2
-	f4 := Field{strings.clone(" := "), false, false, ""} // fixed :=
-	f5 := Field{"", false, true, "value"}                 // value slot 1
-	f6 := Field{strings.clone(", "), false, false, ""}  // fixed comma
-	f7 := Field{"", false, true, "value"}                 // value slot 2
+	f1 := Field{strings.clone(name1), true, false, "", "", ""}  // editable name 1
+	f2 := Field{strings.clone(", "), false, false, "", "", ""}  // fixed comma
+	f3 := Field{strings.clone(name2), true, false, "", "", ""}  // editable name 2
+	f4 := Field{strings.clone(" := "), false, false, "", "", ""} // fixed :=
+	f5 := Field{"", false, true, "value", "", ""}                 // value slot 1
+	f6 := Field{strings.clone(", "), false, false, "", "", ""}  // fixed comma
+	f7 := Field{"", false, true, "value", "", ""}                 // value slot 2
 	
 	inject_at(fields, fi, f7)
 	inject_at(fields, fi, f6)
@@ -1192,8 +1173,8 @@ make_multi_decl :: proc(app: ^App, ni, fi: int) {
 	
 	// Insert a new body slot line after the current node
 	new_body: Node
-	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
-	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+	append(&new_body.fields, Field{strings.clone("    "), false, false, "", "", ""}) // indent
+	append(&new_body.fields, Field{"", false, true, "body", "", ""})                  // body slot
 	inject_at(&app.doc.nodes, ni + 1, new_body)
 }
 
@@ -1206,21 +1187,16 @@ make_call_this_package :: proc(app: ^App, ni, fi: int, proc_name: string) {
 	// Remove the slot field
 	ordered_remove(fields, fi)
 	
-	// Insert call statement: name( • )
-	f1 := Field{strings.clone(proc_name), false, false, ""} // fixed proc name
-	f2 := Field{strings.clone("( "), false, false, ""}      // fixed
-	f3 := Field{"", false, true, "value"}                    // value slot for arg
-	f4 := Field{strings.clone(" )"), false, false, ""}      // fixed
-	inject_at(fields, fi, f4)
-	inject_at(fields, fi, f3)
-	inject_at(fields, fi, f2)
-	inject_at(fields, fi, f1)
+	// Insert call statement: name( • , • ) with one dot per parameter
+	sig := call_signature(app, "", proc_name)
+	inject_at(fields, fi, Field{strings.clone(proc_name), false, false, "", "", ""}) // fixed proc name
+	inject_call_args(app, fields, fi + 1, sig)
 	
 	// Only add a trailing body slot line if the original slot was a body slot
 	if was_body {
 		new_body: Node
-		append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
-		append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+		append(&new_body.fields, Field{strings.clone("    "), false, false, "", "", ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body", "", ""})                  // body slot
 		inject_at(&app.doc.nodes, ni + 1, new_body)
 	}
 }
@@ -1237,24 +1213,19 @@ make_call_import :: proc(app: ^App, ni, fi: int, pkg_name: string) {
 	// Insert call statement: pkg.name( • )
 	proc_name := generate_ident(app)
 	defer delete(proc_name)
-	f1 := Field{strings.clone(pkg_name), false, false, ""}     // fixed package name
-	f2 := Field{strings.clone("."), false, false, ""}        // fixed dot
-	f3 := Field{strings.clone(proc_name), true, false, ""}    // editable proc name
-	f4 := Field{strings.clone("( "), false, false, ""}       // fixed
-	f5 := Field{"", false, true, "value"}                     // value slot for arg
-	f6 := Field{strings.clone(" )"), false, false, ""}       // fixed
-	inject_at(fields, fi, f6)
-	inject_at(fields, fi, f5)
-	inject_at(fields, fi, f4)
-	inject_at(fields, fi, f3)
-	inject_at(fields, fi, f2)
-	inject_at(fields, fi, f1)
+	inject_at(fields, fi,
+		Field{strings.clone(pkg_name), false, false, "", "", ""},  // fixed package name
+		Field{strings.clone("."), false, false, "", "", ""},       // fixed dot
+		Field{strings.clone(proc_name), true, false, "", "", ""},  // editable proc name
+	)
+	// Unknown proc: any number of args (green "add argument" dot).
+	inject_call_args(app, fields, fi + 3, Call_Sig{variadic = true})
 	
 	// Only add a trailing body slot line if the original slot was a body slot
 	if was_body {
 		new_body: Node
-		append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
-		append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+		append(&new_body.fields, Field{strings.clone("    "), false, false, "", "", ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body", "", ""})                  // body slot
 		inject_at(&app.doc.nodes, ni + 1, new_body)
 	}
 }
@@ -1268,25 +1239,20 @@ make_import_proc_call :: proc(app: ^App, ni, fi: int, pkg_name, proc_name: strin
 	// Remove the slot field
 	ordered_remove(fields, fi)
 	
-	// Insert call statement: pkg.proc( • )
-	f1 := Field{strings.clone(pkg_name), false, false, ""}     // fixed package name
-	f2 := Field{strings.clone("."), false, false, ""}        // fixed dot
-	f3 := Field{strings.clone(proc_name), false, false, ""}   // fixed proc name
-	f4 := Field{strings.clone("( "), false, false, ""}       // fixed
-	f5 := Field{"", false, true, "value"}                     // value slot for arg
-	f6 := Field{strings.clone(" )"), false, false, ""}       // fixed
-	inject_at(fields, fi, f6)
-	inject_at(fields, fi, f5)
-	inject_at(fields, fi, f4)
-	inject_at(fields, fi, f3)
-	inject_at(fields, fi, f2)
-	inject_at(fields, fi, f1)
+	// Insert call statement: pkg.proc( • , • ) with one dot per parameter
+	sig := call_signature(app, pkg_name, proc_name)
+	inject_at(fields, fi,
+		Field{strings.clone(pkg_name), false, false, "", "", ""},  // fixed package name
+		Field{strings.clone("."), false, false, "", "", ""},       // fixed dot
+		Field{strings.clone(proc_name), false, false, "", "", ""}, // fixed proc name
+	)
+	inject_call_args(app, fields, fi + 3, sig)
 	
 	// Only add a trailing body slot line if the original slot was a body slot
 	if was_body {
 		new_body: Node
-		append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
-		append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+		append(&new_body.fields, Field{strings.clone("    "), false, false, "", "", ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body", "", ""})                  // body slot
 		inject_at(&app.doc.nodes, ni + 1, new_body)
 	}
 }
@@ -1299,34 +1265,34 @@ make_jump_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	
 	switch kind {
 	case "__jmp_return__": // return •
-		f1 := Field{strings.clone("return "), false, false, ""} // fixed
-		f2 := Field{"", false, true, "value"}                     // value slot
+		f1 := Field{strings.clone("return "), false, false, "", "", ""} // fixed
+		f2 := Field{"", false, true, "value", "", ""}                     // value slot
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 	case "__jmp_break__": // break
-		f1 := Field{strings.clone("break"), false, false, ""} // fixed
+		f1 := Field{strings.clone("break"), false, false, "", "", ""} // fixed
 		inject_at(fields, fi, f1)
 		
 	case "__jmp_continue__": // continue
-		f1 := Field{strings.clone("continue"), false, false, ""} // fixed
+		f1 := Field{strings.clone("continue"), false, false, "", "", ""} // fixed
 		inject_at(fields, fi, f1)
 		
 	case "__jmp_fallthrough__": // fallthrough
-		f1 := Field{strings.clone("fallthrough"), false, false, ""} // fixed
+		f1 := Field{strings.clone("fallthrough"), false, false, "", "", ""} // fixed
 		inject_at(fields, fi, f1)
 		
 	case "__jmp_defer__": // defer •
-		f1 := Field{strings.clone("defer "), false, false, ""} // fixed
-		f2 := Field{"", false, true, "value"}                    // value slot
+		f1 := Field{strings.clone("defer "), false, false, "", "", ""} // fixed
+		f2 := Field{"", false, true, "value", "", ""}                    // value slot
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 	}
 	
 	// Insert a new body slot line after the current node
 	new_body: Node
-	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
-	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+	append(&new_body.fields, Field{strings.clone("    "), false, false, "", "", ""}) // indent
+	append(&new_body.fields, Field{"", false, true, "body", "", ""})                  // body slot
 	inject_at(&app.doc.nodes, ni + 1, new_body)
 }
 
@@ -1343,36 +1309,36 @@ make_error_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	
 	switch kind {
 	case "__err_orreturn__": // • or_return
-		f1 := Field{"", false, true, "value"}                      // expr slot
-		f2 := Field{strings.clone(" or_return"), false, false, ""} // fixed
+		f1 := Field{"", false, true, "value", "", ""}                      // expr slot
+		f2 := Field{strings.clone(" or_return"), false, false, "", "", ""} // fixed
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 		// Insert a new body slot line after the current node
 		new_body: Node
-		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
-		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		append(&new_body.fields, Field{strings.clone(indent), false, false, "", "", ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body", "", ""})                 // body slot
 		inject_at(&app.doc.nodes, ni + 1, new_body)
 		
 	case "__err_orelse__": // • or_else •
-		f1 := Field{"", false, true, "value"}                      // first expr slot
-		f2 := Field{strings.clone(" or_else "), false, false, ""} // fixed
-		f3 := Field{"", false, true, "value"}                      // second expr slot
+		f1 := Field{"", false, true, "value", "", ""}                      // first expr slot
+		f2 := Field{strings.clone(" or_else "), false, false, "", "", ""} // fixed
+		f3 := Field{"", false, true, "value", "", ""}                      // second expr slot
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 		// Insert a new body slot line after the current node
 		new_body: Node
-		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
-		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		append(&new_body.fields, Field{strings.clone(indent), false, false, "", "", ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body", "", ""})                 // body slot
 		inject_at(&app.doc.nodes, ni + 1, new_body)
 		
 	case "__err_iferr__": // Multi-line: if • != nil { / indented body / }
 		// Header line: if • != nil {
-		f1 := Field{strings.clone("if "), false, false, ""}    // fixed
-		f2 := Field{"", false, true, "value"}                    // err expr slot
-		f3 := Field{strings.clone(" != nil {"), false, false, ""} // fixed
+		f1 := Field{strings.clone("if "), false, false, "", "", ""}    // fixed
+		f2 := Field{"", false, true, "value", "", ""}                    // err expr slot
+		f3 := Field{strings.clone(" != nil {"), false, false, "", "", ""} // fixed
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
@@ -1380,20 +1346,20 @@ make_error_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		// Inner body slot line (indented)
 		inner_indent := strings.concatenate({indent, "    "})
 		n2: Node
-		append(&n2.fields, Field{inner_indent, false, false, ""})
-		append(&n2.fields, Field{"", false, true, "body"})
+		append(&n2.fields, Field{inner_indent, false, false, "", "", ""})
+		append(&n2.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n2)
 		
 		// Closing brace line
 		n3: Node
-		append(&n3.fields, Field{strings.clone(indent), false, false, ""}) // indent
-		append(&n3.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n3.fields, Field{strings.clone(indent), false, false, "", "", ""}) // indent
+		append(&n3.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n3)
 		
 		// Trailing continuation body slot line
 		new_body: Node
-		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
-		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		append(&new_body.fields, Field{strings.clone(indent), false, false, "", "", ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body", "", ""})                 // body slot
 		inject_at(&app.doc.nodes, ni + 3, new_body)
 	}
 }
@@ -1412,66 +1378,66 @@ make_scope_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	switch kind {
 	case "__scope_block__": // Multi-line: { / indented body / }
 		// Header line: {
-		f1 := Field{strings.clone("{"), false, false, ""} // fixed
+		f1 := Field{strings.clone("{"), false, false, "", "", ""} // fixed
 		inject_at(fields, fi, f1)
 		
 		// Inner body slot line (indented)
 		inner_indent := strings.concatenate({indent, "    "})
 		n2: Node
-		append(&n2.fields, Field{inner_indent, false, false, ""})
-		append(&n2.fields, Field{"", false, true, "body"})
+		append(&n2.fields, Field{inner_indent, false, false, "", "", ""})
+		append(&n2.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n2)
 		
 		// Closing brace line
 		n3: Node
-		append(&n3.fields, Field{strings.clone(indent), false, false, ""}) // indent
-		append(&n3.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n3.fields, Field{strings.clone(indent), false, false, "", "", ""}) // indent
+		append(&n3.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n3)
 		
 		// Trailing continuation body slot line
 		new_body: Node
-		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
-		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		append(&new_body.fields, Field{strings.clone(indent), false, false, "", "", ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body", "", ""})                 // body slot
 		inject_at(&app.doc.nodes, ni + 3, new_body)
 		
 	case "__scope_using__": // using •
-		f1 := Field{strings.clone("using "), false, false, ""} // fixed
-		f2 := Field{"", false, true, "value"}                     // value slot
+		f1 := Field{strings.clone("using "), false, false, "", "", ""} // fixed
+		f2 := Field{"", false, true, "value", "", ""}                     // value slot
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 		// Insert a new body slot line after the current node
 		new_body: Node
-		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
-		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		append(&new_body.fields, Field{strings.clone(indent), false, false, "", "", ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body", "", ""})                 // body slot
 		inject_at(&app.doc.nodes, ni + 1, new_body)
 		
 	case "__scope_label__": // Multi-line: ‹label›: { / indented body / }
 		// Header line: label: {
 		label_name := generate_ident(app)
 		defer delete(label_name)
-		f1 := Field{strings.clone(label_name), true, false, ""} // editable label
-		f2 := Field{strings.clone(": {"), false, false, ""}    // fixed
+		f1 := Field{strings.clone(label_name), true, false, "", "", ""} // editable label
+		f2 := Field{strings.clone(": {"), false, false, "", "", ""}    // fixed
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
 		// Inner body slot line (indented)
 		inner_indent := strings.concatenate({indent, "    "})
 		n2: Node
-		append(&n2.fields, Field{inner_indent, false, false, ""})
-		append(&n2.fields, Field{"", false, true, "body"})
+		append(&n2.fields, Field{inner_indent, false, false, "", "", ""})
+		append(&n2.fields, Field{"", false, true, "body", "", ""})
 		inject_at(&app.doc.nodes, ni + 1, n2)
 		
 		// Closing brace line
 		n3: Node
-		append(&n3.fields, Field{strings.clone(indent), false, false, ""}) // indent
-		append(&n3.fields, Field{strings.clone("}"), false, false, ""})
+		append(&n3.fields, Field{strings.clone(indent), false, false, "", "", ""}) // indent
+		append(&n3.fields, Field{strings.clone("}"), false, false, "", "", ""})
 		inject_at(&app.doc.nodes, ni + 2, n3)
 		
 		// Trailing continuation body slot line
 		new_body: Node
-		append(&new_body.fields, Field{strings.clone(indent), false, false, ""}) // indent
-		append(&new_body.fields, Field{"", false, true, "body"})                 // body slot
+		append(&new_body.fields, Field{strings.clone(indent), false, false, "", "", ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body", "", ""})                 // body slot
 		inject_at(&app.doc.nodes, ni + 3, new_body)
 	}
 }
@@ -1499,12 +1465,17 @@ build_import_proc_menu :: proc(app: ^App, ref: string, path: string) -> []Entry 
 	
 	for u in used {
 		used_set[u] = true
+		u_ret := ""
+		for p in all_procs do if p.name == u { u_ret = p.ret; break }
 		append(&used_entries, Entry{
+			ret = u_ret,
+			ret_pkg = path,
 			label = strings.clone(u),
 			fill = "__call_import_proc__",
 			call_pkg = strings.clone(ref),
 			call_name = strings.clone(u),
 			owned_label = true,
+			pinned = true, // already called in this file: keep at the top
 		})
 	}
 	
@@ -1668,8 +1639,26 @@ build_block_children :: proc(ref: string, procs: []CoreProc) -> []Entry {
 				children = prefix_children,
 			})
 		}
-		
-		// Sort prefix groups alphabetically
+
+		// Names whose prefix isn't shared (e.g. a lone `GetFoo` among `Set...`) must
+		// stay reachable: list them alongside the groups, or bucket them if many.
+		grouped := make(map[string]bool, len(procs), context.temp_allocator)
+		for _, ps in prefix_groups do for q in ps do grouped[q.name] = true
+		leftover := make([dynamic]CoreProc, 0, 16, context.temp_allocator)
+		for p in procs do if p.name not_in grouped do append(&leftover, p)
+		if len(leftover) > 0 && len(leftover) <= FLAT_MAX {
+			leaves := build_flat_leaves(ref, leftover[:])
+			for l in leaves do append(&prefix_entries, l)
+			delete(leaves)
+		} else if len(leftover) > 0 {
+			append(&prefix_entries, Entry{
+				label = strings.clone("other..."),
+				owned_label = true,
+				children = build_alpha_buckets(ref, leftover[:]),
+			})
+		}
+
+		// Sort prefix groups (and ungrouped names) alphabetically
 		slice.sort_by(prefix_entries[:], proc(a, b: Entry) -> bool {
 			return a.label < b.label
 		})
@@ -1706,6 +1695,8 @@ build_flat_leaves :: proc(ref: string, procs: []CoreProc) -> []Entry {
 			call_pkg = strings.clone(ref),
 			call_name = strings.clone(p.name),
 			owned_label = true,
+			ret = p.ret,
+			ret_pkg = p.path,
 		})
 	}
 	// Return a proper slice that the caller will own
@@ -1903,7 +1894,8 @@ build_call_children :: proc(app: ^App) -> []Entry {
 			
 			// Make this package a group with procedure children
 			append(&import_calls, Entry{
-				label = imp.ref,
+				label = strings.clone(imp.ref), // imp.ref points into per-frame temp text
+				owned_label = true,
 				children = pkg_children,
 			})
 		}
@@ -2018,33 +2010,10 @@ open_slot_menu :: proc(app: ^App) {
 			grp("Error handling", errors),
 			grp("Scope and blocks", scopes),
 		)
-	} else if slot_kind == "value" {
-		// Build value literal menu for value slots
-		// First build the Type submenu (for rare cases like x := int)
-		type_entries: [dynamic]Entry
-		defer delete(type_entries)
-		
-		// Basic Odin types
-		basic_types := [?]string{
-			"int", "i8", "i16", "i32", "i64",
-			"u8", "u16", "u32", "u64", "uint", "uintptr",
-			"f32", "f64",
-			"bool", "string", "cstring", "rune", "byte", "rawptr",
-		}
-		for t in basic_types {
-			append(&type_entries, fill_leaf(t, t))
-		}
-		
-		// User-defined types
-		user_types := collect_user_types(app)
-		defer delete(user_types)
-		for t in user_types {
-			append(&type_entries, fill_leaf(t, t))
-		}
-		
-		// Build the slot menu with literal options
-		type_children := make([]Entry, len(type_entries))
-		copy(type_children, type_entries[:])
+	} else if slot_kind == "value" || slot_kind == "args" {
+		// Build value literal menu for value slots (and optional "args" dots)
+		// The Type submenu (for rare cases like x := int) - imports, user, basic types.
+		type_children := build_type_entries(app)
 
 		// Odin string/character literal variants (see Odin overview).
 		string_children := make_slice(
@@ -2061,35 +2030,14 @@ open_slot_menu :: proc(app: ^App) {
 			Entry{label = "nil", fill = "__lit_nil__"},
 			Entry{label = "Reference", fill = "__lit_ref__"},
 			Entry{label = strings.clone("Call"), owned_label = true, children = build_call_children(app)},
+			Entry{label = "Constant", children = build_const_entries(app)}, // win.MB_OK, ...
+			Entry{label = "Operator", children = build_operator_entries()},  // ● | ●, ● == ●, ...
 			Entry{label = "Type", children = type_children},
 		)
 	} else {
 		// Generic Type/Variable menu for other slots (kind=="type", kind=="")
-		// Build type submenu with basic types + user types
-		type_entries: [dynamic]Entry
-		defer delete(type_entries)
-		
-		// Basic Odin types
-		basic_types := [?]string{
-			"int", "i8", "i16", "i32", "i64",
-			"u8", "u16", "u32", "u64", "uint", "uintptr",
-			"f32", "f64",
-			"bool", "string", "cstring", "rune", "byte", "rawptr",
-		}
-		for t in basic_types {
-			append(&type_entries, fill_leaf(t, t))
-		}
-		
-		// User-defined types
-		user_types := collect_user_types(app)
-		defer delete(user_types)
-		for t in user_types {
-			append(&type_entries, fill_leaf(t, t))
-		}
-		
-		// Build the slot menu
-		type_children := make([]Entry, len(type_entries))
-		copy(type_children, type_entries[:])
+		// Type submenu: types from imports, then user types, then basic types.
+		type_children := build_type_entries(app)
 		
 		app.slot_menu = make_slice(
 			Entry{label = "Type", children = type_children},
@@ -2101,6 +2049,13 @@ open_slot_menu :: proc(app: ^App) {
 	clear_nav(app)
 	app.return_state = .Editor
 	app.state = .Radial
+	// Gray out fills that can't produce the type this slot expects (e.g. true for LPCWSTR).
+	if f := app.doc.nodes[ni].fields[fi]; f.hint != "" {
+		ctx := type_ctx_make(app)
+		if exp := slot_expected_type(&ctx, f); exp.cat != .Unknown {
+			apply_fit_dims(&ctx, app.slot_menu, exp)
+		}
+	}
 	push_menu(app, "Fill slot", app.slot_menu)
 }
 
@@ -2123,10 +2078,81 @@ selectable_in_node :: proc(app: ^App, ni: int) -> int {
 focus_dot :: proc(app: ^App) {
 	app.editor_line = len(app.doc.nodes)
 	app.editor_field = 0
+	app.editor_dot = true
+}
+
+// Focus the green insertion dot before node `at` (an insertion boundary, 0..=len).
+focus_dot_at :: proc(app: ^App, at: int) {
+	app.editor_line = clamp(at, 0, len(app.doc.nodes))
+	app.editor_field = 0
+	app.editor_dot = true
+}
+
+// Focus line `ni` itself (not the insertion dot before it).
+focus_line :: proc(app: ^App, ni: int) {
+	app.editor_line = ni
+	app.editor_dot = false
+	clamp_field(app)
+}
+
+// True when the cursor is on a green insertion dot (any of them, including the bottom one).
+on_dot :: proc(app: ^App) -> bool {
+	return app.editor_dot || app.editor_line >= len(app.doc.nodes)
+}
+
+// Green insertion dots: pts[i] (i in 0..=len(nodes)) is true when a dot sits before
+// node i, i.e. between top-level constructs. pts[0] and pts[len] are always true.
+// One pass over brace depth (equivalent to checking construct_range ends).
+insertion_points :: proc(app: ^App, allocator := context.temp_allocator) -> []bool {
+	n := len(app.doc.nodes)
+	pts := make([]bool, n + 1, allocator)
+	depth := 0
+	for i in 0 ..< n {
+		pts[i] = depth <= 0
+		depth += brace_delta(app, i)
+		if depth < 0 do depth = 0
+	}
+	pts[n] = true
+	return pts
+}
+
+// A cursor stop: either the green dot before node `line`, or line `line` itself.
+Cursor_Stop :: struct {
+	line: int,
+	dot:  bool,
+}
+
+// Visual ordering key: the dot before node i comes before line i.
+@(private)
+stop_key :: proc(line: int, dot: bool) -> int { return line * 2 + (dot ? 0 : 1) }
+
+// All cursor stops in top-to-bottom order: every green insertion dot plus every
+// line with at least one selectable field (editable identifier or slot).
+editor_stops :: proc(app: ^App, allocator := context.temp_allocator) -> [dynamic]Cursor_Stop {
+	n := len(app.doc.nodes)
+	pts := insertion_points(app, context.temp_allocator)
+	stops := make([dynamic]Cursor_Stop, 0, n + 2, allocator)
+	for i in 0 ..= n {
+		if pts[i] do append(&stops, Cursor_Stop{i, true})
+		if i < n && selectable_in_node(app, i) > 0 do append(&stops, Cursor_Stop{i, false})
+	}
+	return stops
+}
+
+// Snap the cursor onto a valid stop (after deletes/loads change the document).
+normalize_cursor :: proc(app: ^App) {
+	n := len(app.doc.nodes)
+	if app.editor_line < 0 do app.editor_line = 0
+	if app.editor_line >= n { focus_dot(app); return }
+	if !app.editor_dot && selectable_in_node(app, app.editor_line) > 0 { clamp_field(app); return }
+	pts := insertion_points(app, context.temp_allocator)
+	if pts[app.editor_line] { focus_dot_at(app, app.editor_line); return }
+	app.editor_dot = false
+	editor_move_line(app, +1)
 }
 
 clamp_field :: proc(app: ^App) {
-	if app.editor_line < len(app.doc.nodes) {
+	if !app.editor_dot && app.editor_line < len(app.doc.nodes) {
 		cnt := selectable_in_node(app, app.editor_line)
 		app.editor_field = cnt <= 0 ? 0 : clamp(app.editor_field, 0, cnt - 1)
 	} else {
@@ -2134,33 +2160,31 @@ clamp_field :: proc(app: ^App) {
 	}
 }
 
-// Move up/down between lines that have dots (green insertion dot is the bottom stop).
+// Move up/down through the cursor stops: lines that have dots, plus every green
+// insertion dot (top, between top-level constructs, and bottom).
 editor_move_line :: proc(app: ^App, dir: int) {
-	nlines := len(app.doc.nodes)
+	stops := editor_stops(app, context.temp_allocator)
+	cur := stop_key(app.editor_line, on_dot(app))
+	target := -1
 	if dir < 0 {
-		for i := app.editor_line - 1; i >= 0; i -= 1 {
-			if selectable_in_node(app, i) > 0 {
-				app.editor_line = i
-				clamp_field(app)
-				return
-			}
+		for i := len(stops) - 1; i >= 0; i -= 1 {
+			if stop_key(stops[i].line, stops[i].dot) < cur { target = i; break }
 		}
-		// nothing above: stay put
 	} else {
-		for i := app.editor_line + 1; i < nlines; i += 1 {
-			if selectable_in_node(app, i) > 0 {
-				app.editor_line = i
-				clamp_field(app)
-				return
-			}
+		for s, i in stops {
+			if stop_key(s.line, s.dot) > cur { target = i; break }
 		}
-		focus_dot(app) // nothing below -> green insertion dot
 	}
+	if target < 0 do return // nothing further in that direction: stay put
+	app.editor_line = stops[target].line
+	app.editor_dot = stops[target].dot
+	clamp_field(app)
 }
 
 // The currently highlighted field: line `editor_line`, the `editor_field`-th
 // selectable field on it. ok=false means the green insertion dot is focused.
 editor_target :: proc(app: ^App) -> (ni: int, fi: int, ok: bool) {
+	if app.editor_dot do return 0, 0, false
 	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return 0, 0, false
 	cnt := selectable_in_node(app, app.editor_line)
 	if cnt == 0 do return 0, 0, false
@@ -2228,6 +2252,7 @@ construct_range :: proc(app: ^App, ni: int) -> (start: int, end: int) {
 // Delete nodes [start..end] inclusive, freeing memory.
 // Delete the whole statement/construct the cursor is on (used by RT+Y).
 delete_focused_construct :: proc(app: ^App) {
+	if on_dot(app) do return
 	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return
 	s, e := construct_range(app, app.editor_line)
 	delete_construct(app, s, e)
@@ -2251,6 +2276,7 @@ editor_move_construct :: proc(app: ^App, dir: int) {
 		app.editor_line = s
 	}
 	app.editor_field = 0
+	app.editor_dot = false
 	if app.editor_line < nlines do clamp_field(app)
 }
 
@@ -2271,13 +2297,15 @@ delete_construct :: proc(app: ^App, start, end_param: int) {
 	// Clamp editor position.
 	app.editor_line = min(app.editor_line, len(app.doc.nodes))
 	app.editor_field = 0
-	clamp_field(app)
+	app.editor_dot = false
+	normalize_cursor(app)
 }
 
 // Delete the currently highlighted item (LT+B). Pragmatic rule: if the cursor is on a
 // top-level single-node statement, delete that node; if on a body-statement line, delete
 // just that line; if the line is a block header (contains '{'), delete the whole block.
 delete_selected :: proc(app: ^App) {
+	if on_dot(app) do return
 	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return
 	
 	// If the line contains '{', it's a block header -> delete the whole block
@@ -2298,7 +2326,7 @@ delete_selected :: proc(app: ^App) {
 	// Clamp editor position
 	app.editor_line = min(app.editor_line, len(app.doc.nodes))
 	app.editor_field = 0
-	clamp_field(app)
+	normalize_cursor(app)
 }
 
 // Edit the currently selected item (LT+A). Reopen the menu that created it for replacement.
@@ -2355,30 +2383,8 @@ open_type_menu_for_edit :: proc(app: ^App) {
 	app.return_state = .Editor
 	app.state = .Radial
 	
-	// Build type menu
-	type_entries: [dynamic]Entry
-	defer delete(type_entries)
-	
-	// Basic Odin types
-	basic_types := [?]string{
-		"int", "i8", "i16", "i32", "i64",
-		"u8", "u16", "u32", "u64", "uint", "uintptr",
-		"f32", "f64",
-		"bool", "string", "cstring", "rune", "byte", "rawptr",
-	}
-	for t in basic_types {
-		append(&type_entries, fill_leaf(t, t))
-	}
-	
-	// User-defined types
-	user_types := collect_user_types(app)
-	defer delete(user_types)
-	for t in user_types {
-		append(&type_entries, fill_leaf(t, t))
-	}
-	
-	type_children := make([]Entry, len(type_entries))
-	copy(type_children, type_entries[:])
+	// Build type menu: types from imports, then user types, then basic types.
+	type_children := build_type_entries(app)
 	
 	app.slot_menu = make_slice(Entry{label = "Type", children = type_children})
 	push_menu(app, "Edit Type", app.slot_menu)
@@ -2410,8 +2416,12 @@ doc_reset :: proc(app: ^App) {
 		delete(n.fields)
 	}
 	clear(&app.doc.nodes)
+	for h in app.hint_pool do delete(h)
+	delete(app.hint_pool)
+	app.hint_pool = nil
 	app.editor_line = 0
 	app.editor_field = 0
+	app.editor_dot = false
 	// Free slot menu if allocated
 	if app.slot_menu != nil {
 		free_entries(app.slot_menu)
@@ -2465,10 +2475,13 @@ make_view :: proc(app: ^App, title: string, raw: []Entry) -> MenuView {
 			}
 		}
 	}
-	// 3. Everything else (groups + remaining leaves), original order.
+	// 3. Pinned entries (e.g. procs/types already used in this file), original order.
+	for e in filtered do if e.pinned do append(&display, e)
+	// 4. Everything else (groups + remaining leaves), original order.
 	other: [dynamic]Entry
 	defer delete(other)
 	for e in filtered {
+		if e.pinned do continue
 		if e.import_path != "" && (e.import_path in seen) do continue
 		append(&other, e)
 	}
@@ -2509,9 +2522,9 @@ open_add_menu :: proc(app: ^App) {
 	clear_nav(app)
 	app.import_alias = false
 	// Set insert_at based on current editor position
-	if app.editor_line >= len(app.doc.nodes) {
-		// Green dot at the bottom
-		app.insert_at = len(app.doc.nodes)
+	if on_dot(app) {
+		// A green dot: insert right there (top, between constructs, or bottom)
+		app.insert_at = min(app.editor_line, len(app.doc.nodes))
 	} else {
 		// Insert after the current construct
 		_, e := construct_range(app, app.editor_line)
@@ -2579,12 +2592,12 @@ menu_select :: proc(app: ^App) {
 			// Build the new import node
 			n: Node
 			if app.import_alias {
-				append(&n.fields, Field{strings.clone("import "), false, false, ""})
-				append(&n.fields, Field{strings.clone(alias_default(e.import_path)), true, false, ""})
-				append(&n.fields, Field{strings.concatenate({" \"", e.import_path, "\""}), false, false, ""})
+				append(&n.fields, Field{strings.clone("import "), false, false, "", "", ""})
+				append(&n.fields, Field{strings.clone(alias_default(e.import_path)), true, false, "", "", ""})
+				append(&n.fields, Field{strings.concatenate({" \"", e.import_path, "\""}), false, false, "", "", ""})
 			} else {
 				node_txt := import_text(e.import_path, context.temp_allocator)
-				append(&n.fields, Field{strings.clone(node_txt), false, false, ""})
+				append(&n.fields, Field{strings.clone(node_txt), false, false, "", "", ""})
 			}
 			app.doc.nodes[ni] = n
 			record_recent(app, e.import_path)
@@ -2612,7 +2625,7 @@ menu_select :: proc(app: ^App) {
 				if len(app.doc.nodes[app.replace_ni].fields[app.replace_fi].text) > 0 {
 					delete(app.doc.nodes[app.replace_ni].fields[app.replace_fi].text)
 				}
-				app.doc.nodes[app.replace_ni].fields[app.replace_fi] = Field{strings.clone(e.fill), true, false, "type"}
+				app.doc.nodes[app.replace_ni].fields[app.replace_fi] = Field{strings.clone(fill_type_text(e)), true, false, "type", "", ""}
 			}
 			app.replacing = false
 			clear_nav(app)
@@ -2625,6 +2638,17 @@ menu_select :: proc(app: ^App) {
 			return
 		}
 		// Handle slot filling
+		// (An "args" dot = optional extra call argument; remember it to re-offer one.)
+		was_args, len_before := false, 0
+		args_hint, args_hint_pkg := "", ""
+		if app.slot_ni >= 0 && app.slot_ni < len(app.doc.nodes) {
+			fs := app.doc.nodes[app.slot_ni].fields
+			if app.slot_fi >= 0 && app.slot_fi < len(fs) {
+				was_args = fs[app.slot_fi].kind == "args"
+				len_before = len(fs)
+				args_hint, args_hint_pkg = fs[app.slot_fi].hint, fs[app.slot_fi].hint_pkg
+			}
+		}
 		if e.fill == "__var__" {
 			make_slot_variable(app, app.slot_ni, app.slot_fi)
 		} else if e.fill == "__param__" {
@@ -2651,8 +2675,19 @@ menu_select :: proc(app: ^App) {
 			make_error_statement(app, app.slot_ni, app.slot_fi, e.fill)
 		} else if e.fill == "__scope_block__" || e.fill == "__scope_using__" || e.fill == "__scope_label__" {
 			make_scope_statement(app, app.slot_ni, app.slot_fi, e.fill)
+		} else if e.fill == TYPE_IMPORT_FILL {
+			set_slot_type(app, app.slot_ni, app.slot_fi, fill_type_text(e)) // e.g. win.HWND
+		} else if e.fill == CONST_IMPORT_FILL {
+			set_slot_text(app, app.slot_ni, app.slot_fi, fmt.tprintf("%s.%s", e.call_pkg, e.call_name)) // e.g. win.MB_OK
+		} else if e.fill == OP_FILL {
+			make_slot_operator(app, app.slot_ni, app.slot_fi, e.call_name) // ● | ●
 		} else {
 			set_slot_type(app, app.slot_ni, app.slot_fi, e.fill)
+		}
+		if was_args {
+			// The green "add argument" dot was used: offer another one after it.
+			fs := &app.doc.nodes[app.slot_ni].fields
+			append_more_args_slot(fs, app.slot_fi, len(fs) - len_before + 1, args_hint, args_hint_pkg)
 		}
 		clear_nav(app)
 		clamp_field(app)
@@ -2667,7 +2702,7 @@ menu_select :: proc(app: ^App) {
 		return // placeholder, no-op
 	}
 	clear_nav(app)
-	focus_dot(app) // keep the green dot focused after inserting
+	focus_dot_at(app, app.insert_at) // keep the green dot just after the insertion focused
 	app.state = app.return_state
 }
 
@@ -2711,7 +2746,7 @@ update :: proc(app: ^App, inp: Input) {
 			if inp.down || inp.right do editor_move_construct(app, +1)
 		} else {
 			// Left/Right move between dots on the current line.
-			if app.editor_line < nlines {
+			if !on_dot(app) {
 				cnt := selectable_in_node(app, app.editor_line)
 				if cnt > 0 {
 					if inp.left  do app.editor_field = max(0, app.editor_field - 1)
@@ -2724,8 +2759,8 @@ update :: proc(app: ^App, inp: Input) {
 		}
 		if inp.cancel do app.state = .Menu
 		if inp.confirm {
-			if app.editor_line >= nlines {
-				open_add_menu(app) // A on the green dot = Add menu
+			if on_dot(app) {
+				open_add_menu(app) // A on a green dot = Add menu
 			} else {
 				// Check if we're on a slot field
 				ni, fi, ok := editor_target(app)

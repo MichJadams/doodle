@@ -269,26 +269,37 @@ filenav_go_parent :: proc() {
 
 // filenav_open_file sets the current file and updates alt-tab history.
 filenav_open_file :: proc(path: string) {
-	if g_current_file != "" {
-		// Swap previous file.
+	if g_current_file != "" && g_current_file != path {
+		// Remember the previous file for alt-tab.
 		if g_prev_file != "" do delete(g_prev_file)
-		g_prev_file = g_current_file
-	} else if g_current_file != "" {
-		delete(g_current_file)
+		g_prev_file = strings.clone(g_current_file)
 	}
-	g_current_file = strings.clone(path)
+	filenav_load(path)
+}
+
+// filenav_load makes `path` the current file: loads it into the editor, and points
+// the project (save target + run cwd) at the file's folder.
+filenav_load :: proc(path: string) {
+	set_current_file(path)
+	set_project_dir(filepath.dir(path))
 	// Load the opened file's content into the editor document.
-	if g_app != nil do model.load_file(g_app, path)
+	if g_app != nil {
+		if model.load_file(g_app, path) {
+			g_app.state = .Editor
+		} else {
+			set_status(fmt.tprintf("could not open %s", path))
+		}
+	}
 }
 
 // filenav_alt_tab swaps to the previously opened file and exits file-nav.
 filenav_alt_tab :: proc() {
 	if g_prev_file != "" {
-		// Swap current and previous.
-		tmp := g_current_file
-		g_current_file = strings.clone(g_prev_file)
-		if g_prev_file != "" do delete(g_prev_file)
-		g_prev_file = tmp
+		// Swap current and previous, and load the previous file into the editor.
+		next := g_prev_file
+		g_prev_file = g_current_file != "" ? strings.clone(g_current_file) : ""
+		filenav_load(next)
+		delete(next)
 		filenav_exit()
 	}
 	// If no previous file, do nothing (or could beep/show message).

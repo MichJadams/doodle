@@ -50,7 +50,8 @@ run_cmds_path :: proc() -> string {
 load_run_cmds :: proc() {
 	if g_run_loaded do return
 	g_run_loaded = true
-	
+
+	for c in g_run_cmds do delete(c.cmd)
 	clear(&g_run_cmds)
 	
 	path := run_cmds_path()
@@ -118,24 +119,59 @@ save_run_cmds :: proc() {
 run_command :: proc(cmd: string) {
 	if cmd == "" do return
 	
+	// Save first so the command runs the code that's on screen.
+	if g_app != nil && !save_current(g_app) do return
+
 	// Use g_project_dir as working directory, or current dir if not set
 	dir := g_project_dir
 	if dir == "" {
 		dir = "."
 	}
-	
+	// cmd.exe wants backslashes; quote the path in case it has spaces.
+	win_dir, _ := strings.replace_all(dir, "/", "\\", context.temp_allocator)
+
+	// Make sure `odin` resolves even if Doodle was launched from an environment
+	// whose PATH doesn't include the compiler (e.g. a shell started before PATH changed).
+	path_prefix := ""
+	if od := odin_dir(); od != "" {
+		path_prefix = fmt.tprintf("set \"PATH=%s;%%PATH%%\" && ", od)
+	}
+
 	// Build command to open a new visible console that stays open:
-	// cmd /c start "Doodle Run" cmd /k "cd /d <dir> && <cmd>"
+	// cmd /c start "Doodle Run" cmd /k "set "PATH=<odin>;%PATH%" && cd /d "<dir>" && <cmd>"
 	// /k keeps the console open after the command finishes
-	full_cmd := fmt.tprintf("cmd /c start \"Doodle Run\" cmd /k \"cd /d %s && %s\"", dir, cmd)
-	
+	full_cmd := fmt.tprintf("cmd /c start \"Doodle Run\" cmd /k \"%scd /d \"%s\" && %s\"", path_prefix, win_dir, cmd)
+
 	// Convert to C string and execute
 	cstr := strings.clone_to_cstring(full_cmd, context.temp_allocator)
 	libc.system(cstr)
-	
-	// Store message
+
+	set_status(fmt.tprintf("ran: %s", cmd))
+}
+
+// odin_dir finds the folder holding odin.exe (backslashed, temp-allocated), or "".
+// Order: $ODIN_DIR, $ODIN_ROOT, then the default install at C:\Odin.
+odin_dir :: proc() -> string {
+	when ODIN_OS != .Windows do return ""
+	candidates := [?]string{
+		os.get_env("ODIN_DIR", context.temp_allocator),
+		os.get_env("ODIN_ROOT", context.temp_allocator),
+		"C:\\Odin",
+	}
+	for c in candidates {
+		if c == "" do continue
+		if os.exists(fmt.tprintf("%s\\odin.exe", c)) {
+			d, _ := strings.replace_all(c, "/", "\\", context.temp_allocator)
+			return d
+		}
+	}
+	return ""
+}
+
+// set_status shows a short message in the bottom-right corner (save/run feedback).
+set_status :: proc(msg: string) {
 	if g_run_msg != "" do delete(g_run_msg)
-	g_run_msg = fmt.aprintf("ran: %s", cmd)
+	g_run_msg = strings.clone(msg)
 	g_run_msg_time = g_time
 }
 
@@ -152,9 +188,7 @@ run_favorite :: proc() {
 	}
 	
 	// No favorite found (shouldn't happen with ensure_default_run)
-	if g_run_msg != "" do delete(g_run_msg)
-	g_run_msg = strings.clone("No favorite command set")
-	g_run_msg_time = g_time
+	set_status("No favorite command set")
 }
 
 // toggle_favorite toggles the favorite flag on a command (only one favorite at a time).

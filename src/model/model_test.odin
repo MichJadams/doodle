@@ -1774,8 +1774,7 @@ test_body_calls_category_this_package :: proc(t: ^testing.T) {
 	// Add two procs so we have one to call
 	add_proc(&app)
 	// Change the first proc name to something recognizable
-	update(&app, Input{up = true}) // to closing brace
-	update(&app, Input{up = true}) // to body slot
+	update(&app, Input{up = true}) // to body slot (the '}' line has no dots)
 	update(&app, Input{up = true}) // to signature line
 	ni, fi, ok := editor_target(&app)
 	testing.expect(t, ok)
@@ -1783,7 +1782,6 @@ test_body_calls_category_this_package :: proc(t: ^testing.T) {
 	set_field_text(&app, ni, fi, "my_proc")
 	// Navigate back to green dot
 	update(&app, Input{down = true}) // to body slot
-	update(&app, Input{down = true}) // to closing brace
 	update(&app, Input{down = true}) // to green dot
 	// Add a second proc
 	add_proc(&app)
@@ -1809,16 +1807,16 @@ test_body_calls_category_this_package :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.state, State.Editor)
 	// Verify it inserts a call statement
 	txt := node_text(app.doc.nodes[4], context.temp_allocator) // second proc's body line
-	testing.expect(t, strings.contains(txt, "my_proc("), "body should contain 'my_proc('")
-	// Verify there's a value slot
-	found_value_slot := false
+	testing.expect(t, strings.contains(txt, "my_proc()"), "body should contain 'my_proc()'")
+	// my_proc was declared with no parameters, so the call gets no argument dots
+	found_arg_slot := false
 	for f in app.doc.nodes[4].fields {
-		if f.slot && f.kind == "value" {
-			found_value_slot = true
+		if f.slot && (f.kind == "value" || f.kind == "args") {
+			found_arg_slot = true
 			break
 		}
 	}
-	testing.expect(t, found_value_slot, "should have value slot for argument")
+	testing.expect(t, !found_arg_slot, "a zero-parameter proc call should have no argument dots")
 	// Verify a new body slot line was inserted
 	testing.expect_value(t, len(app.doc.nodes), initial_node_count + 1)
 }
@@ -1861,6 +1859,7 @@ test_body_calls_category_import :: proc(t: ^testing.T) {
 	leaf := drill_to_first_leaf(&app)
 	testing.expect(t, leaf != nil, "should find a proc leaf")
 	testing.expect(t, leaf.fill == "__call_import_proc__", "leaf should be a proc call")
+	leaf_name := strings.clone(leaf.call_name, context.temp_allocator) // the menu is freed on select
 	// Select it
 	confirm(&app)
 	testing.expect_value(t, app.state, State.Editor)
@@ -1870,21 +1869,22 @@ test_body_calls_category_import :: proc(t: ^testing.T) {
 	// Verify proc name is fixed (not editable) now
 	found_fixed_proc := false
 	for f in app.doc.nodes[2].fields {
-		if !f.editable && !f.slot && len(f.text) > 0 && f.text != "." && f.text != "( " && f.text != " )" && f.text != "    " && f.text != "fmt" {
+		if !f.editable && !f.slot && len(f.text) > 0 && f.text != "." && f.text != "(" && f.text != ")" && f.text != "    " && f.text != "fmt" {
 			found_fixed_proc = true
 			break
 		}
 	}
 	testing.expect(t, found_fixed_proc, "should have fixed proc name after fmt.")
-	// Verify there's a value slot
-	found_value_slot := false
+	// The argument dots match the proc's signature (one per required param,
+	// a green dot if variadic, or "()" for a proc with no parameters).
+	req, variadic := call_arity(&app, "fmt", leaf_name)
+	n_value, n_args := 0, 0
 	for f in app.doc.nodes[2].fields {
-		if f.slot && f.kind == "value" {
-			found_value_slot = true
-			break
-		}
+		if f.slot && f.kind == "value" do n_value += 1
+		if f.slot && f.kind == "args" do n_args += 1
 	}
-	testing.expect(t, found_value_slot, "should have value slot for argument")
+	testing.expect_value(t, n_value, req)
+	testing.expect_value(t, n_args, variadic ? 1 : 0)
 	// Verify a new body slot line was inserted
 	testing.expect_value(t, len(app.doc.nodes), initial_node_count + 1)
 }
@@ -1918,7 +1918,7 @@ test_editor_move_construct_steps_by_statement :: proc(t: ^testing.T) {
 	add_package(&app)
 	add_proc(&app)
 	n := len(app.doc.nodes) // 4
-	app.editor_line = 0 // package
+	focus_line(&app, 0) // package
 	editor_move_construct(&app, +1)
 	testing.expect_value(t, app.editor_line, 1) // start of proc
 	editor_move_construct(&app, +1)
@@ -1936,7 +1936,7 @@ test_delete_focused_construct_removes_whole_proc :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_package(&app)
 	add_proc(&app)
-	app.editor_line = 2 // focus INSIDE the proc body
+	focus_line(&app, 2) // focus INSIDE the proc body
 	delete_focused_construct(&app)
 	// the entire proc (3 nodes) is gone; the package remains
 	testing.expect_value(t, len(app.doc.nodes), 1)
@@ -2576,7 +2576,7 @@ test_import_proc_menu_drills_to_proc :: proc(t: ^testing.T) {
 	// Find the body line with the call
 	for n in app.doc.nodes {
 		txt := node_text(n, context.temp_allocator)
-		if strings.contains(txt, "fmt.") && strings.contains(txt, "( ") {
+		if strings.contains(txt, "fmt.") && strings.contains(txt, "(") {
 			// Found the call line
 			testing.expect(t, strings.has_prefix(txt, "    fmt."), "call should start with indent and fmt.")
 			return
@@ -3056,7 +3056,7 @@ test_value_slot_call_via_import :: proc(t: ^testing.T) {
 	// Verify it inserts a call expression on the SAME line (no extra trailing body-slot line)
 	txt := node_text(app.doc.nodes[2], context.temp_allocator)
 	testing.expect(t, strings.contains(txt, "fmt."), "should contain 'fmt.'")
-	testing.expect(t, strings.contains(txt, "( "), "should contain '( '")
+	testing.expect(t, strings.contains(txt, "("), "should contain '('")
 	testing.expect(t, strings.contains(txt, ":="), "should contain ':=' on same line")
 	// Verify NO extra trailing body-slot line was added
 	testing.expect_value(t, len(app.doc.nodes), node_count_before)
@@ -3086,7 +3086,7 @@ test_value_slot_builtin_call :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.state, State.Editor)
 	// Verify it inserts len( on the same line
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "len( "), "should contain 'len( '")
+	testing.expect(t, strings.contains(txt, "len("), "should contain 'len('")
 	testing.expect(t, strings.contains(txt, ":="), "should contain ':=' on same line")
 }
 
@@ -3112,7 +3112,7 @@ test_body_slot_call_still_adds_trailing_line :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.state, State.Editor)
 	// Verify it inserts len( as a statement
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "len( "), "should contain 'len( '")
+	testing.expect(t, strings.contains(txt, "len("), "should contain 'len('")
 	// Verify a trailing body slot line WAS added (node count increases by 1)
 	testing.expect_value(t, len(app.doc.nodes), node_count_before + 1)
 	// Verify the new line (node 2, inserted after the call) has a body slot
@@ -3237,7 +3237,7 @@ test_doc_insert_at_position :: proc(t: ^testing.T) {
 	// Insert at position 0 (before the package line)
 	app.insert_at = 0
 	n: Node
-	append(&n.fields, Field{strings.clone("// comment"), false, false, ""})
+	append(&n.fields, Field{strings.clone("// comment"), false, false, "", "", ""})
 	doc_insert(&app, n)
 	
 	testing.expect_value(t, len(app.doc.nodes), 2)
@@ -3296,7 +3296,7 @@ test_delete_selected_single_import :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(app.doc.nodes), 3)
 	
 	// Focus the first import and delete it
-	app.editor_line = 1
+	focus_line(&app, 1)
 	delete_selected(&app)
 	
 	testing.expect_value(t, len(app.doc.nodes), 2)
@@ -3323,7 +3323,7 @@ test_delete_selected_proc_body_line :: proc(t: ^testing.T) {
 	testing.expect(t, initial_count > 3, "should have proc + body statements")
 	
 	// Delete the body statement line
-	app.editor_line = 1
+	focus_line(&app, 1)
 	delete_selected(&app)
 	
 	testing.expect(t, len(app.doc.nodes) < initial_count, "body line should be deleted")
@@ -3341,7 +3341,7 @@ test_delete_selected_block_header_deletes_whole_block :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(app.doc.nodes), 3)
 	
 	// Delete from the header line (contains '{')
-	app.editor_line = 0
+	focus_line(&app, 0)
 	delete_selected(&app)
 	
 	testing.expect_value(t, len(app.doc.nodes), 0)
@@ -3366,7 +3366,7 @@ test_edit_selected_type_field :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.doc.nodes[0].fields[4].kind, "type")
 	
 	// Focus the return type field
-	app.editor_line = 0
+	focus_line(&app, 0)
 	app.editor_field = 0 // first selectable (the proc name)
 	update(&app, Input{right = true}) // move to params slot
 	update(&app, Input{right = true}) // move to return type
@@ -3585,4 +3585,102 @@ test_fixup_line_trim_trailing :: proc(t: ^testing.T) {
 	result := fixup_line(input, context.temp_allocator)
 	testing.expect(t, !strings.has_suffix(result, " "), "should trim trailing spaces")
 	testing.expect_value(t, result, "package main")
+}
+
+// ---- Green insertion dots: every dot is reachable ----
+
+@(test)
+test_dots_reachable_between_constructs :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app) // node 0: package main
+	add_proc(&app)    // nodes 1..3: main :: proc(..) {, body, }
+	testing.expect(t, on_dot(&app), "after inserting, a green dot is focused")
+	testing.expect_value(t, app.editor_line, 4)
+
+	update(&app, Input{up = true}) // body slot
+	testing.expect(t, !on_dot(&app))
+	testing.expect_value(t, app.editor_line, 2)
+	update(&app, Input{up = true}) // proc signature
+	testing.expect_value(t, app.editor_line, 1)
+	testing.expect(t, !on_dot(&app))
+	update(&app, Input{up = true}) // dot between package and proc
+	testing.expect(t, on_dot(&app), "middle green dot should be reachable")
+	testing.expect_value(t, app.editor_line, 1)
+	_, _, ok := editor_target(&app)
+	testing.expect(t, !ok, "a dot has no field target")
+	update(&app, Input{up = true}) // package line
+	testing.expect(t, !on_dot(&app))
+	testing.expect_value(t, app.editor_line, 0)
+	update(&app, Input{up = true}) // top dot
+	testing.expect(t, on_dot(&app), "top green dot should be reachable")
+	testing.expect_value(t, app.editor_line, 0)
+	update(&app, Input{up = true}) // nothing above: stay
+	testing.expect(t, on_dot(&app))
+	testing.expect_value(t, app.editor_line, 0)
+
+	// And back down through every stop.
+	update(&app, Input{down = true}); testing.expect(t, !on_dot(&app) && app.editor_line == 0)
+	update(&app, Input{down = true}); testing.expect(t, on_dot(&app) && app.editor_line == 1)
+	update(&app, Input{down = true}); testing.expect(t, !on_dot(&app) && app.editor_line == 1)
+	update(&app, Input{down = true}); testing.expect(t, !on_dot(&app) && app.editor_line == 2)
+	update(&app, Input{down = true}); testing.expect(t, on_dot(&app) && app.editor_line == 4)
+	update(&app, Input{down = true}); testing.expect(t, on_dot(&app) && app.editor_line == 4)
+}
+
+@(test)
+test_insert_at_middle_dot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app)
+	add_proc(&app)
+	focus_dot_at(&app, 1) // dot between package and proc
+	add_proc(&app)        // inserts a second proc at the middle dot
+	testing.expect_value(t, len(app.doc.nodes), 7)
+	testing.expect(t, strings.has_prefix(node_text(app.doc.nodes[0], context.temp_allocator), "package"))
+	testing.expect(t, strings.contains(node_text(app.doc.nodes[1], context.temp_allocator), "proc"))
+	testing.expect_value(t, node_text(app.doc.nodes[3], context.temp_allocator), "}")
+	// Cursor lands on the dot right after the inserted proc.
+	testing.expect(t, on_dot(&app))
+	testing.expect_value(t, app.editor_line, 4)
+}
+
+@(test)
+test_insert_at_top_dot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	focus_dot_at(&app, 0)
+	add_package(&app)
+	testing.expect(t, strings.has_prefix(node_text(app.doc.nodes[0], context.temp_allocator), "package"))
+	testing.expect(t, on_dot(&app))
+	testing.expect_value(t, app.editor_line, 1)
+}
+
+@(test)
+test_delete_on_dot_is_noop :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app)
+	add_proc(&app)
+	focus_dot_at(&app, 1)
+	delete_selected(&app)
+	delete_focused_construct(&app)
+	testing.expect_value(t, len(app.doc.nodes), 4)
+}
+
+@(test)
+test_insertion_points :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app)
+	add_proc(&app)
+	pts := insertion_points(&app, context.temp_allocator)
+	testing.expect_value(t, len(pts), 5)
+	testing.expect(t, pts[0] && pts[1] && !pts[2] && !pts[3] && pts[4])
 }
