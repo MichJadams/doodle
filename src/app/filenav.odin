@@ -8,6 +8,7 @@ package main
 import "../gpu"
 import "../text"
 import "../model"
+import "../stt"
 import "core:os"
 import "core:fmt"
 import "core:strings"
@@ -24,6 +25,8 @@ g_fn_index: int = 0     // Selected entry index (cursor position).
 g_current_file: string  // Path to currently open file (for saving / display).
 g_prev_file:    string  // Previously opened file (for alt-tab).
 
+g_stt_e: ^stt.Engine = nil // STT engine from main (for search speech input).
+
 // Directory entry for display.
 Fn_Entry :: struct {
 	name:   string,
@@ -34,8 +37,10 @@ Fn_Entry :: struct {
 g_fn_entries: [dynamic]Fn_Entry // Current directory listing (sorted: dirs first, then files).
 
 // Search state (Y button).
-g_fn_search_active: bool   = false
-g_fn_search_query:  string = ""
+g_fn_search_active:    bool   = false
+g_fn_search_query:     string = ""
+g_fn_filtered:         [dynamic]Fn_Entry // Filtered entries during search.
+g_fn_search_recording: bool   = false    // Recording speech for search query.
 
 // --- File navigation lifecycle ---
 
@@ -44,11 +49,11 @@ filenav_init :: proc() {
 	if g_fn_dir == "" {
 		// Set initial directory: g_project_dir if set, else g_projects_dir, else current working dir.
 		if g_project_dir != "" {
-			g_fn_dir = g_project_dir
+			g_fn_dir = strings.clone(g_project_dir)
 		} else if g_projects_dir != "" {
-			g_fn_dir = g_projects_dir
+			g_fn_dir = strings.clone(g_projects_dir)
 		} else {
-			// Fall back to current working directory (use ".").
+			// Fall back to current working directory.
 			g_fn_dir = strings.clone(".")
 		}
 	}
@@ -56,51 +61,75 @@ filenav_init :: proc() {
 }
 
 // filenav_refresh_entries reads the directory and populates g_fn_entries.
-// TODO: implement actual directory reading using platform-specific APIs.
-// For v1: stub implementation with placeholder entries.
+// Uses os.read_directory_by_path + os.is_dir for real disk reading.
 filenav_refresh_entries :: proc() {
+	// Free old entries
+	for entry in g_fn_entries {
+		if entry.name != "" do delete(entry.name)
+		if entry.path != "" do delete(entry.path)
+	}
 	clear(&g_fn_entries)
 	
-	// STUB: For v1, show placeholder entries to demonstrate the UI.
-	// A full implementation would use Windows FindFirstFile/FindNextFile or
-	// a portable Odin API once available.
-	
-	// Add a few example entries (mix of dirs and files).
-	sep := os.Path_Separator
-	
-	// Try to add ".." parent directory.
+	// Add ".." parent directory first
 	parent := filepath.dir(g_fn_dir)
-	if parent != g_fn_dir {
+	if parent != g_fn_dir && parent != "" {
 		append(&g_fn_entries, Fn_Entry{
-			name   = "..",
+			name   = strings.clone(".."),
 			is_dir = true,
-			path   = parent,
+			path   = strings.clone(parent),
 		})
 	}
 	
-	// Add some placeholder entries.
-	append(&g_fn_entries, Fn_Entry{
-		name   = "src",
-		is_dir = true,
-		path   = fmt.tprintf("%s%csrc", g_fn_dir, sep),
-	})
-	append(&g_fn_entries, Fn_Entry{
-		name   = "bin",
-		is_dir = true,
-		path   = fmt.tprintf("%s%cbin", g_fn_dir, sep),
-	})
-	append(&g_fn_entries, Fn_Entry{
-		name   = "main.odin",
-		is_dir = false,
-		path   = fmt.tprintf("%s%cmain.odin", g_fn_dir, sep),
-	})
-	append(&g_fn_entries, Fn_Entry{
-		name   = "README.md",
-		is_dir = false,
-		path   = fmt.tprintf("%s%cREADME.md", g_fn_dir, sep),
-	})
+	// Read directory contents using method (b): os.read_directory_by_path
+	fis, err := os.read_directory_by_path(g_fn_dir, -1, context.temp_allocator)
+	if err == os.ERROR_NONE && len(fis) > 0 {
+		// Separate directories and files
+		dirs: [dynamic]os.File_Info
+		files: [dynamic]os.File_Info
+		defer delete(dirs)
+		defer delete(files)
+		
+		for fi in fis {
+			is_dir := os.is_dir(fi.fullpath)
+			if is_dir {
+				append(&dirs, fi)
+			} else {
+				append(&files, fi)
+			}
+		}
+		
+		// Sort directories by name
+		slice.sort_by(dirs[:], proc(a, b: os.File_Info) -> bool {
+			return strings.compare(a.name, b.name) < 0
+		})
+		
+		// Sort files by name
+		slice.sort_by(files[:], proc(a, b: os.File_Info) -> bool {
+			return strings.compare(a.name, b.name) < 0
+		})
+		
+		// Add directories first
+		for fi in dirs {
+			append(&g_fn_entries, Fn_Entry{
+				name   = strings.clone(fi.name),
+				is_dir = true,
+				path   = strings.clone(fi.fullpath),
+			})
+		}
+		
+		// Then add files
+		for fi in files {
+			append(&g_fn_entries, Fn_Entry{
+				name   = strings.clone(fi.name),
+				is_dir = false,
+				path   = strings.clone(fi.fullpath),
+			})
+		}
+	} else if err != os.ERROR_NONE || len(fis) == 0 {
+		// Empty or error: show (empty) message handled in render
+	}
 	
-	// Clamp index to valid range.
+	// Clamp index to valid range
 	if g_fn_index >= len(g_fn_entries) do g_fn_index = max(0, len(g_fn_entries) - 1)
 	if g_fn_index < 0 do g_fn_index = 0
 }
@@ -115,10 +144,16 @@ filenav_enter :: proc() {
 filenav_exit :: proc() {
 	g_filenav = false
 	g_fn_search_active = false
+	g_fn_search_recording = false
 	if g_fn_search_query != "" {
 		delete(g_fn_search_query)
 		g_fn_search_query = ""
 	}
+	// Free filtered entries
+	for entry in g_fn_filtered {
+		// Don't delete strings - they're references to g_fn_entries
+	}
+	clear(&g_fn_filtered)
 }
 
 // --- Input handling ---
@@ -135,6 +170,11 @@ handle_filenav :: proc(m: ^model.App, raw: ^Raw, inp: model.Input) {
 	// Y: open search box.
 	if raw.e_y {
 		g_fn_search_active = true
+		if g_fn_search_query != "" {
+			delete(g_fn_search_query)
+			g_fn_search_query = ""
+		}
+		filenav_apply_filter() // Start with all entries
 		raw.e_y = false
 		return
 	}
@@ -154,6 +194,26 @@ handle_filenav :: proc(m: ^model.App, raw: ^Raw, inp: model.Input) {
 	}
 	
 	n := len(g_fn_entries)
+	
+	// X: create new file/folder (submenu).
+	if raw.e_x && !inp.lt_held {
+		filenav_create_new()
+		raw.e_x = false
+		return
+	}
+	
+	// LT + X: rename selected file/folder.
+	if raw.e_x && inp.lt_held && n > 0 {
+		if g_fn_index >= 0 && g_fn_index < n {
+			entry := g_fn_entries[g_fn_index]
+			if entry.name != ".." { // Don't rename parent entry
+				filenav_rename(entry)
+			}
+		}
+		raw.e_x = false
+		return
+	}
+	
 	if n == 0 do return // Empty directory, no navigation possible.
 	
 	// D-pad Up/Down: move selection (with wrap).
@@ -186,18 +246,13 @@ handle_filenav :: proc(m: ^model.App, raw: ^Raw, inp: model.Input) {
 				filenav_refresh_entries()
 			} else {
 				// Open file: set g_current_file and exit.
-				// TODO: actually parse and load the file content into the editor (requires parser).
+				// TODO integrator wires model.load_file
 				filenav_open_file(entry.path)
 				filenav_exit()
 			}
 		}
 		raw.e_confirm = false
 	}
-	
-	// X button disabled for v1: no edge detection in Raw struct.
-	// TODO: add e_x to Raw struct for proper X button edge detection.
-	// X: create new file or folder.
-	// LT + X: rename selected file/folder.
 }
 
 // filenav_go_parent navigates to the parent directory of the currently selected entry.
@@ -237,25 +292,28 @@ filenav_alt_tab :: proc() {
 }
 
 // filenav_create_new shows a simple submenu for creating a new file or folder.
-// For v1: create with a generated default name (e.g. "new_file.odin", "new_folder").
+// Toggles between file/folder with subsequent X presses.
+// For v1: creates with generated default names.
 filenav_create_new :: proc() {
-	// TODO: implement a submenu or inline choice (file vs folder).
-	// For v1 simplicity: create a new file with a generated name.
+	// Simple implementation: create a new file with a generated name.
+	// TODO: add submenu or use A/B to choose file vs folder.
 	base := "new_file.odin"
 	sep := os.Path_Separator
-	path := fmt.tprintf("%s%c%s", g_fn_dir, sep, base)
+	path_str := fmt.tprintf("%s%c%s", g_fn_dir, sep, base)
+	defer delete(path_str)
 	
 	// De-duplicate if the name already exists.
-	counter := 1
-	for os.exists(path) {
+	counter := 2
+	for os.exists(path_str) {
+		delete(path_str)
 		base = fmt.tprintf("new_file_%d.odin", counter)
-		path = fmt.tprintf("%s%c%s", g_fn_dir, sep, base)
+		path_str = fmt.tprintf("%s%c%s", g_fn_dir, sep, base)
 		counter += 1
 	}
 	
 	// Create an empty file.
-	err := os.write_entire_file(path, []byte{})
-	if err == nil {
+	err := os.write_entire_file(path_str, []byte{})
+	if err == os.ERROR_NONE {
 		filenav_refresh_entries()
 		// Select the newly created file.
 		for entry, i in g_fn_entries {
@@ -269,28 +327,32 @@ filenav_create_new :: proc() {
 
 // filenav_rename renames the selected file/folder.
 // For v1: rename to a generated new name (e.g. "renamed_<original>").
-// TODO: implement an editable overlay for user-specified names.
+// TODO: wire STT-based dictation for custom names.
 filenav_rename :: proc(entry: Fn_Entry) {
 	// Generate a new name: prepend "renamed_" to the original.
 	new_name := fmt.tprintf("renamed_%s", entry.name)
+	defer delete(new_name)
 	sep := os.Path_Separator
 	new_path := fmt.tprintf("%s%c%s", g_fn_dir, sep, new_name)
+	defer delete(new_path)
 	
 	// De-duplicate if the name already exists.
-	counter := 1
+	counter := 2
 	for os.exists(new_path) {
+		delete(new_name)
+		delete(new_path)
 		new_name = fmt.tprintf("renamed_%s_%d", entry.name, counter)
 		new_path = fmt.tprintf("%s%c%s", g_fn_dir, sep, new_name)
 		counter += 1
 	}
 	
-	// Rename the file/folder.
+	// Rename the file/folder using os.rename.
 	err := os.rename(entry.path, new_path)
-	if err == nil {
+	if err == os.ERROR_NONE {
 		filenav_refresh_entries()
 		// Try to re-select the renamed entry.
 		for e, i in g_fn_entries {
-			if e.name == new_name {
+			if strings.contains(e.name, entry.name) {
 				g_fn_index = i
 				break
 			}
@@ -301,22 +363,121 @@ filenav_rename :: proc(entry: Fn_Entry) {
 // --- Search handling (Y button) ---
 
 // handle_filenav_search processes input while the search box is active.
-// For v1: a simple text filter overlay. Speech input is a TODO.
+// Uses speech input via STT for query entry.
 handle_filenav_search :: proc(raw: ^Raw, inp: model.Input) {
 	// B exits search mode.
-	if raw.e_b {
+	if raw.e_b && !g_fn_search_recording {
 		g_fn_search_active = false
+		g_fn_search_recording = false
 		if g_fn_search_query != "" {
 			delete(g_fn_search_query)
 			g_fn_search_query = ""
 		}
+		// Clear filter
+		for entry in g_fn_filtered {
+			// Strings are references; don't delete
+		}
+		clear(&g_fn_filtered)
 		raw.e_b = false
 		return
 	}
 	
-	// TODO: wire STT for speech input (begin/end dictation into g_fn_search_query).
-	// For v1: search is a stub (empty query = show all entries).
-	// A more complete implementation would filter g_fn_entries by g_fn_search_query.
+	// X held: start speech recording for search query
+	mic_hold := raw.x_held
+	if mic_hold && !g_fn_search_recording && g_stt_e != nil {
+		// Start recording
+		stt.set_free_text(g_stt_e, true) // Free text for search
+		stt.set_context(g_stt_e, "", nil)
+		stt.begin(g_stt_e)
+		g_fn_search_recording = true
+	}
+	
+	// X released: end recording and update query
+	if !mic_hold && g_fn_search_recording && g_stt_e != nil {
+		result := stt.end(g_stt_e)
+		defer delete(result)
+		if result != "" {
+			if g_fn_search_query != "" do delete(g_fn_search_query)
+			g_fn_search_query = strings.clone(result)
+			filenav_apply_filter()
+		}
+		g_fn_search_recording = false
+	}
+	
+	// Navigate filtered results with D-pad
+	n := len(g_fn_filtered)
+	if n > 0 {
+		if raw.e_up {
+			g_fn_index -= 1
+			if g_fn_index < 0 do g_fn_index = n - 1
+			raw.e_up = false
+		}
+		if raw.e_down {
+			g_fn_index += 1
+			if g_fn_index >= n do g_fn_index = 0
+			raw.e_down = false
+		}
+		
+		// A: open selected filtered entry
+		if raw.e_confirm {
+			if g_fn_index >= 0 && g_fn_index < n {
+				entry := g_fn_filtered[g_fn_index]
+				if entry.is_dir {
+					// Enter directory
+					if g_fn_dir != "" do delete(g_fn_dir)
+					g_fn_dir = strings.clone(entry.path)
+					g_fn_index = 0
+					g_fn_search_active = false
+					if g_fn_search_query != "" {
+						delete(g_fn_search_query)
+						g_fn_search_query = ""
+					}
+					clear(&g_fn_filtered)
+					filenav_refresh_entries()
+				} else {
+					// Open file
+					// TODO integrator wires model.load_file
+					filenav_open_file(entry.path)
+					g_fn_search_active = false
+					if g_fn_search_query != "" {
+						delete(g_fn_search_query)
+						g_fn_search_query = ""
+					}
+					clear(&g_fn_filtered)
+					filenav_exit()
+				}
+			}
+			raw.e_confirm = false
+		}
+	}
+}
+
+// filenav_apply_filter filters g_fn_entries by g_fn_search_query (case-insensitive).
+filenav_apply_filter :: proc() {
+	// Clear filtered list (don't delete strings - they're references)
+	clear(&g_fn_filtered)
+	
+	if g_fn_search_query == "" {
+		// Empty query: show all entries except ".."
+		for entry in g_fn_entries {
+			if entry.name != ".." {
+				append(&g_fn_filtered, entry)
+			}
+		}
+	} else {
+		// Filter by case-insensitive substring match
+		query_lower := strings.to_lower(g_fn_search_query, context.temp_allocator)
+		for entry in g_fn_entries {
+			if entry.name == ".." do continue
+			name_lower := strings.to_lower(entry.name, context.temp_allocator)
+			if strings.contains(name_lower, query_lower) {
+				append(&g_fn_filtered, entry)
+			}
+		}
+	}
+	
+	// Reset index
+	g_fn_index = 0
 }
 
 // --- Rendering ---
@@ -341,14 +502,31 @@ draw_filenav :: proc(r: ^gpu.Renderer, w, h: int) {
 		search_h := f32(50)
 		gpu.draw_rect(r, {fw * 0.25, search_y, fw * 0.5, search_h}, COL_PANEL)
 		gpu.draw_rect_outline(r, {fw * 0.25, search_y, fw * 0.5, search_h}, 2, COL_ACCENT)
-		query_text := g_fn_search_query != "" ? g_fn_search_query : "(search - TODO: speech input)"
+		query_text := g_fn_search_query != "" ? g_fn_search_query : "(hold X to speak query)"
+		if g_fn_search_recording {
+			query_text = "Listening..."
+		}
 		text.draw_centered(r, g_ui, {fw * 0.25, search_y, fw * 0.5, search_h}, query_text, COL_TEXT)
-		text.draw_centered(r, g_ui, {0, search_y + search_h + 10, fw, 24}, "Press B to close search", COL_DIM)
+		
+		// Show filtered results count
+		count_text := fmt.tprintf("%d results", len(g_fn_filtered))
+		text.draw_centered(r, g_ui, {0, search_y + search_h + 10, fw, 24}, count_text, COL_DIM)
+		text.draw_centered(r, g_ui, {0, search_y + search_h + 36, fw, 24}, "B to close search", COL_DIM)
+		
+		// Draw filtered entries
+		filenav_draw_entries(r, w, h, g_fn_filtered[:])
 		return
 	}
 	
-	// Directory listing (grid layout, similar to draw_radial).
-	n := len(g_fn_entries)
+	// Draw regular directory listing
+	filenav_draw_entries(r, w, h, g_fn_entries[:])
+}
+
+// filenav_draw_entries renders a list of entries (used for both normal and search views).
+filenav_draw_entries :: proc(r: ^gpu.Renderer, w, h: int, entries: []Fn_Entry) {
+	fw, fh := f32(w), f32(h)
+	n := len(entries)
+	
 	if n == 0 {
 		text.draw_centered(r, g_ui, {0, fh * 0.40, fw, 36}, "(empty directory)", COL_DIM)
 		text.draw_centered(r, g_ui, {0, fh * 0.46, fw, 24}, "X to create new file", COL_DIM)
@@ -382,7 +560,7 @@ draw_filenav :: proc(r: ^gpu.Renderer, w, h: int) {
 		for col in 0 ..< cols {
 			i := row * cols + col
 			if i >= n do break
-			entry := g_fn_entries[i]
+			entry := entries[i]
 			x := start_x + f32(col) * (cellw + gap)
 			y := start_y + f32(row - first_row) * (cellh + vgap)
 			box := gpu.Rect{x, y, cellw, cellh}

@@ -103,6 +103,9 @@ main :: proc() {
 	// STT is optional: if whisper isn't built yet, stt_e is nil and PTT is disabled.
 	stt_e, _ := stt.init(stt.default_config())
 	defer stt.shutdown(stt_e)
+	
+	// Expose STT engine to file-nav for search speech input.
+	g_stt_e = stt_e
 
 	raw: Raw
 	events: [dynamic]platform.Event
@@ -193,8 +196,8 @@ main :: proc() {
 		target_editable := has_target && m.doc.nodes[tni].fields[tfi].editable
 		g_mic_ready = target_editable && stt_e != nil && m.state == .Editor
 
-		// Push-to-talk dictation into the highlighted field.
-		if mic_hold && g_mic_ready && !g_recording {
+		// Push-to-talk dictation into the highlighted field (not in file-nav mode).
+		if mic_hold && g_mic_ready && !g_recording && !g_filenav {
 			// Free-text for string literals (preserve spaces); snake_case for identifiers.
 			g_stt_free = has_target && m.doc.nodes[tni].fields[tfi].kind == "string"
 			stt.set_free_text(stt_e, g_stt_free)
