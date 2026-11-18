@@ -2823,21 +2823,22 @@ test_value_literal_string :: proc(t: ^testing.T) {
 	select_label(&app, "Variable (:=)")
 	update(&app, Input{right = true})
 	confirm(&app)
-	select_label(&app, "String")
+	select_label(&app, "String")               // now a submenu of variants
+	select_label(&app, "\"...\"  string")        // interpreted string
 	testing.expect_value(t, app.state, State.Editor)
 	// Check that the node contains empty quotes
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
 	testing.expect(t, strings.contains(txt, "\"\""), "should contain empty quotes")
-	// Find the editable string content field
+	// The editable content field is a free-text "string" field.
 	ni := 1
-	has_editable_content := false
+	has_string_content := false
 	for f in app.doc.nodes[ni].fields {
-		if f.editable && f.text == "" {
-			has_editable_content = true
+		if f.editable && f.kind == "string" {
+			has_string_content = true
 			break
 		}
 	}
-	testing.expect(t, has_editable_content, "should have editable string content field")
+	testing.expect(t, has_string_content, "should have editable free-text (kind=string) content field")
 }
 
 @(test)
@@ -3167,4 +3168,33 @@ test_menu_wrap_navigation :: proc(t: ^testing.T) {
 	testing.expect_value(t, current_view(&app).index, 0)
 	update(&app, Input{up = true}) // up wraps to bottom-most in column (3)
 	testing.expect_value(t, current_view(&app).index, 3)
+}
+
+@(test)
+test_value_literal_raw_and_rune :: proc(t: ^testing.T) {
+	// raw string
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true}); confirm(&app)
+	select_label(&app, "Declarations"); select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true}); confirm(&app)   // on value slot
+	select_label(&app, "String"); select_label(&app, "`...`  raw")
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "``"), "raw string uses backticks")
+}
+
+@(test)
+test_value_literal_rune :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true}); confirm(&app)
+	select_label(&app, "Declarations"); select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true}); confirm(&app)
+	select_label(&app, "String"); select_label(&app, "'...'  rune")
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "''"), "rune uses single quotes")
 }

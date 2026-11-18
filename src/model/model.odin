@@ -21,6 +21,40 @@ grid_cols :: proc(n: int) -> int {
 	if c > GRID_COLS do c = GRID_COLS
 	return c
 }
+
+// Grid navigation with wrap-around at edges (shared by all grid menus).
+grid_nav :: proc(index, n: int, inp: Input) -> int {
+	if n <= 0 do return 0
+	cols := grid_cols(n)
+	idx := clamp(index, 0, n - 1)
+	if inp.left {
+		rs := (idx / cols) * cols
+		re := min(rs + cols, n) - 1
+		idx = idx == rs ? re : idx - 1
+	}
+	if inp.right {
+		rs := (idx / cols) * cols
+		re := min(rs + cols, n) - 1
+		idx = idx == re ? rs : idx + 1
+	}
+	if inp.up {
+		c := idx % cols
+		cand := idx - cols
+		if cand < 0 {
+			last := c
+			for last + cols < n do last += cols
+			idx = last
+		} else {
+			idx = cand
+		}
+	}
+	if inp.down {
+		c := idx % cols
+		cand := idx + cols
+		idx = cand >= n ? c : cand
+	}
+	return idx
+}
 BUCKET_THRESHOLD :: 12
 BUCKET_TARGET    :: 9
 PAGE             :: 12  // Alpha-bucket page size
@@ -739,13 +773,16 @@ set_slot_literal :: proc(app: ^App, ni, fi: int, kind_marker: string) {
 		inject_at(fields, fi, f)
 		
 	case "__lit_str__":
-		// Replace with three fields: opening quote + editable content + closing quote
-		f1 := Field{strings.clone("\""), false, false, ""}
-		f2 := Field{strings.clone(""), true, false, ""}  // empty editable content
-		f3 := Field{strings.clone("\""), false, false, ""}
-		inject_at(fields, fi, f3)
-		inject_at(fields, fi, f2)
-		inject_at(fields, fi, f1)
+		// "..." interpreted string
+		inject_string_lit(fields, fi, "\"", "\"")
+
+	case "__lit_rawstr__":
+		// `...` raw string literal
+		inject_string_lit(fields, fi, "`", "`")
+
+	case "__lit_rune__":
+		// '...' rune / character literal
+		inject_string_lit(fields, fi, "'", "'")
 		
 	case "__lit_true__":
 		// Replace with a single fixed field "true"
@@ -769,6 +806,13 @@ set_slot_literal :: proc(app: ^App, ni, fi: int, kind_marker: string) {
 		f := Field{strings.clone(ref_name), true, false, ""}
 		inject_at(fields, fi, f)
 	}
+}
+
+// Insert `open + <editable free-text> + close` fields at index fi (order preserved).
+inject_string_lit :: proc(fields: ^[dynamic]Field, fi: int, open, close: string) {
+	inject_at(fields, fi, Field{strings.clone(close), false, false, ""})
+	inject_at(fields, fi, Field{strings.clone(""), true, false, "string"}) // free-text content
+	inject_at(fields, fi, Field{strings.clone(open), false, false, ""})
 }
 
 // Replace a slot with a variable instantiation (name + ": " + type slot).
@@ -1970,10 +2014,17 @@ open_slot_menu :: proc(app: ^App) {
 		// Build the slot menu with literal options
 		type_children := make([]Entry, len(type_entries))
 		copy(type_children, type_entries[:])
-		
+
+		// Odin string/character literal variants (see Odin overview).
+		string_children := make_slice(
+			Entry{label = "\"...\"  string", fill = "__lit_str__"},
+			Entry{label = "`...`  raw", fill = "__lit_rawstr__"},
+			Entry{label = "'...'  rune", fill = "__lit_rune__"},
+		)
+
 		app.slot_menu = make_slice(
 			Entry{label = "Number", fill = "__lit_num__"},
-			Entry{label = "String", fill = "__lit_str__"},
+			Entry{label = "String", children = string_children},
 			Entry{label = "true", fill = "__lit_true__"},
 			Entry{label = "false", fill = "__lit_false__"},
 			Entry{label = "nil", fill = "__lit_nil__"},
@@ -2386,7 +2437,7 @@ menu_select :: proc(app: ^App) {
 			make_body_statement(app, app.slot_ni, app.slot_fi, e.fill)
 		} else if e.fill == "__stmt_multi__" {
 			make_multi_decl(app, app.slot_ni, app.slot_fi)
-		} else if e.fill == "__lit_num__" || e.fill == "__lit_str__" || e.fill == "__lit_true__" || e.fill == "__lit_false__" || e.fill == "__lit_nil__" || e.fill == "__lit_ref__" {
+		} else if e.fill == "__lit_num__" || e.fill == "__lit_str__" || e.fill == "__lit_rawstr__" || e.fill == "__lit_rune__" || e.fill == "__lit_true__" || e.fill == "__lit_false__" || e.fill == "__lit_nil__" || e.fill == "__lit_ref__" {
 			set_slot_literal(app, app.slot_ni, app.slot_fi, e.fill)
 		} else if e.fill == "__call_this_pkg__" {
 			make_call_this_package(app, app.slot_ni, app.slot_fi, e.call_name)
@@ -2447,9 +2498,7 @@ update :: proc(app: ^App, inp: Input) {
 
 	switch app.state {
 	case .Menu:
-		n := len(MENU_ITEMS)
-		if inp.up     do app.menu_index = (app.menu_index + n - 1) %% n
-		if inp.down   do app.menu_index = (app.menu_index + 1) %% n
+		app.menu_index = grid_nav(app.menu_index, len(MENU_ITEMS), inp)
 		if inp.cancel do app.want_quit = true
 		if inp.confirm {
 			if app.menu_index == 0 { // New Project
@@ -2491,36 +2540,7 @@ update :: proc(app: ^App, inp: Input) {
 		}
 	case .Radial:
 		v := current_view(app)
-		n := len(v.entries)
-		if n > 0 {
-			cols := grid_cols(n)
-			if inp.left {
-				rs := (v.index / cols) * cols
-				re := min(rs + cols, n) - 1
-				v.index = v.index == rs ? re : v.index - 1 // wrap to row end
-			}
-			if inp.right {
-				rs := (v.index / cols) * cols
-				re := min(rs + cols, n) - 1
-				v.index = v.index == re ? rs : v.index + 1 // wrap to row start
-			}
-			if inp.up {
-				c := v.index % cols
-				cand := v.index - cols
-				if cand < 0 {
-					last := c // wrap to bottom-most item in this column
-					for last + cols < n do last += cols
-					v.index = last
-				} else {
-					v.index = cand
-				}
-			}
-			if inp.down {
-				c := v.index % cols
-				cand := v.index + cols
-				v.index = cand >= n ? c : cand // wrap to top of column
-			}
-		}
+		v.index = grid_nav(v.index, len(v.entries), inp)
 		if inp.cancel  do menu_cancel(app)
 		if inp.confirm do menu_select(app)
 	}

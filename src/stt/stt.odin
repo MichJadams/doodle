@@ -21,6 +21,7 @@ Config :: struct {
 	grammar_path: string, // optional GBNF grammar ("" = none)
 	prompt:       string, // optional initial prompt (soft bias toward these words)
 	vocabulary:   []string, // known identifiers/keywords; results snap to these
+	free_text:    bool,   // true = preserve spaces (string literal), no identifier snapping
 	tmp_wav:      string,
 	tmp_txt:      string,
 }
@@ -31,6 +32,13 @@ set_context :: proc(e: ^Engine, prompt: string, vocabulary: []string) {
 	if e == nil do return
 	e.cfg.prompt = prompt
 	e.cfg.vocabulary = vocabulary
+}
+
+// When true, transcription preserves spaces/casing (for string literals) and
+// skips identifier snake_case/snapping.
+set_free_text :: proc(e: ^Engine, free: bool) {
+	if e == nil do return
+	e.cfg.free_text = free
 }
 
 Engine :: struct {
@@ -121,6 +129,9 @@ transcribe_queued :: proc(e: ^Engine) -> string {
 	run_whisper(e.cfg)
 	data, _ := os.read_entire_file(e.cfg.tmp_txt, context.allocator)
 	defer if data != nil do delete(data)
+	if e.cfg.free_text {
+		return clean_free(string(data)) // preserve spaces/casing for string literals
+	}
 	res := clean_identifier(string(data))
 	if len(e.cfg.vocabulary) > 0 {
 		snapped := snap_identifier(res, e.cfg.vocabulary)
@@ -128,6 +139,30 @@ transcribe_queued :: proc(e: ^Engine) -> string {
 		return snapped
 	}
 	return res
+}
+
+// Clean free text: trim, collapse internal whitespace to single spaces, drop a
+// trailing period. Preserves words, spaces, and casing (caller owns result).
+@(private)
+clean_free :: proc(s: string) -> string {
+	out: [dynamic]u8
+	prev_space := true // suppress leading space
+	for i in 0 ..< len(s) {
+		c := s[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			if !prev_space {
+				append(&out, ' ')
+				prev_space = true
+			}
+		} else {
+			append(&out, c)
+			prev_space = false
+		}
+	}
+	for len(out) > 0 && out[len(out) - 1] == ' ' do pop(&out)
+	if len(out) > 0 && out[len(out) - 1] == '.' do pop(&out)
+	for len(out) > 0 && out[len(out) - 1] == ' ' do pop(&out)
+	return string(out[:])
 }
 
 // Snap each underscore-separated token to the nearest vocabulary word (edit

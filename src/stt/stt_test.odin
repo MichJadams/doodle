@@ -33,3 +33,17 @@ test_snap_leaves_short_tokens :: proc(t: ^testing.T) {
 	defer delete(got)
 	testing.expect_value(t, got, "ma")
 }
+
+@(test)
+test_clean_free_preserves_spaces :: proc(t: ^testing.T) {
+	got := clean_free(" Hello world.")
+	defer delete(got)
+	testing.expect_value(t, got, "Hello world")
+}
+
+@(test)
+test_clean_free_collapses_whitespace :: proc(t: ^testing.T) {
+	got := clean_free("  multiple   spaces here  ")
+	defer delete(got)
+	testing.expect_value(t, got, "multiple spaces here")
+}

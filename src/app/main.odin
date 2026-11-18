@@ -45,7 +45,8 @@ g_recording: bool
 g_heard:     string
 g_mic_ready: bool            // a field is highlighted + whisper available
 g_rt_held:   bool            // right trigger held (statement-selection highlight)
-g_stt_parts: [dynamic]string // dictated fragments joined by "_"
+g_stt_free:  bool            // dictating into a string literal (preserve spaces)
+g_stt_parts: [dynamic]string // dictated fragments
 g_stt_ni:    int             // target node/field captured at record start
 g_stt_fi:    int
 g_vocab:     []string        // per-utterance STT bias vocabulary (freed after)
@@ -139,10 +140,17 @@ main :: proc() {
 
 		// Push-to-talk dictation into the highlighted field.
 		if mic_hold && g_mic_ready && !g_recording {
-			// Bias dictation toward known identifiers/keywords (fixes "maine"->"main").
-			g_vocab = model.collect_vocab(&m)
-			g_prompt = build_prompt(g_vocab)
-			stt.set_context(stt_e, g_prompt, g_vocab)
+			// Free-text for string literals (preserve spaces); snake_case for identifiers.
+			g_stt_free = has_target && m.doc.nodes[tni].fields[tfi].kind == "string"
+			stt.set_free_text(stt_e, g_stt_free)
+			if g_stt_free {
+				stt.set_context(stt_e, "", nil)
+			} else {
+				// Bias dictation toward known identifiers/keywords (fixes "maine"->"main").
+				g_vocab = model.collect_vocab(&m)
+				g_prompt = build_prompt(g_vocab)
+				stt.set_context(stt_e, g_prompt, g_vocab)
+			}
 			stt.begin(stt_e)
 			g_recording = true
 			g_stt_ni = tni
@@ -154,7 +162,7 @@ main :: proc() {
 		}
 		if g_recording && !mic_hold {
 			append(&g_stt_parts, stt.end(stt_e))
-			final := join_identifier(g_stt_parts[:])
+			final := g_stt_free ? join_spaces(g_stt_parts[:]) : join_identifier(g_stt_parts[:])
 			if final != "" {
 				model.set_field_text(&m, g_stt_ni, g_stt_fi, final)
 				if g_heard != "" do delete(g_heard)
@@ -316,15 +324,26 @@ draw_menu :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int) 
 	text.draw_centered(r, font, {0, fh * 0.20, fw, 60}, "DOODLE", COL_ACCENT)
 	text.draw_centered(r, g_ui, {0, fh * 0.20 + 56, fw, 30}, "Odin IDE  -  gamepad native", COL_DIM)
 
-	base_y := fh * 0.42
+	// Square-ish, centered grid (same treatment as the radial menus).
+	n := len(model.MENU_ITEMS)
+	cols := model.grid_cols(n)
+	rows := (n + cols - 1) / cols
+	gap, vgap := f32(14), f32(12)
+	cellw, cellh := f32(240), f32(56)
+	grid_w := f32(cols) * cellw + f32(cols - 1) * gap
+	start_x := (fw - grid_w) * 0.5
+	start_y := fh * 0.44
 	for item, i in model.MENU_ITEMS {
-		row := gpu.Rect{fw * 0.5 - 220, base_y + f32(i) * 72, 440, 56}
+		col := i % cols
+		row := i / cols
+		box := gpu.Rect{start_x + f32(col) * (cellw + gap), start_y + f32(row) * (cellh + vgap), cellw, cellh}
 		active := i == m.menu_index
 		enabled := i == 0
-		gpu.draw_rect(r, row, active ? COL_HILITE : COL_PANEL)
-		if active do gpu.draw_rect_outline(r, row, 2, COL_ACCENT)
-		text.draw_centered(r, g_ui, row, item, enabled ? COL_TEXT : COL_DIM)
+		gpu.draw_rect(r, box, active ? COL_HILITE : COL_PANEL)
+		if active do gpu.draw_rect_outline(r, box, 2, COL_ACCENT)
+		text.draw_centered(r, g_ui, box, item, enabled ? COL_TEXT : COL_DIM)
 	}
+	_ = rows
 
 	text.draw_centered(r, g_ui, {0, fh * 0.84, fw, 30},
 		"D-pad / Arrows to move    A / Enter to select    (only New Project is wired)", COL_DIM)
@@ -589,6 +608,16 @@ join_identifier :: proc(parts: []string) -> string {
 	for p in parts {
 		if p == "" do continue
 		if len(out) > 0 do append(&out, '_')
+		append(&out, ..transmute([]u8)p)
+	}
+	return string(out[:])
+}
+
+join_spaces :: proc(parts: []string) -> string {
+	out: [dynamic]u8
+	for p in parts {
+		if p == "" do continue
+		if len(out) > 0 do append(&out, ' ')
 		append(&out, ..transmute([]u8)p)
 	}
 	return string(out[:])
