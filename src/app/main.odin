@@ -63,6 +63,8 @@ Raw :: struct {
 	e_up, e_down, e_left, e_right: bool,
 	e_a, e_b:                      bool,  // A and B edges (for LT+A, LT+B)
 	e_y:                           bool,
+	e_x:                           bool,  // X button edge
+	e_rb:                          bool,  // Right bumper edge
 }
 
 FaceBtn :: enum { A, B, X, Y }
@@ -148,6 +150,21 @@ main :: proc() {
 			save_current(&m)
 			raw.e_y = false // consume the edge
 		}
+		// RT+X opens the run command list.
+		if inp.rt_held && raw.e_x && m.state == .Editor && !g_run_open {
+			g_run_open = true
+			g_run_index = 0
+			raw.e_x = false // consume the edge
+		}
+		// RB runs the favorite command.
+		if raw.e_rb && m.state == .Editor && !g_run_open {
+			run_favorite()
+			raw.e_rb = false
+		}
+		// Handle run overlay input (and consume edges so they don't leak to editor).
+		if g_run_open {
+			handle_run_input(&raw)
+		}
 		model.update(&m, inp)
 
 		// New Project: when transitioning from Menu to Editor with an empty doc,
@@ -212,7 +229,15 @@ main :: proc() {
 			draw_editor(r, font, &m, w, h)
 			draw_radial(r, &m, w, h)
 		}
+		// Draw run overlay if active.
+		if g_run_open {
+			draw_run_overlay(r, w, h)
+		}
 		draw_hud(r, &m, inp, w, h)
+		// Show run message if recent.
+		if g_run_msg != "" && (g_time - g_run_msg_time) < RUN_MSG_DURATION {
+			text.draw_line(r, g_ui, {f32(w) - 320, f32(h) - 190}, g_run_msg, COL_ACCENT)
+		}
 		gpu.end_frame(r)
 		platform.present(win)
 
@@ -255,6 +280,8 @@ reset_edges :: proc(raw: ^Raw) {
 	raw.e_a = false
 	raw.e_b = false
 	raw.e_y = false
+	raw.e_x = false
+	raw.e_rb = false
 }
 
 build_input :: proc(raw: ^Raw) -> model.Input {
@@ -273,7 +300,10 @@ build_input :: proc(raw: ^Raw) -> model.Input {
 handle_event :: proc(raw: ^Raw, e: platform.Event) {
 	#partial switch ev in e {
 	case platform.Button_Event:
-		if ev.button == .X do raw.x_held = ev.pressed
+		if ev.button == .X {
+			raw.x_held = ev.pressed
+			if ev.pressed do raw.e_x = true
+		}
 		if ev.pressed {
 			#partial switch ev.button {
 			case .A:     raw.e_confirm = true; raw.e_a = true
@@ -283,6 +313,7 @@ handle_event :: proc(raw: ^Raw, e: platform.Event) {
 			case .Left:  raw.e_left = true
 			case .Right: raw.e_right = true
 			case .Y:     raw.e_y = true
+			case .RB:    raw.e_rb = true
 			}
 		}
 	case platform.Axis_Event:
@@ -300,8 +331,11 @@ handle_key :: proc(raw: ^Raw, sym: i32, pressed: bool) {
 	case 'e': raw.key_rt = pressed
 	case 'x':
 		raw.x_held = pressed
+		if pressed do raw.e_x = true
 	case 'y':
 		if pressed do raw.e_y = true
+	case 'r':
+		if pressed do raw.e_rb = true
 	}
 	if !pressed do return
 	switch sym {
@@ -323,6 +357,7 @@ face_glyph :: proc(m: ^model.App, bank: int, face: FaceBtn) -> string {
 	if bank == 0 && face == .A do return "e" // LT + A = edit
 	if bank == 0 && face == .B do return "x" // LT + B = delete
 	if bank == 2 && face == .Y do return "S" // RT + Y = save
+	if bank == 2 && face == .X do return ">" // RT + X = run list
 	if bank == 1 { // middle bank = default (no trigger) context
 		switch face {
 		case .A: return "+" // select / confirm
