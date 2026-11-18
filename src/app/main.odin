@@ -360,7 +360,8 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 					gpu.draw_rect(r, {x - 4, y, dot_w + 8, lh}, {0.22, 0.40, 0.70, 0.55})
 					gpu.draw_rect_outline(r, {x - 4, y, dot_w + 8, lh}, 2, COL_ACCENT)
 				}
-				draw_orange_dot(r, dot_cx, dot_cy)
+				outer, inner := slot_dot_color(field.kind)
+				draw_colored_dot(r, dot_cx, dot_cy, outer, inner)
 				x += dot_w
 			} else {
 				// Regular field: render as text
@@ -383,6 +384,23 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 		text.draw_line(r, g_ui, {f32(w) - 150, 14}, "[REC]", {0.90, 0.30, 0.30, 1})
 	} else if g_heard != "" {
 		text.draw_line(r, g_ui, {f32(w) - 320, 14}, fmt.tprintf("heard: %s", g_heard), COL_ACCENT)
+	}
+}
+
+// Return colors for a slot dot based on field kind.
+slot_dot_color :: proc(kind: string) -> (outer_col, inner_col: gpu.Color) {
+	switch kind {
+	case "value":
+		return {1.00, 0.60, 0.15, 1.0}, {1.00, 0.65, 0.20, 1.0}
+	case "type":
+		return {0.35, 0.70, 1.00, 1.0}, {0.40, 0.75, 1.00, 1.0}
+	case "body":
+		return {0.35, 0.85, 0.45, 1.0}, {0.40, 0.90, 0.50, 1.0}
+	case "params":
+		return {0.80, 0.45, 0.95, 1.0}, {0.85, 0.50, 1.00, 1.0}
+	case:
+		// Generic/default: neutral orange
+		return {0.95, 0.55, 0.20, 1.0}, {1.00, 0.60, 0.25, 1.0}
 	}
 }
 
