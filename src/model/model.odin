@@ -360,10 +360,29 @@ alias_default :: proc(path: string) -> string {
 // Name is editable; params/return/body are slots (orange dots).
 append_proc_node :: proc(app: ^App, name := "") {
 	// Line 1: <name> :: proc( <params> ) -> <ret> {
-	proc_name := name if name != "" else generate_ident(app)
+	proc_name: string
+	generated := false
+	if name != "" {
+		proc_name = name
+	} else {
+		// The FIRST procedure in the file is always "main"; later ones are generated.
+		has_proc := false
+		for n in app.doc.nodes {
+			if strings.contains(node_text(n, context.temp_allocator), ":: proc") {
+				has_proc = true
+				break
+			}
+		}
+		if has_proc {
+			proc_name = generate_ident(app)
+			generated = true
+		} else {
+			proc_name = "main"
+		}
+	}
 	n1: Node
 	append(&n1.fields, Field{strings.clone(proc_name), true, false, ""})       // editable name
-	if name == "" do delete(proc_name) // free generated name after clone
+	if generated do delete(proc_name) // free generated name after clone
 	append(&n1.fields, Field{strings.clone(" :: proc( "), false, false, ""})  // fixed
 	append(&n1.fields, Field{"", false, true, "params"})                  // params slot
 	append(&n1.fields, Field{strings.clone(" ) -> "), false, false, ""}) // fixed

@@ -384,10 +384,9 @@ test_proc_first_line_text :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_proc(&app)
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	// Check that proc name is generated (adjective_animal pattern)
+	// The first procedure is always named "main".
 	proc_name := app.doc.nodes[0].fields[0].text
-	testing.expect(t, len(proc_name) > 0, "proc should have a name")
-	testing.expect(t, strings.contains(proc_name, "_"), "proc name should be snake_case")
+	testing.expect_value(t, proc_name, "main")
 	testing.expect(t, strings.contains(txt, ":: proc("), "should contain :: proc(")
 }
 
@@ -408,10 +407,9 @@ test_proc_name_editable_slots_are_slots :: proc(t: ^testing.T) {
 	ni, fi, ok = editor_target(&app)
 	testing.expect(t, ok)
 	testing.expect(t, app.doc.nodes[ni].fields[fi].editable, "name should be editable")
-	// Check that name is generated snake_case
+	// First procedure is named "main".
 	proc_name := app.doc.nodes[ni].fields[fi].text
-	testing.expect(t, len(proc_name) > 0, "name should not be empty")
-	testing.expect(t, strings.contains(proc_name, "_"), "name should be snake_case")
+	testing.expect_value(t, proc_name, "main")
 
 	update(&app, Input{right = true}) // -> params slot
 	ni, fi, ok = editor_target(&app)
@@ -1549,12 +1547,26 @@ test_name_generator_two_procs_different_names :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_name_generator_proc_snake_case :: proc(t: ^testing.T) {
+test_first_proc_is_main :: proc(t: ^testing.T) {
 	app: App
 	defer cleanup(&app)
 	app.state = .Editor
 	add_proc(&app)
-	name := app.doc.nodes[0].fields[0].text
+	testing.expect_value(t, app.doc.nodes[0].fields[0].text, "main")
+	add_proc(&app) // second procedure
+	second := app.doc.nodes[3].fields[0].text
+	testing.expect(t, second != "main", "second proc should not be main")
+	testing.expect(t, strings.contains(second, "_"), "second proc should be generated snake_case")
+}
+
+@(test)
+test_name_generator_proc_snake_case :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app) // first proc -> "main"
+	add_proc(&app) // second proc -> generated adjective_animal
+	name := app.doc.nodes[3].fields[0].text
 	// Check adjective_animal pattern: lowercase, exactly one underscore
 	underscore_count := 0
 	for c in name {
@@ -1605,8 +1617,8 @@ test_name_generator_uniqueness :: proc(t: ^testing.T) {
 	app: App
 	defer cleanup(&app)
 	app.state = .Editor
-	// Generate many names to test uniqueness
-	for i in 0..<10 {
+	// Generate many names to test uniqueness (first is "main", rest generated)
+	for i in 0..<11 {
 		add_proc(&app)
 	}
 	// Collect all proc names
