@@ -1472,10 +1472,12 @@ build_block_children :: proc(ref: string, procs: []CoreProc) -> []Entry {
 		
 		// Add prefix groups
 		for prefix, prefix_procs in prefix_groups {
-			prefix_children := build_flat_leaves(ref, prefix_procs[:])
-			if len(prefix_children) > PAGE {
-				// Prefix group still too large, apply alpha buckets
+			// Build exactly one representation (don't build-then-discard -> leak).
+			prefix_children: []Entry
+			if len(prefix_procs) > PAGE {
 				prefix_children = build_alpha_buckets(ref, prefix_procs[:])
+			} else {
+				prefix_children = build_flat_leaves(ref, prefix_procs[:])
 			}
 			label := strings.concatenate({prefix, "..."}, context.allocator)
 			append(&prefix_entries, Entry{
