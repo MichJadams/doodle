@@ -542,40 +542,23 @@ test_no_bucketing_for_small_menu :: proc(t: ^testing.T) {
 test_bucketing_for_large_menu :: proc(t: ^testing.T) {
 	app: App
 	defer cleanup(&app)
-	
-	// 30 items - above threshold (12)
+
+	// 30 items inserted in REVERSE order to verify alphabetical sorting.
 	raw := make([]Entry, 30)
 	defer delete(raw)
 	for i in 0 ..< 30 {
-		// Use names that sort alphabetically: a00, a01, ..., a29
-		raw[i] = Entry{label = fmt.aprintf("item%02d", i), insert = "x"}
+		raw[i] = Entry{label = fmt.aprintf("item%02d", 29 - i), insert = "x"}
 	}
 	defer for e in raw { delete(e.label) }
-	
+
 	v := make_view(&app, "large", raw)
 	defer free_view(&v)
-	
-	// Should create buckets (less than 30 entries)
-	testing.expect(t, len(v.entries) < 30, "large menu should be bucketed")
-	testing.expect(t, len(v.entries) >= 2, "should have at least 2 buckets")
-	
-	// First entry should be a bucket (have children)
-	testing.expect(t, len(v.entries[0].children) > 0, "entries should be buckets with children")
-	
-	// Check bucket sizes are roughly equal (within 3 of each other)
-	if len(v.entries) >= 2 {
-		min_size := 999
-		max_size := 0
-		for e in v.entries {
-			if len(e.children) > 0 {
-				size := len(e.children)
-				if size < min_size do min_size = size
-				if size > max_size do max_size = size
-			}
-		}
-		testing.expect(t, max_size - min_size <= 3, 
-			"bucket sizes should be roughly equal (within 3)")
-	}
+
+	// New behaviour: large lists are shown FLAT and alphabetical (no buckets).
+	testing.expect_value(t, len(v.entries), 30)
+	testing.expect(t, len(v.entries[0].children) == 0, "entries are flat, not buckets")
+	testing.expect_value(t, v.entries[0].label, "item00")  // sorted ascending
+	testing.expect_value(t, v.entries[29].label, "item29")
 }
 
 // ---- Type construct tests ----

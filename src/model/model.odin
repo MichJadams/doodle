@@ -11,7 +11,7 @@ import "core:fmt"
 
 State :: enum { Menu, Editor, Radial }
 
-GRID_COLS        :: 3
+GRID_COLS        :: 8
 BUCKET_THRESHOLD :: 12
 BUCKET_TARGET    :: 9
 
@@ -1314,7 +1314,7 @@ open_slot_menu :: proc(app: ^App) {
 		import_calls: [dynamic]Entry
 		defer delete(import_calls)
 		if len(imports) == 0 {
-			append(&import_calls, grp_dim("(no imports yet - add one under Dependencies)"))
+			append(&import_calls, grp_dim("(no imports yet)"))
 		} else {
 			for imp in imports {
 				// Build procedure leaves for this import
@@ -1698,25 +1698,12 @@ make_view :: proc(app: ^App, title: string, raw: []Entry) -> MenuView {
 		append(&other, e)
 	}
 
+	// Large lists are shown as a flat ALPHABETICAL grid (scrollable), not bucketed.
+	// Small lists keep their natural/author order.
 	if len(other) > BUCKET_THRESHOLD {
-		v.rest = make([]Entry, len(other))
-		copy(v.rest, other[:])
-		slice.sort_by(v.rest, label_less)
-		n := len(v.rest)
-		k := (n + BUCKET_TARGET - 1) / BUCKET_TARGET
-		if k < 2 do k = 2
-		per := (n + k - 1) / k
-		i := 0
-		for i < n {
-			j := min(i + per, n)
-			lab := fmt.aprintf("%c-%c", upper_byte(v.rest[i].label[0]), upper_byte(v.rest[j - 1].label[0]))
-			append(&v.labels, lab)
-			append(&display, Entry{label = lab, children = v.rest[i:j]})
-			i = j
-		}
-	} else {
-		for e in other do append(&display, e)
+		slice.sort_by(other[:], label_less)
 	}
+	for e in other do append(&display, e)
 
 	v.entries = make([]Entry, len(display))
 	copy(v.entries, display[:])

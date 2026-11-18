@@ -404,36 +404,72 @@ draw_colored_dot :: proc(r: ^gpu.Renderer, cx, cy: f32, outer_col, inner_col: gp
 }
 
 // Render the current menu view (top of the navigation stack) as a grid.
+// Truncate a label (with a trailing "..") so it fits within maxw pixels.
+fit_label :: proc(font: ^text.Font, s: string, maxw: f32) -> string {
+	if text.measure(font, s).x <= maxw do return s
+	for end := len(s) - 1; end > 1; end -= 1 {
+		cand := strings.concatenate({s[:end], ".."}, context.temp_allocator)
+		if text.measure(font, cand).x <= maxw do return cand
+	}
+	return s
+}
+
+// A flat, alphabetical, 8-wide grid that scrolls vertically.
 draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
 	v := model.current_view(m)
 	if v == nil do return
 	fw, fh := f32(w), f32(h)
 	gpu.draw_rect(r, {0, 0, fw, fh}, {0, 0, 0, 0.60})
-	text.draw_centered(r, g_ui, {0, fh * 0.16, fw, 40}, v.title, COL_ACCENT)
+	text.draw_centered(r, g_ui, {0, fh * 0.07, fw, 36}, v.title, COL_ACCENT)
 
 	n := len(v.entries)
+	if n == 0 do return
 	cols := model.GRID_COLS
 	if n < cols do cols = n
 	if cols < 1 do cols = 1
 	rows := (n + cols - 1) / cols
 
-	cellw, cellh, gap := f32(240), f32(60), f32(16)
-	grid_w := f32(cols) * cellw + f32(cols - 1) * gap
-	grid_h := f32(rows) * cellh + f32(rows - 1) * gap
-	start_x := fw * 0.5 - grid_w * 0.5
-	start_y := fh * 0.26
+	margin := f32(40)
+	gap := f32(10)
+	cellw := (fw - 2 * margin - f32(cols - 1) * gap) / f32(cols)
+	cellh := f32(42)
+	vgap := f32(8)
+	start_x := margin
+	start_y := fh * 0.14
+	bottom := f32(h) - 185 // leave room for the HUD + hint
 
-	for e, i in v.entries {
-		col := i % cols
-		row := i / cols
-		box := gpu.Rect{start_x + f32(col) * (cellw + gap), start_y + f32(row) * (cellh + gap), cellw, cellh}
-		active := i == v.index
-		gpu.draw_rect(r, box, active ? COL_HILITE : COL_PANEL)
-		if active do gpu.draw_rect_outline(r, box, 2, COL_ACCENT)
-		col_text := e.dim ? COL_DIM : COL_TEXT
-		text.draw_centered(r, g_ui, box, e.label, col_text)
+	visible_rows := int((bottom - start_y) / (cellh + vgap))
+	if visible_rows < 1 do visible_rows = 1
+
+	sel_row := v.index / cols
+	// Scroll so the selected row stays visible (keep it roughly centered).
+	first_row := sel_row - visible_rows / 2
+	max_first := rows - visible_rows
+	if max_first < 0 do max_first = 0
+	if first_row > max_first do first_row = max_first
+	if first_row < 0 do first_row = 0
+
+	for row in first_row ..< min(first_row + visible_rows, rows) {
+		for col in 0 ..< cols {
+			i := row * cols + col
+			if i >= n do break
+			e := v.entries[i]
+			x := start_x + f32(col) * (cellw + gap)
+			y := start_y + f32(row - first_row) * (cellh + vgap)
+			box := gpu.Rect{x, y, cellw, cellh}
+			active := i == v.index
+			gpu.draw_rect(r, box, active ? COL_HILITE : COL_PANEL)
+			if active do gpu.draw_rect_outline(r, box, 2, COL_ACCENT)
+			col_text := e.dim ? COL_DIM : COL_TEXT
+			text.draw_centered(r, g_ui, box, fit_label(g_ui, e.label, cellw - 10), col_text)
+		}
 	}
-	text.draw_centered(r, g_ui, {0, start_y + grid_h + 24, fw, 28}, "D-pad / Arrows to move     + : select     < : back", COL_DIM)
+
+	// Scroll indicators + position.
+	hint := fmt.tprintf("%d / %d     D-pad move   + select   < back", v.index + 1, n)
+	if first_row > 0 do text.draw_centered(r, g_ui, {0, start_y - 26, fw, 22}, "^ more", COL_DIM)
+	if first_row + visible_rows < rows do text.draw_centered(r, g_ui, {0, bottom + 2, fw, 22}, "v more", COL_DIM)
+	text.draw_centered(r, g_ui, {0, f32(h) - 172, fw, 24}, hint, COL_DIM)
 }
 
 draw_hud :: proc(r: ^gpu.Renderer, m: ^model.App, inp: model.Input, w, h: int) {
