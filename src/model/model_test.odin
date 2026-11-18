@@ -1929,3 +1929,228 @@ test_delete_focused_construct_removes_whole_proc :: proc(t: ^testing.T) {
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
 	testing.expect(t, strings.contains(txt, "package"), "package should remain")
 }
+
+// ---- Branching and Loops tests ----
+
+@(test)
+test_body_slot_menu_has_branching_and_loops :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should be on body slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "body")
+	// Open menu
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	v := current_view(&app)
+	// Check for Branching and Loops categories (now selectable, not dim)
+	labels: [dynamic]string
+	defer delete(labels)
+	for e in v.entries {
+		append(&labels, e.label)
+	}
+	testing.expect(t, slice.contains(labels[:], "Branching"), "should contain 'Branching' category")
+	testing.expect(t, slice.contains(labels[:], "Loops"), "should contain 'Loops' category")
+	// Verify they are NOT dim (can be selected)
+	found_branching := false
+	found_loops := false
+	for e in v.entries {
+		if e.label == "Branching" && !e.dim {
+			found_branching = true
+		}
+		if e.label == "Loops" && !e.dim {
+			found_loops = true
+		}
+	}
+	testing.expect(t, found_branching, "Branching should be selectable (not dim)")
+	testing.expect(t, found_loops, "Loops should be selectable (not dim)")
+	update(&app, Input{cancel = true})
+	testing.expect_value(t, app.state, State.Editor)
+}
+
+@(test)
+test_branching_if_inserts_block :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	initial_node_count := len(app.doc.nodes)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu and navigate to Branching -> If
+	update(&app, Input{confirm = true})
+	select_label(&app, "Branching")
+	select_label(&app, "If")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that body line now contains "if " and "{"
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "if "), "header should contain 'if '")
+	testing.expect(t, strings.contains(txt, "{"), "header should contain '{'")
+	// Verify a condition slot exists
+	found_value_slot := false
+	for f in app.doc.nodes[1].fields {
+		if f.slot && f.kind == "value" {
+			found_value_slot = true
+			break
+		}
+	}
+	testing.expect(t, found_value_slot, "header should have a condition slot")
+	// Verify inner body-slot line was added (node 2)
+	found_inner_body := false
+	for f in app.doc.nodes[2].fields {
+		if f.slot && f.kind == "body" {
+			found_inner_body = true
+			break
+		}
+	}
+	testing.expect(t, found_inner_body, "should have inner body slot line")
+	// Verify closing brace line was added (node 3)
+	brace_txt := node_text(app.doc.nodes[3], context.temp_allocator)
+	testing.expect(t, strings.contains(brace_txt, "}"), "should have closing brace line")
+	// Verify trailing body-slot line was added after the block (node 4)
+	found_trailing_body := false
+	for f in app.doc.nodes[4].fields {
+		if f.slot && f.kind == "body" {
+			found_trailing_body = true
+			break
+		}
+	}
+	testing.expect(t, found_trailing_body, "should have trailing body slot line after block")
+	// Verify total node count grew appropriately
+	// initial: 3 (proc header, body, close brace)
+	// after: 6 (proc header, if header, inner body, if close, trailing body, proc close)
+	testing.expect_value(t, len(app.doc.nodes), initial_node_count + 3)
+}
+
+@(test)
+test_branching_ifelse_inserts_two_body_slots :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu and navigate to Branching -> If / Else
+	update(&app, Input{confirm = true})
+	select_label(&app, "Branching")
+	select_label(&app, "If / Else")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check header contains "if"
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "if"), "header should contain 'if'")
+	// Find the "} else {" line
+	found_else := false
+	for n in app.doc.nodes {
+		line_txt := node_text(n, context.temp_allocator)
+		if strings.contains(line_txt, "} else {") {
+			found_else = true
+			break
+		}
+	}
+	testing.expect(t, found_else, "should have '} else {' line")
+	// Verify there are two inner body slots (one for if, one for else)
+	body_slot_count := 0
+	for i in 1 ..< len(app.doc.nodes) - 2 { // skip proc header and trailing lines
+		for f in app.doc.nodes[i].fields {
+			if f.slot && f.kind == "body" {
+				body_slot_count += 1
+			}
+		}
+	}
+	testing.expect(t, body_slot_count >= 2, "should have at least 2 body slots (if + else)")
+}
+
+@(test)
+test_loops_forin_inserts_block :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu and navigate to Loops -> For ... in
+	update(&app, Input{confirm = true})
+	select_label(&app, "Loops")
+	select_label(&app, "For ... in")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that header contains "for " and " in "
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "for "), "header should contain 'for '")
+	testing.expect(t, strings.contains(txt, " in "), "header should contain ' in '")
+	// Verify there are value slots (iter-var and range)
+	value_slot_count := 0
+	for f in app.doc.nodes[1].fields {
+		if f.slot && f.kind == "value" {
+			value_slot_count += 1
+		}
+	}
+	testing.expect(t, value_slot_count >= 2, "header should have at least 2 value slots")
+}
+
+@(test)
+test_loops_for_infinite_no_condition :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu and navigate to Loops -> For (infinite)
+	update(&app, Input{confirm = true})
+	select_label(&app, "Loops")
+	select_label(&app, "For (infinite)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that header contains "for {" (no condition)
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "for {"), "header should contain 'for {'")
+	// Verify no value slots in the header (infinite loop has no condition)
+	found_value_slot := false
+	for f in app.doc.nodes[1].fields {
+		if f.slot && f.kind == "value" {
+			found_value_slot = true
+			break
+		}
+	}
+	testing.expect(t, !found_value_slot, "infinite for should have no condition slot")
+	// Verify inner body slot exists
+	found_inner_body := false
+	for f in app.doc.nodes[2].fields {
+		if f.slot && f.kind == "body" {
+			found_inner_body = true
+			break
+		}
+	}
+	testing.expect(t, found_inner_body, "should have inner body slot")
+}
+
+@(test)
+test_block_has_trailing_body_slot :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Insert a branching block
+	update(&app, Input{confirm = true})
+	select_label(&app, "Branching")
+	select_label(&app, "If")
+	testing.expect_value(t, app.state, State.Editor)
+	// Verify that after inserting the block, a trailing body slot exists
+	// so the user can add more statements
+	found_trailing_body := false
+	for i := 4; i < len(app.doc.nodes) - 1; i += 1 { // after the if block
+		for f in app.doc.nodes[i].fields {
+			if f.slot && f.kind == "body" {
+				found_trailing_body = true
+				break
+			}
+		}
+		if found_trailing_body do break
+	}
+	testing.expect(t, found_trailing_body, "should have trailing body slot after block for adding more statements")
+}

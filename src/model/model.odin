@@ -628,6 +628,223 @@ make_slot_param :: proc(app: ^App, ni, fi: int) {
 }
 
 // Transform a body slot into a statement and append a new body slot line.
+// Get the leading indent from a body slot line (first field should be whitespace).
+get_body_indent :: proc(app: ^App, ni: int, allocator := context.allocator) -> string {
+	if ni >= len(app.doc.nodes) do return strings.clone("    ", allocator)
+	node := &app.doc.nodes[ni]
+	if len(node.fields) == 0 do return strings.clone("    ", allocator)
+	// First field should be the indent
+	first := node.fields[0]
+	if !first.editable && !first.slot && len(first.text) > 0 {
+		return strings.clone(first.text, allocator)
+	}
+	return strings.clone("    ", allocator)
+}
+
+// Insert a multi-line branching statement at (ni, fi).
+make_branch_statement :: proc(app: ^App, ni, fi: int, kind: string) {
+	indent := get_body_indent(app, ni)
+	defer delete(indent)
+	inner_indent := strings.concatenate({indent, "    "})
+	defer delete(inner_indent)
+	
+	fields := &app.doc.nodes[ni].fields
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	switch kind {
+	case "__br_if__": // if • {
+		// Header: if • {
+		f1 := Field{strings.clone("if "), false, false, ""}
+		f2 := Field{"", false, true, "value"} // condition slot
+		f3 := Field{strings.clone(" {"), false, false, ""}
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Inner body line: <inner_indent><body slot>
+		n_body: Node
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
+		append(&n_body.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n_body)
+		
+		// Closing brace: <indent>}
+		n_close: Node
+		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n_close)
+		
+	case "__br_ifelse__": // if • { / body / } else { / body2 / }
+		// Header: if • {
+		f1 := Field{strings.clone("if "), false, false, ""}
+		f2 := Field{"", false, true, "value"} // condition slot
+		f3 := Field{strings.clone(" {"), false, false, ""}
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Inner body line 1: <inner_indent><body slot>
+		n_body1: Node
+		append(&n_body1.fields, Field{strings.clone(inner_indent), false, false, ""})
+		append(&n_body1.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n_body1)
+		
+		// Else line: <indent>} else {
+		n_else: Node
+		append(&n_else.fields, Field{strings.clone(indent), false, false, ""})
+		append(&n_else.fields, Field{strings.clone("} else {"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n_else)
+		
+		// Inner body line 2: <inner_indent><body slot>
+		n_body2: Node
+		append(&n_body2.fields, Field{strings.clone(inner_indent), false, false, ""})
+		append(&n_body2.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 3, n_body2)
+		
+		// Closing brace: <indent>}
+		n_close: Node
+		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 4, n_close)
+		
+	case "__br_switch__": // switch • {
+		// Header: switch • {
+		f1 := Field{strings.clone("switch "), false, false, ""}
+		f2 := Field{"", false, true, "value"} // expr slot
+		f3 := Field{strings.clone(" {"), false, false, ""}
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Inner body line: <inner_indent><body slot>
+		n_body: Node
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
+		append(&n_body.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n_body)
+		
+		// Closing brace: <indent>}
+		n_close: Node
+		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n_close)
+		
+	case "__br_when__": // when • {
+		// Header: when • {
+		f1 := Field{strings.clone("when "), false, false, ""}
+		f2 := Field{"", false, true, "value"} // compile-time condition slot
+		f3 := Field{strings.clone(" {"), false, false, ""}
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Inner body line: <inner_indent><body slot>
+		n_body: Node
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
+		append(&n_body.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n_body)
+		
+		// Closing brace: <indent>}
+		n_close: Node
+		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n_close)
+	}
+	
+	// Insert a trailing continuation body-slot line after the block
+	new_body: Node
+	append(&new_body.fields, Field{strings.clone(indent), false, false, ""})
+	append(&new_body.fields, Field{"", false, true, "body"})
+	// For if/else with 4 inner nodes, insert after ni+4; else after ni+2
+	if kind == "__br_ifelse__" {
+		inject_at(&app.doc.nodes, ni + 5, new_body)
+	} else {
+		inject_at(&app.doc.nodes, ni + 3, new_body)
+	}
+}
+
+// Insert a multi-line loop statement at (ni, fi).
+make_loop_statement :: proc(app: ^App, ni, fi: int, kind: string) {
+	indent := get_body_indent(app, ni)
+	defer delete(indent)
+	inner_indent := strings.concatenate({indent, "    "})
+	defer delete(inner_indent)
+	
+	fields := &app.doc.nodes[ni].fields
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	switch kind {
+	case "__loop_for__": // for • {
+		// Header: for • {
+		f1 := Field{strings.clone("for "), false, false, ""}
+		f2 := Field{"", false, true, "value"} // condition slot
+		f3 := Field{strings.clone(" {"), false, false, ""}
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Inner body line: <inner_indent><body slot>
+		n_body: Node
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
+		append(&n_body.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n_body)
+		
+		// Closing brace: <indent>}
+		n_close: Node
+		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n_close)
+		
+	case "__loop_forin__": // for • in • {
+		// Header: for • in • {
+		f1 := Field{strings.clone("for "), false, false, ""}
+		f2 := Field{"", false, true, "value"} // iter-var slot
+		f3 := Field{strings.clone(" in "), false, false, ""}
+		f4 := Field{"", false, true, "value"} // range slot
+		f5 := Field{strings.clone(" {"), false, false, ""}
+		inject_at(fields, fi, f5)
+		inject_at(fields, fi, f4)
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+		// Inner body line: <inner_indent><body slot>
+		n_body: Node
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
+		append(&n_body.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n_body)
+		
+		// Closing brace: <indent>}
+		n_close: Node
+		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n_close)
+		
+	case "__loop_forinf__": // for {
+		// Header: for {
+		f1 := Field{strings.clone("for {"), false, false, ""}
+		inject_at(fields, fi, f1)
+		
+		// Inner body line: <inner_indent><body slot>
+		n_body: Node
+		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, ""})
+		append(&n_body.fields, Field{"", false, true, "body"})
+		inject_at(&app.doc.nodes, ni + 1, n_body)
+		
+		// Closing brace: <indent>}
+		n_close: Node
+		append(&n_close.fields, Field{strings.clone(indent), false, false, ""})
+		append(&n_close.fields, Field{strings.clone("}"), false, false, ""})
+		inject_at(&app.doc.nodes, ni + 2, n_close)
+	}
+	
+	// Insert a trailing continuation body-slot line after the block
+	new_body: Node
+	append(&new_body.fields, Field{strings.clone(indent), false, false, ""})
+	append(&new_body.fields, Field{"", false, true, "body"})
+	inject_at(&app.doc.nodes, ni + 3, new_body)
+}
+
 make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	fields := &app.doc.nodes[ni].fields
 	// Remove the body slot field
@@ -826,12 +1043,27 @@ open_slot_menu :: proc(app: ^App) {
 		calls_children := make([]Entry, len(call_entries))
 		copy(calls_children, call_entries[:])
 		
+		// Branching category
+		branching := make_slice(
+			Entry{label = "If", fill = "__br_if__"},
+			Entry{label = "If / Else", fill = "__br_ifelse__"},
+			Entry{label = "Switch", fill = "__br_switch__"},
+			Entry{label = "When", fill = "__br_when__"},
+		)
+		
+		// Loops category
+		loops := make_slice(
+			Entry{label = "For (condition)", fill = "__loop_for__"},
+			Entry{label = "For ... in", fill = "__loop_forin__"},
+			Entry{label = "For (infinite)", fill = "__loop_forinf__"},
+		)
+		
 		app.slot_menu = make_slice(
 			grp("Declarations", decls),
 			grp("Assignment", assignments),
 			grp("Calls", calls_children),
-			grp_dim("Branching"),
-			grp_dim("Loops"),
+			grp("Branching", branching),
+			grp("Loops", loops),
 			grp_dim("Jumps and cleanup"),
 			grp_dim("Error handling"),
 			grp_dim("Scope and blocks"),
@@ -1256,6 +1488,10 @@ menu_select :: proc(app: ^App) {
 			make_call_this_package(app, app.slot_ni, app.slot_fi, e.call_name)
 		} else if e.fill == "__call_import__" {
 			make_call_import(app, app.slot_ni, app.slot_fi, e.call_pkg)
+		} else if e.fill == "__br_if__" || e.fill == "__br_ifelse__" || e.fill == "__br_switch__" || e.fill == "__br_when__" {
+			make_branch_statement(app, app.slot_ni, app.slot_fi, e.fill)
+		} else if e.fill == "__loop_for__" || e.fill == "__loop_forin__" || e.fill == "__loop_forinf__" {
+			make_loop_statement(app, app.slot_ni, app.slot_fi, e.fill)
 		} else {
 			set_slot_type(app, app.slot_ni, app.slot_fi, e.fill)
 		}
