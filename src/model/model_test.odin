@@ -3,6 +3,7 @@ package model
 import "core:testing"
 import "core:fmt"
 import "core:strings"
+import "core:slice"
 
 @(private = "file")
 confirm :: proc(app: ^App) { update(app, Input{confirm = true}) }
@@ -992,11 +993,11 @@ test_slot_fill_variable_then_type :: proc(t: ^testing.T) {
 	update(&app, Input{up = true})
 	update(&app, Input{up = true}) // to struct name line
 	update(&app, Input{down = true}) // back to body line
-	// Confirm to open fill menu
+	// Confirm to open fill menu (now shows statement menu for body slots)
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
-	// Select "Variable"
-	select_label(&app, "Variable")
+	// Select "Variable (typed)" which creates name: type = value pattern
+	select_label(&app, "Variable (typed)")
 	// Should be back in Editor
 	testing.expect_value(t, app.state, State.Editor)
 	// Check that the body line now contains "value:"
@@ -1022,8 +1023,7 @@ test_slot_fill_variable_then_type :: proc(t: ^testing.T) {
 	testing.expect(t, found_separator, "should have ': ' separator")
 	testing.expect(t, found_slot, "should have new type slot")
 	// Now navigate right to the new type slot and fill it with "bool"
-	update(&app, Input{right = true}) // to separator (not selectable, stays on value)
-	update(&app, Input{right = true}) // to new type slot
+	update(&app, Input{right = true}) // to type slot (next selectable field)
 	// Confirm to open fill menu again
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
@@ -1044,11 +1044,19 @@ test_user_defined_type_in_menu :: proc(t: ^testing.T) {
 	defer cleanup(&app)
 	app.state = .Editor
 	add_struct(&app) // inserts MyType :: struct { ... }
-	// Navigate to body slot
+	// Add a member variable using new statement menu
 	update(&app, Input{up = true})
 	update(&app, Input{up = true})
 	update(&app, Input{down = true})
-	// Open fill menu
+	// Open fill menu (now shows statement menu)
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	// Select "Variable (typed)" to add a typed member
+	select_label(&app, "Variable (typed)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Navigate to the type slot
+	update(&app, Input{right = true}) // to type slot
+	// Open fill menu on type slot
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
 	// Select "Type"
@@ -1214,4 +1222,255 @@ test_add_second_parameter :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, colon_count >= 2, "should have at least 2 ': ' patterns (for two params)")
+}
+
+// ---- Body slot statement tests ----
+
+@(test)
+test_body_slot_opens_statement_menu :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true}) // from green dot to body slot line
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should be on body slot")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "body")
+	// Open menu
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	v := current_view(&app)
+	testing.expect_value(t, v.title, "Fill slot")
+	// Check for statement entries
+	labels: [dynamic]string
+	defer delete(labels)
+	for e in v.entries {
+		append(&labels, e.label)
+	}
+	testing.expect(t, slice.contains(labels[:], "Variable (:=)"), "should contain 'Variable (:=)'")
+	testing.expect(t, slice.contains(labels[:], "Variable (typed)"), "should contain 'Variable (typed)'")
+	testing.expect(t, slice.contains(labels[:], "Assignment"), "should contain 'Assignment'")
+	testing.expect(t, slice.contains(labels[:], "Procedure call"), "should contain 'Procedure call'")
+	// Cancel back
+	update(&app, Input{cancel = true})
+	testing.expect_value(t, app.state, State.Editor)
+}
+
+@(test)
+test_body_slot_variable_decl_transform :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	initial_node_count := len(app.doc.nodes)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu and select "Variable (:=)"
+	update(&app, Input{confirm = true})
+	select_label(&app, "Variable (:=)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that body line now contains ":="
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, ":="), "body should contain ':='")
+	testing.expect(t, strings.contains(txt, "value"), "body should contain 'value'")
+	// Verify a new body slot line was inserted
+	testing.expect_value(t, len(app.doc.nodes), initial_node_count + 1)
+	// Check that the new line (node 2) has a body slot
+	found_body_slot := false
+	for f in app.doc.nodes[2].fields {
+		if f.slot && f.kind == "body" {
+			found_body_slot = true
+			break
+		}
+	}
+	testing.expect(t, found_body_slot, "should have new body slot line after statement")
+	// Verify closing brace is still last (node 3)
+	brace_txt := node_text(app.doc.nodes[3], context.temp_allocator)
+	testing.expect(t, strings.contains(brace_txt, "}"), "closing brace should still be last")
+}
+
+@(test)
+test_body_slot_typed_variable_transform :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu and select "Variable (typed)"
+	update(&app, Input{confirm = true})
+	select_label(&app, "Variable (typed)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that body line now contains ": " and " = "
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "value"), "body should contain 'value'")
+	testing.expect(t, strings.contains(txt, ": "), "body should contain ': '")
+	testing.expect(t, strings.contains(txt, " = "), "body should contain ' = '")
+	// Verify fields: editable "value", ": ", type slot, " = ", value slot
+	ni := 1
+	found_name := false
+	found_colon := false
+	found_type_slot := false
+	found_equals := false
+	found_value_slot := false
+	for f in app.doc.nodes[ni].fields {
+		if f.text == "value" && f.editable && !f.slot {
+			found_name = true
+		}
+		if f.text == ": " && !f.editable && !f.slot {
+			found_colon = true
+		}
+		if f.text == "" && !f.editable && f.slot && f.kind == "type" {
+			found_type_slot = true
+		}
+		if f.text == " = " && !f.editable && !f.slot {
+			found_equals = true
+		}
+		if f.text == "" && !f.editable && f.slot && f.kind == "value" {
+			found_value_slot = true
+		}
+	}
+	testing.expect(t, found_name, "should have editable 'value' field")
+	testing.expect(t, found_colon, "should have ': ' separator")
+	testing.expect(t, found_type_slot, "should have type slot")
+	testing.expect(t, found_equals, "should have ' = ' separator")
+	testing.expect(t, found_value_slot, "should have value slot")
+}
+
+@(test)
+test_body_slot_assignment_transform :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu and select "Assignment"
+	update(&app, Input{confirm = true})
+	select_label(&app, "Assignment")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that body line contains " = "
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "value"), "body should contain 'value'")
+	testing.expect(t, strings.contains(txt, " = "), "body should contain ' = '")
+	// Verify fields: editable "value", " = ", value slot
+	ni := 1
+	found_name := false
+	found_equals := false
+	found_value_slot := false
+	for f in app.doc.nodes[ni].fields {
+		if f.text == "value" && f.editable && !f.slot {
+			found_name = true
+		}
+		if f.text == " = " && !f.editable && !f.slot {
+			found_equals = true
+		}
+		if f.text == "" && !f.editable && f.slot && f.kind == "value" {
+			found_value_slot = true
+		}
+	}
+	testing.expect(t, found_name, "should have editable 'value' field")
+	testing.expect(t, found_equals, "should have ' = ' separator")
+	testing.expect(t, found_value_slot, "should have value slot")
+}
+
+@(test)
+test_body_slot_procedure_call_transform :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu and select "Procedure call"
+	update(&app, Input{confirm = true})
+	select_label(&app, "Procedure call")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that body line contains "do_thing", "(", and ")"
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "do_thing"), "body should contain 'do_thing'")
+	testing.expect(t, strings.contains(txt, "( "), "body should contain '( '")
+	testing.expect(t, strings.contains(txt, " )"), "body should contain ' )'")
+	// Verify fields: editable "do_thing", "( ", value slot, " )"
+	ni := 1
+	found_name := false
+	found_lparen := false
+	found_value_slot := false
+	found_rparen := false
+	for f in app.doc.nodes[ni].fields {
+		if f.text == "do_thing" && f.editable && !f.slot {
+			found_name = true
+		}
+		if f.text == "( " && !f.editable && !f.slot {
+			found_lparen = true
+		}
+		if f.text == "" && !f.editable && f.slot && f.kind == "value" {
+			found_value_slot = true
+		}
+		if f.text == " )" && !f.editable && !f.slot {
+			found_rparen = true
+		}
+	}
+	testing.expect(t, found_name, "should have editable 'do_thing' field")
+	testing.expect(t, found_lparen, "should have '( ' field")
+	testing.expect(t, found_value_slot, "should have value slot")
+	testing.expect(t, found_rparen, "should have ' )' field")
+}
+
+@(test)
+test_body_slot_multiple_statements :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Add first statement
+	update(&app, Input{up = true})
+	update(&app, Input{confirm = true})
+	select_label(&app, "Variable (:=)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Navigate to new body slot (down from current position)
+	update(&app, Input{down = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should be on new body slot")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "body")
+	// Add second statement
+	update(&app, Input{confirm = true})
+	select_label(&app, "Assignment")
+	testing.expect_value(t, app.state, State.Editor)
+	// Verify we now have 5 nodes: signature, stmt1, stmt2, new body slot, closing brace
+	testing.expect_value(t, len(app.doc.nodes), 5)
+	// Check that there's still a body slot available
+	update(&app, Input{down = true})
+	ni2, fi2, ok2 := editor_target(&app)
+	testing.expect(t, ok2, "should be on another body slot")
+	testing.expect(t, app.doc.nodes[ni2].fields[fi2].slot, "should be a slot")
+	testing.expect_value(t, app.doc.nodes[ni2].fields[fi2].kind, "body")
+}
+
+@(test)
+test_body_slot_struct_body :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_struct(&app)
+	// Navigate to struct body slot
+	update(&app, Input{up = true}) // from green dot to body slot
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should be on body slot")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "body")
+	// Open menu - should get statement menu (since it's a body slot)
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	v := current_view(&app)
+	// Check for statement entries
+	labels: [dynamic]string
+	defer delete(labels)
+	for e in v.entries {
+		append(&labels, e.label)
+	}
+	testing.expect(t, slice.contains(labels[:], "Variable (:=)"), "struct body should offer statement menu")
 }

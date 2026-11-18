@@ -520,6 +520,59 @@ make_slot_param :: proc(app: ^App, ni, fi: int) {
 	inject_at(fields, fi, f1)
 }
 
+// Transform a body slot into a statement and append a new body slot line.
+make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
+	fields := &app.doc.nodes[ni].fields
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	switch kind {
+	case "__stmt_decl__": // Variable (:=) -> name := •
+		f1 := Field{strings.clone("value"), true, false, ""} // editable name
+		f2 := Field{strings.clone(" := "), false, false, ""} // fixed
+		f3 := Field{"", false, true, "value"}                 // value slot
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+	case "__stmt_typed__": // Variable (typed) -> name: • = •
+		f1 := Field{strings.clone("value"), true, false, ""} // editable name
+		f2 := Field{strings.clone(": "), false, false, ""}   // fixed
+		f3 := Field{"", false, true, "type"}                  // type slot
+		f4 := Field{strings.clone(" = "), false, false, ""}  // fixed
+		f5 := Field{"", false, true, "value"}                 // value slot
+		inject_at(fields, fi, f5)
+		inject_at(fields, fi, f4)
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+	case "__stmt_assign__": // Assignment -> name = •
+		f1 := Field{strings.clone("value"), true, false, ""} // editable name
+		f2 := Field{strings.clone(" = "), false, false, ""}  // fixed
+		f3 := Field{"", false, true, "value"}                 // value slot
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+	case "__stmt_call__": // Procedure call -> name( • )
+		f1 := Field{strings.clone("do_thing"), true, false, ""} // editable name
+		f2 := Field{strings.clone("( "), false, false, ""}      // fixed
+		f3 := Field{"", false, true, "value"}                    // value slot for arg
+		f4 := Field{strings.clone(" )"), false, false, ""}      // fixed
+		inject_at(fields, fi, f4)
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+	}
+	
+	// Insert a new body slot line after the current node
+	new_body: Node
+	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
+	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+	inject_at(&app.doc.nodes, ni + 1, new_body)
+}
+
 // Open the slot filling menu.
 open_slot_menu :: proc(app: ^App) {
 	ni, fi, ok := editor_target(app)
@@ -542,6 +595,14 @@ open_slot_menu :: proc(app: ^App) {
 		// Build param-specific menu
 		app.slot_menu = make_slice(
 			Entry{label = "Add parameter", fill = "__param__"},
+		)
+	} else if slot_kind == "body" {
+		// Build body-specific statement menu
+		app.slot_menu = make_slice(
+			Entry{label = "Variable (:=)", fill = "__stmt_decl__"},
+			Entry{label = "Variable (typed)", fill = "__stmt_typed__"},
+			Entry{label = "Assignment", fill = "__stmt_assign__"},
+			Entry{label = "Procedure call", fill = "__stmt_call__"},
 		)
 	} else {
 		// Generic Type/Variable menu for other slots
@@ -863,6 +924,8 @@ menu_select :: proc(app: ^App) {
 			make_slot_variable(app, app.slot_ni, app.slot_fi)
 		} else if e.fill == "__param__" {
 			make_slot_param(app, app.slot_ni, app.slot_fi)
+		} else if e.fill == "__stmt_decl__" || e.fill == "__stmt_typed__" || e.fill == "__stmt_assign__" || e.fill == "__stmt_call__" {
+			make_body_statement(app, app.slot_ni, app.slot_fi, e.fill)
 		} else {
 			set_slot_type(app, app.slot_ni, app.slot_fi, e.fill)
 		}
