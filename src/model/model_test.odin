@@ -2499,6 +2499,7 @@ test_error_or_return_adds_continuation_body_slot :: proc(t: ^testing.T) {
 @(test)
 test_procs_for_path_finds_println :: proc(t: ^testing.T) {
 	procs := procs_for_path("core:fmt")
+	defer delete(procs)
 	testing.expect(t, len(procs) > 0, "core:fmt should have procedures")
 	found := false
 	for p in procs {

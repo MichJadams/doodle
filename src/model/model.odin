@@ -641,33 +641,15 @@ collect_imports :: proc(app: ^App) -> []ImportRef {
 	return result[:]
 }
 
-// Global cache: lazily-initialized map from import path to procedure names.
-@(private = "file")
-g_proc_cache: map[string][dynamic]string
-
-@(private = "file")
-g_proc_cache_built: bool
-
-// Build the procedure cache from CORE_PROCS (once, lazily).
-@(private = "file")
-build_proc_cache :: proc() {
-	if g_proc_cache_built do return
-	for entry in CORE_PROCS {
-		if entry.path not_in g_proc_cache {
-			g_proc_cache[entry.path] = make([dynamic]string)
-		}
-		append(&g_proc_cache[entry.path], entry.name)
-	}
-	g_proc_cache_built = true
-}
-
 // Get procedure names for a given import path.
+// Procedure names exported by a package path. Caller owns the returned slice
+// (delete it); the name strings reference static CORE_PROCS data (do not free).
 procs_for_path :: proc(path: string) -> []string {
-	build_proc_cache()
-	if path in g_proc_cache {
-		return g_proc_cache[path][:]
+	result: [dynamic]string
+	for entry in CORE_PROCS {
+		if entry.path == path do append(&result, entry.name)
 	}
-	return nil
+	return result[:]
 }
 
 // Create a fill leaf entry.
@@ -1337,6 +1319,7 @@ open_slot_menu :: proc(app: ^App) {
 			for imp in imports {
 				// Build procedure leaves for this import
 				procs := procs_for_path(imp.path)
+				defer delete(procs)
 				pkg_children: [dynamic]Entry
 				defer delete(pkg_children)
 				
