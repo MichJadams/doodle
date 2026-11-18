@@ -1117,7 +1117,9 @@ make_multi_decl :: proc(app: ^App, ni, fi: int) {
 // Result: name( • ) where name is fixed (non-editable).
 make_call_this_package :: proc(app: ^App, ni, fi: int, proc_name: string) {
 	fields := &app.doc.nodes[ni].fields
-	// Remove the body slot field
+	// Capture whether this was a body slot (determines if we add a trailing line)
+	was_body := app.doc.nodes[ni].fields[fi].kind == "body"
+	// Remove the slot field
 	ordered_remove(fields, fi)
 	
 	// Insert call statement: name( • )
@@ -1130,18 +1132,22 @@ make_call_this_package :: proc(app: ^App, ni, fi: int, proc_name: string) {
 	inject_at(fields, fi, f2)
 	inject_at(fields, fi, f1)
 	
-	// Insert a new body slot line after the current node
-	new_body: Node
-	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
-	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
-	inject_at(&app.doc.nodes, ni + 1, new_body)
+	// Only add a trailing body slot line if the original slot was a body slot
+	if was_body {
+		new_body: Node
+		append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+		inject_at(&app.doc.nodes, ni + 1, new_body)
+	}
 }
 
 // Transform a body slot into a call to a procedure from an import.
 // Result: pkg.name( • ) where pkg is fixed and name is editable.
 make_call_import :: proc(app: ^App, ni, fi: int, pkg_name: string) {
 	fields := &app.doc.nodes[ni].fields
-	// Remove the body slot field
+	// Capture whether this was a body slot (determines if we add a trailing line)
+	was_body := app.doc.nodes[ni].fields[fi].kind == "body"
+	// Remove the slot field
 	ordered_remove(fields, fi)
 	
 	// Insert call statement: pkg.name( • )
@@ -1160,18 +1166,22 @@ make_call_import :: proc(app: ^App, ni, fi: int, pkg_name: string) {
 	inject_at(fields, fi, f2)
 	inject_at(fields, fi, f1)
 	
-	// Insert a new body slot line after the current node
-	new_body: Node
-	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
-	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
-	inject_at(&app.doc.nodes, ni + 1, new_body)
+	// Only add a trailing body slot line if the original slot was a body slot
+	if was_body {
+		new_body: Node
+		append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+		inject_at(&app.doc.nodes, ni + 1, new_body)
+	}
 }
 
 // Transform a body slot into a call to a specific procedure from an import.
 // Result: pkg.proc( • ) where both pkg and proc are fixed (non-editable).
 make_import_proc_call :: proc(app: ^App, ni, fi: int, pkg_name, proc_name: string) {
 	fields := &app.doc.nodes[ni].fields
-	// Remove the body slot field
+	// Capture whether this was a body slot (determines if we add a trailing line)
+	was_body := app.doc.nodes[ni].fields[fi].kind == "body"
+	// Remove the slot field
 	ordered_remove(fields, fi)
 	
 	// Insert call statement: pkg.proc( • )
@@ -1188,11 +1198,13 @@ make_import_proc_call :: proc(app: ^App, ni, fi: int, pkg_name, proc_name: strin
 	inject_at(fields, fi, f2)
 	inject_at(fields, fi, f1)
 	
-	// Insert a new body slot line after the current node
-	new_body: Node
-	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
-	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
-	inject_at(&app.doc.nodes, ni + 1, new_body)
+	// Only add a trailing body slot line if the original slot was a body slot
+	if was_body {
+		new_body: Node
+		append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
+		append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+		inject_at(&app.doc.nodes, ni + 1, new_body)
+	}
 }
 
 // Transform a body slot into a jump/cleanup statement.
@@ -1758,6 +1770,90 @@ extract_prefix :: proc(name: string) -> string {
 	return ""
 }
 
+// Build call menu children: Procedure in this package, Procedure from an import, Built-in.
+// Returns a slice that the caller owns (and should pass to free_entries).
+build_call_children :: proc(app: ^App) -> []Entry {
+	call_entries: [dynamic]Entry
+	defer delete(call_entries)
+	
+	// Subcategory 1: Procedure in this package
+	proc_names := collect_proc_names(app)
+	defer delete(proc_names)
+	this_pkg_calls: [dynamic]Entry
+	defer delete(this_pkg_calls)
+	if len(proc_names) == 0 {
+		append(&this_pkg_calls, grp_dim("(no procedures defined)"))
+	} else {
+		for name in proc_names {
+			append(&this_pkg_calls, Entry{
+				label = name,
+				fill = "__call_this_pkg__",
+				call_name = strings.clone(name),
+			})
+		}
+	}
+	this_pkg_children := make([]Entry, len(this_pkg_calls))
+	copy(this_pkg_children, this_pkg_calls[:])
+	append(&call_entries, grp("Procedure in this package", this_pkg_children))
+	
+	// Subcategory 2: Procedure from an import
+	imports := collect_imports(app)
+	defer delete(imports)
+	import_calls: [dynamic]Entry
+	defer delete(import_calls)
+	if len(imports) == 0 {
+		append(&import_calls, grp_dim("(no imports yet)"))
+	} else {
+		for imp in imports {
+			// Build hierarchical procedure menu for this import
+			pkg_children := build_import_proc_menu(app, imp.ref, imp.path)
+			
+			if len(pkg_children) == 0 {
+				// No procedures in table (e.g., non-core import), provide fallback
+				pkg_children = make_slice(Entry{
+					label = "Other (name it yourself)",
+					fill = "__call_import__",
+					call_pkg = strings.clone(imp.ref),
+				})
+			}
+			
+			// Make this package a group with procedure children
+			append(&import_calls, Entry{
+				label = imp.ref,
+				children = pkg_children,
+			})
+		}
+	}
+	import_children := make([]Entry, len(import_calls))
+	copy(import_children, import_calls[:])
+	append(&call_entries, grp("Procedure from an import", import_children))
+	
+	// Subcategory 3: Built-in procedures
+	builtins := [?]string{
+		"len", "cap", "make", "new", "append", "delete", "free",
+		"size_of", "align_of", "offset_of", "type_of", "type_info_of",
+		"assert", "panic", "clear", "resize", "reserve",
+		"raw_data", "swizzle", "min", "max", "abs", "clamp",
+	}
+	builtin_calls: [dynamic]Entry
+	defer delete(builtin_calls)
+	for name in builtins {
+		append(&builtin_calls, Entry{
+			label = strings.clone(name),
+			fill = "__call_this_pkg__",
+			call_name = strings.clone(name),
+			owned_label = true,
+		})
+	}
+	builtin_children := make([]Entry, len(builtin_calls))
+	copy(builtin_children, builtin_calls[:])
+	append(&call_entries, grp("Built-in", builtin_children))
+	
+	calls_children := make([]Entry, len(call_entries))
+	copy(calls_children, call_entries[:])
+	return calls_children
+}
+
 // Open the slot filling menu.
 open_slot_menu :: proc(app: ^App) {
 	ni, fi, ok := editor_target(app)
@@ -1797,63 +1893,7 @@ open_slot_menu :: proc(app: ^App) {
 		)
 		
 		// Calls category
-		call_entries: [dynamic]Entry
-		defer delete(call_entries)
-		
-		// Subcategory 1: Procedure in this package
-		proc_names := collect_proc_names(app)
-		defer delete(proc_names)
-		this_pkg_calls: [dynamic]Entry
-		defer delete(this_pkg_calls)
-		if len(proc_names) == 0 {
-			append(&this_pkg_calls, grp_dim("(no procedures defined)"))
-		} else {
-			for name in proc_names {
-				append(&this_pkg_calls, Entry{
-					label = name,
-					fill = "__call_this_pkg__",
-					call_name = strings.clone(name),
-				})
-			}
-		}
-		this_pkg_children := make([]Entry, len(this_pkg_calls))
-		copy(this_pkg_children, this_pkg_calls[:])
-		append(&call_entries, grp("Procedure in this package", this_pkg_children))
-		
-		// Subcategory 2: Procedure from an import
-		imports := collect_imports(app)
-		defer delete(imports)
-		import_calls: [dynamic]Entry
-		defer delete(import_calls)
-		if len(imports) == 0 {
-			append(&import_calls, grp_dim("(no imports yet)"))
-		} else {
-			for imp in imports {
-				// Build hierarchical procedure menu for this import
-				pkg_children := build_import_proc_menu(app, imp.ref, imp.path)
-				
-				if len(pkg_children) == 0 {
-					// No procedures in table (e.g., non-core import), provide fallback
-					pkg_children = make_slice(Entry{
-						label = "Other (name it yourself)",
-						fill = "__call_import__",
-						call_pkg = strings.clone(imp.ref),
-					})
-				}
-				
-				// Make this package a group with procedure children
-				append(&import_calls, Entry{
-					label = imp.ref,
-					children = pkg_children,
-				})
-			}
-		}
-		import_children := make([]Entry, len(import_calls))
-		copy(import_children, import_calls[:])
-		append(&call_entries, grp("Procedure from an import", import_children))
-		
-		calls_children := make([]Entry, len(call_entries))
-		copy(calls_children, call_entries[:])
+		calls_children := build_call_children(app)
 		
 		branching := make_slice(
 			Entry{label = "If", fill = "__br_if__"},
@@ -1929,6 +1969,7 @@ open_slot_menu :: proc(app: ^App) {
 			Entry{label = "false", fill = "__lit_false__"},
 			Entry{label = "nil", fill = "__lit_nil__"},
 			Entry{label = "Reference", fill = "__lit_ref__"},
+			Entry{label = strings.clone("Call"), owned_label = true, children = build_call_children(app)},
 			Entry{label = "Type", children = type_children},
 		)
 	} else {

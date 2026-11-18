@@ -2975,3 +2975,157 @@ test_multi_decl_has_two_value_slots :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, value_slot_count, 2)
 }
+
+// ---- Value slot call tests ----
+
+@(test)
+test_value_slot_call_via_import :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	// Add an import first
+	confirm(&app) // open Add root
+	select_label(&app, "Dependencies")
+	select_label(&app, "Import")
+	select_label(&app, "core")
+	drill_to_path(&app, "core:fmt")
+	// Add a proc
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Insert a Variable (:=) to get name := •
+	confirm(&app)
+	select_label(&app, "Declarations")
+	select_label(&app, "Variable (:=)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Count nodes before filling the value slot
+	node_count_before := len(app.doc.nodes)
+	// Navigate to the value slot
+	update(&app, Input{right = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should have a valid target")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "value")
+	// Open slot menu
+	confirm(&app)
+	testing.expect_value(t, app.state, State.Radial)
+	// Check that "Call" option is present
+	v := current_view(&app)
+	has_call := false
+	for e in v.entries {
+		if e.label == "Call" {
+			has_call = true
+			break
+		}
+	}
+	testing.expect(t, has_call, "value menu should have 'Call' option")
+	// Select Call -> Procedure from an import -> fmt
+	select_label(&app, "Call")
+	select_label(&app, "Procedure from an import")
+	select_label(&app, "fmt")
+	// Drill to first proc leaf
+	leaf := drill_to_first_leaf(&app)
+	testing.expect(t, leaf != nil, "should find a proc leaf")
+	testing.expect_value(t, leaf.fill, "__call_import_proc__")
+	// Select it
+	confirm(&app)
+	testing.expect_value(t, app.state, State.Editor)
+	// Verify it inserts a call expression on the SAME line (no extra trailing body-slot line)
+	txt := node_text(app.doc.nodes[2], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "fmt."), "should contain 'fmt.'")
+	testing.expect(t, strings.contains(txt, "( "), "should contain '( '")
+	testing.expect(t, strings.contains(txt, ":="), "should contain ':=' on same line")
+	// Verify NO extra trailing body-slot line was added
+	testing.expect_value(t, len(app.doc.nodes), node_count_before)
+}
+
+@(test)
+test_value_slot_builtin_call :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Insert a Variable (:=) to get name := •
+	confirm(&app)
+	select_label(&app, "Declarations")
+	select_label(&app, "Variable (:=)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Navigate to the value slot
+	update(&app, Input{right = true})
+	// Open slot menu
+	confirm(&app)
+	// Select Call -> Built-in -> len
+	select_label(&app, "Call")
+	select_label(&app, "Built-in")
+	select_label(&app, "len")
+	testing.expect_value(t, app.state, State.Editor)
+	// Verify it inserts len( on the same line
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "len( "), "should contain 'len( '")
+	testing.expect(t, strings.contains(txt, ":="), "should contain ':=' on same line")
+}
+
+@(test)
+test_body_slot_call_still_adds_trailing_line :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Count nodes before
+	node_count_before := len(app.doc.nodes)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should have a valid target")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "body")
+	// Open slot menu
+	confirm(&app)
+	// Select Calls -> Built-in -> len
+	select_label(&app, "Calls")
+	select_label(&app, "Built-in")
+	select_label(&app, "len")
+	testing.expect_value(t, app.state, State.Editor)
+	// Verify it inserts len( as a statement
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "len( "), "should contain 'len( '")
+	// Verify a trailing body slot line WAS added (node count increases by 1)
+	testing.expect_value(t, len(app.doc.nodes), node_count_before + 1)
+	// Verify the new line (node 2, inserted after the call) has a body slot
+	// Structure: node 0 = proc header, node 1 = call statement, node 2 = new body slot, node 3 = closing brace
+	has_body_slot := false
+	for f in app.doc.nodes[2].fields {
+		if f.slot && f.kind == "body" {
+			has_body_slot = true
+			break
+		}
+	}
+	testing.expect(t, has_body_slot, "trailing line should have body slot")
+}
+
+@(test)
+test_body_calls_category_has_builtin :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open slot menu
+	confirm(&app)
+	// Navigate to Calls category
+	select_label(&app, "Calls")
+	// Navigate to Built-in subcategory
+	select_label(&app, "Built-in")
+	testing.expect_value(t, app.state, State.Radial)
+	// Check that "len" is in the list
+	v := current_view(&app)
+	labels: [dynamic]string
+	defer delete(labels)
+	for e in v.entries {
+		append(&labels, e.label)
+	}
+	testing.expect(t, slice.contains(labels[:], "len"), "Built-in should contain 'len'")
+	testing.expect(t, slice.contains(labels[:], "append"), "Built-in should contain 'append'")
+	testing.expect(t, slice.contains(labels[:], "make"), "Built-in should contain 'make'")
+}
