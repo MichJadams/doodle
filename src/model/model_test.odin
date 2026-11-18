@@ -1691,33 +1691,6 @@ test_delete_construct_removes_nodes :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(app.doc.nodes), 0)
 }
 
-@(test)
-test_statement_menu_delete_flow :: proc(t: ^testing.T) {
-	app: App
-	defer cleanup(&app)
-	app.state = .Editor
-	// Insert package and procedure
-	add_package(&app)
-	add_proc(&app)
-	testing.expect_value(t, len(app.doc.nodes), 4) // 1 package + 3 proc nodes
-	// Focus the procedure header (line 1)
-	app.editor_line = 1
-	app.editor_field = 0
-	// Open statement menu
-	open_statement_menu(&app)
-	testing.expect_value(t, app.state, State.Radial)
-	// Verify the construct range was recorded
-	testing.expect_value(t, app.sel_start, 1)
-	testing.expect_value(t, app.sel_end, 3)
-	// Select the "Delete" entry
-	select_label(&app, "Delete")
-	// Should be back in editor
-	testing.expect_value(t, app.state, State.Editor)
-	// Procedure should be gone, only package remains
-	testing.expect_value(t, len(app.doc.nodes), 1)
-	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect_value(t, txt, "package main")
-}
 // ---- Body slot menu categories tests ----
 
 @(test)

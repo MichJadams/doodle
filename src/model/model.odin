@@ -92,10 +92,6 @@ App :: struct {
 	slot_ni:   int,     // node index of slot being filled
 	slot_fi:   int,     // field index of slot being filled
 
-	action_menu: []Entry, // statement action menu (built on-demand)
-	sel_start:   int,     // construct range start for action menu
-	sel_end:     int,     // construct range end for action menu
-
 	name_counter: int, // deterministic name generation counter
 }
 
@@ -183,7 +179,6 @@ free_menus :: proc(app: ^App) {
 	if app.add_menu != nil { free_entries(app.add_menu); app.add_menu = nil }
 	if app.ide_menu != nil { free_entries(app.ide_menu); app.ide_menu = nil }
 	if app.slot_menu != nil { free_entries(app.slot_menu); app.slot_menu = nil }
-	if app.action_menu != nil { free_entries(app.action_menu); app.action_menu = nil }
 }
 
 // ---- Build the core tree from the generated flat rows ----
@@ -1052,25 +1047,6 @@ delete_construct :: proc(app: ^App, start, end_param: int) {
 	clamp_field(app)
 }
 
-// Open the statement action menu (LT+X in the editor).
-open_statement_menu :: proc(app: ^App) {
-	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return
-	// Record the construct range.
-	app.sel_start, app.sel_end = construct_range(app, app.editor_line)
-	// Free any previous action menu.
-	if app.action_menu != nil {
-		free_entries(app.action_menu)
-		app.action_menu = nil
-	}
-	// Build the action menu with a single "Delete" entry.
-	app.action_menu = make_slice(Entry{label = "Delete", fill = "__delete__"})
-	// Open the menu.
-	clear_nav(app)
-	app.return_state = .Editor
-	app.state = .Radial
-	push_menu(app, "Statement Actions", app.action_menu)
-}
-
 // Common words to bias dictation toward (keywords + frequent identifiers).
 COMMON_WORDS := [?]string{
 	"main", "package", "proc", "struct", "enum", "union", "import", "return",
@@ -1103,11 +1079,6 @@ doc_reset :: proc(app: ^App) {
 	if app.slot_menu != nil {
 		free_entries(app.slot_menu)
 		app.slot_menu = nil
-	}
-	// Free action menu if allocated
-	if app.action_menu != nil {
-		free_entries(app.action_menu)
-		app.action_menu = nil
 	}
 }
 
@@ -1281,16 +1252,6 @@ menu_select :: proc(app: ^App) {
 			make_slot_param(app, app.slot_ni, app.slot_fi)
 		} else if e.fill == "__stmt_decl__" || e.fill == "__stmt_typed__" || e.fill == "__stmt_assign__" || e.fill == "__stmt_call__" {
 			make_body_statement(app, app.slot_ni, app.slot_fi, e.fill)
-		} else if e.fill == "__delete__" {
-			// Handle delete action from statement menu
-			delete_construct(app, app.sel_start, app.sel_end)
-			clear_nav(app)
-			app.state = app.return_state
-			if app.action_menu != nil {
-				free_entries(app.action_menu)
-				app.action_menu = nil
-			}
-			return
 		} else if e.fill == "__call_this_pkg__" {
 			make_call_this_package(app, app.slot_ni, app.slot_fi, e.call_name)
 		} else if e.fill == "__call_import__" {
@@ -1323,11 +1284,6 @@ menu_cancel :: proc(app: ^App) {
 		if app.slot_menu != nil {
 			free_entries(app.slot_menu)
 			app.slot_menu = nil
-		}
-		// Free action menu if we're canceling out of it
-		if app.action_menu != nil {
-			free_entries(app.action_menu)
-			app.action_menu = nil
 		}
 	}
 }
