@@ -2736,3 +2736,242 @@ test_small_package_flat :: proc(t: ^testing.T) {
 		testing.expect(t, all_leaves, "small package should show flat leaves")
 	}
 }
+
+// ---- Value Literal Tests ----
+
+@(test)
+test_value_slot_opens_literal_menu :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	confirm(&app) // open body menu
+	select_label(&app, "Declarations")
+	select_label(&app, "Variable (:=)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Now navigate to the value slot
+	update(&app, Input{right = true}) // move to value slot
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should have a valid target")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be on a slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "value")
+	// Open slot menu
+	confirm(&app)
+	testing.expect_value(t, app.state, State.Radial)
+	// Check that literal options are present
+	v := current_view(&app)
+	has_number := false
+	has_string := false
+	has_true := false
+	has_false := false
+	has_nil := false
+	has_reference := false
+	has_type := false
+	for e in v.entries {
+		if e.label == "Number" do has_number = true
+		if e.label == "String" do has_string = true
+		if e.label == "true" do has_true = true
+		if e.label == "false" do has_false = true
+		if e.label == "nil" do has_nil = true
+		if e.label == "Reference" do has_reference = true
+		if e.label == "Type" do has_type = true
+	}
+	testing.expect(t, has_number, "should have Number option")
+	testing.expect(t, has_string, "should have String option")
+	testing.expect(t, has_true, "should have true option")
+	testing.expect(t, has_false, "should have false option")
+	testing.expect(t, has_nil, "should have nil option")
+	testing.expect(t, has_reference, "should have Reference option")
+	testing.expect(t, has_type, "should have Type submenu")
+}
+
+@(test)
+test_value_literal_number :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Declarations")
+	select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true}) // move to value slot
+	confirm(&app) // open literal menu
+	select_label(&app, "Number")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that the value field is editable and contains "0"
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should have a valid target")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].editable, "number should be editable")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].text, "0")
+	// Check the full node text
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, ":= 0"), "should contain ':= 0'")
+}
+
+@(test)
+test_value_literal_string :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Declarations")
+	select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true})
+	confirm(&app)
+	select_label(&app, "String")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that the node contains empty quotes
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "\"\""), "should contain empty quotes")
+	// Find the editable string content field
+	ni := 1
+	has_editable_content := false
+	for f in app.doc.nodes[ni].fields {
+		if f.editable && f.text == "" {
+			has_editable_content = true
+			break
+		}
+	}
+	testing.expect(t, has_editable_content, "should have editable string content field")
+}
+
+@(test)
+test_value_literal_nil :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Declarations")
+	select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true})
+	confirm(&app)
+	select_label(&app, "nil")
+	testing.expect_value(t, app.state, State.Editor)
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "nil"), "should contain 'nil'")
+}
+
+@(test)
+test_type_slot_still_opens_type_menu :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to return type slot
+	update(&app, Input{up = true}) // move to body slot line
+	update(&app, Input{up = true}) // move to proc signature line
+	update(&app, Input{right = true}) // skip name
+	update(&app, Input{right = true}) // skip params
+	update(&app, Input{right = true}) // move to return type slot
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should have valid target")
+	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be on slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "type")
+	// Open slot menu
+	confirm(&app)
+	testing.expect_value(t, app.state, State.Radial)
+	// Should have Type and Variable options (not literal options)
+	v := current_view(&app)
+	has_type := false
+	has_variable := false
+	has_number := false
+	for e in v.entries {
+		if e.label == "Type" do has_type = true
+		if e.label == "Variable" do has_variable = true
+		if e.label == "Number" do has_number = true
+	}
+	testing.expect(t, has_type, "should have Type option")
+	testing.expect(t, has_variable, "should have Variable option")
+	testing.expect(t, !has_number, "should NOT have Number option")
+}
+
+@(test)
+test_type_slot_fill_int_works :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true}) // move to body slot line
+	update(&app, Input{up = true}) // move to proc signature line
+	update(&app, Input{right = true}) // skip name
+	update(&app, Input{right = true}) // skip params
+	update(&app, Input{right = true}) // move to return type slot
+	confirm(&app)
+	select_label(&app, "Type")
+	select_label(&app, "int")
+	testing.expect_value(t, app.state, State.Editor)
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "-> int"), "should contain '-> int'")
+}
+
+// ---- Multiple Declaration Tests ----
+
+@(test)
+test_multi_decl_in_declarations_menu :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true}) // body slot
+	confirm(&app)
+	select_label(&app, "Declarations")
+	// Check that "Multiple (:=)" is present
+	v := current_view(&app)
+	has_multi := false
+	for e in v.entries {
+		if e.label == "Multiple (:=)" {
+			has_multi = true
+			break
+		}
+	}
+	testing.expect(t, has_multi, "Declarations should have 'Multiple (:=)' option")
+}
+
+@(test)
+test_multi_decl_inserts_correct_form :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Declarations")
+	select_label(&app, "Multiple (:=)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Check that the node contains two names, two commas, and :=
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, ", "), "should contain comma separator")
+	testing.expect(t, strings.contains(txt, ":="), "should contain :=")
+	// Count commas (should be 2: one between names, one between values)
+	comma_count := 0
+	for i := 0; i < len(txt); i += 1 {
+		if txt[i] == ',' do comma_count += 1
+	}
+	testing.expect_value(t, comma_count, 2)
+}
+
+@(test)
+test_multi_decl_has_two_value_slots :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	update(&app, Input{up = true})
+	confirm(&app)
+	select_label(&app, "Declarations")
+	select_label(&app, "Multiple (:=)")
+	// Count value slots in the multi-decl node
+	ni := 1
+	value_slot_count := 0
+	for f in app.doc.nodes[ni].fields {
+		if f.slot && f.kind == "value" do value_slot_count += 1
+	}
+	testing.expect_value(t, value_slot_count, 2)
+}

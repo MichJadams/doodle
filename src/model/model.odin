@@ -713,6 +713,55 @@ set_slot_type :: proc(app: ^App, ni, fi: int, type_name: string) {
 	app.doc.nodes[ni].fields[fi] = Field{strings.clone(type_name), true, false, ""}
 }
 
+// Fill a value slot with a literal value.
+set_slot_literal :: proc(app: ^App, ni, fi: int, kind_marker: string) {
+	fields := &app.doc.nodes[ni].fields
+	// Free slot text if present (value slots have empty "")
+	if len(fields[fi].text) > 0 {
+		delete(fields[fi].text)
+	}
+	// Remove the slot field
+	ordered_remove(fields, fi)
+	
+	switch kind_marker {
+	case "__lit_num__":
+		// Replace with a single editable field, default "0"
+		f := Field{strings.clone("0"), true, false, ""}
+		inject_at(fields, fi, f)
+		
+	case "__lit_str__":
+		// Replace with three fields: opening quote + editable content + closing quote
+		f1 := Field{strings.clone("\""), false, false, ""}
+		f2 := Field{strings.clone(""), true, false, ""}  // empty editable content
+		f3 := Field{strings.clone("\""), false, false, ""}
+		inject_at(fields, fi, f3)
+		inject_at(fields, fi, f2)
+		inject_at(fields, fi, f1)
+		
+	case "__lit_true__":
+		// Replace with a single fixed field "true"
+		f := Field{strings.clone("true"), false, false, ""}
+		inject_at(fields, fi, f)
+		
+	case "__lit_false__":
+		// Replace with a single fixed field "false"
+		f := Field{strings.clone("false"), false, false, ""}
+		inject_at(fields, fi, f)
+		
+	case "__lit_nil__":
+		// Replace with a single fixed field "nil"
+		f := Field{strings.clone("nil"), false, false, ""}
+		inject_at(fields, fi, f)
+		
+	case "__lit_ref__":
+		// Replace with a single editable field, default generated name
+		ref_name := generate_ident(app)
+		defer delete(ref_name)
+		f := Field{strings.clone(ref_name), true, false, ""}
+		inject_at(fields, fi, f)
+	}
+}
+
 // Replace a slot with a variable instantiation (name + ": " + type slot).
 make_slot_variable :: proc(app: ^App, ni, fi: int) {
 	fields := &app.doc.nodes[ni].fields
@@ -1020,6 +1069,42 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 	}
+	
+	// Insert a new body slot line after the current node
+	new_body: Node
+	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
+	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+	inject_at(&app.doc.nodes, ni + 1, new_body)
+}
+
+// Transform a body slot into a multiple declaration: a, b := •, •
+make_multi_decl :: proc(app: ^App, ni, fi: int) {
+	fields := &app.doc.nodes[ni].fields
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	// Generate two names
+	name1 := generate_ident(app)
+	defer delete(name1)
+	name2 := generate_ident(app)
+	defer delete(name2)
+	
+	// Build fields: name1 + ", " + name2 + " := " + value_slot1 + ", " + value_slot2
+	f1 := Field{strings.clone(name1), true, false, ""}  // editable name 1
+	f2 := Field{strings.clone(", "), false, false, ""}  // fixed comma
+	f3 := Field{strings.clone(name2), true, false, ""}  // editable name 2
+	f4 := Field{strings.clone(" := "), false, false, ""} // fixed :=
+	f5 := Field{"", false, true, "value"}                 // value slot 1
+	f6 := Field{strings.clone(", "), false, false, ""}  // fixed comma
+	f7 := Field{"", false, true, "value"}                 // value slot 2
+	
+	inject_at(fields, fi, f7)
+	inject_at(fields, fi, f6)
+	inject_at(fields, fi, f5)
+	inject_at(fields, fi, f4)
+	inject_at(fields, fi, f3)
+	inject_at(fields, fi, f2)
+	inject_at(fields, fi, f1)
 	
 	// Insert a new body slot line after the current node
 	new_body: Node
@@ -1703,6 +1788,7 @@ open_slot_menu :: proc(app: ^App) {
 		decls := make_slice(
 			Entry{label = "Variable (:=)", fill = "__stmt_decl__"},
 			Entry{label = "Variable (typed)", fill = "__stmt_typed__"},
+			Entry{label = "Multiple (:=)", fill = "__stmt_multi__"},
 		)
 		
 		// Assignment category
@@ -1808,8 +1894,45 @@ open_slot_menu :: proc(app: ^App) {
 			grp("Error handling", errors),
 			grp("Scope and blocks", scopes),
 		)
+	} else if slot_kind == "value" {
+		// Build value literal menu for value slots
+		// First build the Type submenu (for rare cases like x := int)
+		type_entries: [dynamic]Entry
+		defer delete(type_entries)
+		
+		// Basic Odin types
+		basic_types := [?]string{
+			"int", "i8", "i16", "i32", "i64",
+			"u8", "u16", "u32", "u64", "uint", "uintptr",
+			"f32", "f64",
+			"bool", "string", "cstring", "rune", "byte", "rawptr",
+		}
+		for t in basic_types {
+			append(&type_entries, fill_leaf(t, t))
+		}
+		
+		// User-defined types
+		user_types := collect_user_types(app)
+		defer delete(user_types)
+		for t in user_types {
+			append(&type_entries, fill_leaf(t, t))
+		}
+		
+		// Build the slot menu with literal options
+		type_children := make([]Entry, len(type_entries))
+		copy(type_children, type_entries[:])
+		
+		app.slot_menu = make_slice(
+			Entry{label = "Number", fill = "__lit_num__"},
+			Entry{label = "String", fill = "__lit_str__"},
+			Entry{label = "true", fill = "__lit_true__"},
+			Entry{label = "false", fill = "__lit_false__"},
+			Entry{label = "nil", fill = "__lit_nil__"},
+			Entry{label = "Reference", fill = "__lit_ref__"},
+			Entry{label = "Type", children = type_children},
+		)
 	} else {
-		// Generic Type/Variable menu for other slots
+		// Generic Type/Variable menu for other slots (kind=="type", kind=="")
 		// Build type submenu with basic types + user types
 		type_entries: [dynamic]Entry
 		defer delete(type_entries)
@@ -2211,6 +2334,10 @@ menu_select :: proc(app: ^App) {
 			make_slot_param(app, app.slot_ni, app.slot_fi)
 		} else if e.fill == "__stmt_decl__" || e.fill == "__stmt_typed__" || e.fill == "__stmt_assign__" || e.fill == "__stmt_call__" {
 			make_body_statement(app, app.slot_ni, app.slot_fi, e.fill)
+		} else if e.fill == "__stmt_multi__" {
+			make_multi_decl(app, app.slot_ni, app.slot_fi)
+		} else if e.fill == "__lit_num__" || e.fill == "__lit_str__" || e.fill == "__lit_true__" || e.fill == "__lit_false__" || e.fill == "__lit_nil__" || e.fill == "__lit_ref__" {
+			set_slot_literal(app, app.slot_ni, app.slot_fi, e.fill)
 		} else if e.fill == "__call_this_pkg__" {
 			make_call_this_package(app, app.slot_ni, app.slot_fi, e.call_name)
 		} else if e.fill == "__call_import__" {
