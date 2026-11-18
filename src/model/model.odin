@@ -963,32 +963,75 @@ set_field_text :: proc(app: ^App, ni, fi: int, text: string) {
 // Given a node index, return the inclusive range of nodes forming that statement/construct.
 // Uses brace matching: a plain line (like `package main`) returns (ni, ni); a construct
 // that opens a block (like a procedure header) returns (ni, j) where j is the matching close.
+@(private)
+brace_delta :: proc(app: ^App, i: int) -> int {
+	d := 0
+	t := node_text(app.doc.nodes[i], context.temp_allocator)
+	for r in t {
+		if r == '{' do d += 1
+		if r == '}' do d -= 1
+	}
+	return d
+}
+
+// The whole top-level statement/construct that contains node ni. Works for ANY
+// line inside a block (header, body, or closing brace) by using brace depth:
+// the construct starts at the last top-level line (depth 0) at/before ni and
+// ends where that block's brace balance returns to 0.
 construct_range :: proc(app: ^App, ni: int) -> (start: int, end: int) {
-	if ni < 0 || ni >= len(app.doc.nodes) do return ni, ni
-	// Compute brace balance (open_delta) for node ni.
-	text := node_text(app.doc.nodes[ni], context.temp_allocator)
-	open_delta := 0
-	for r in text {
-		if r == '{' do open_delta += 1
-		if r == '}' do open_delta -= 1
+	n := len(app.doc.nodes)
+	if n == 0 do return 0, 0
+	idx := ni
+	if idx < 0 do idx = 0
+	if idx >= n do idx = n - 1
+
+	// start = last index <= idx whose brace depth BEFORE it is 0.
+	depth := 0
+	start = 0
+	for i in 0 ..= idx {
+		if depth == 0 do start = i
+		depth += brace_delta(app, i)
 	}
-	// If open_delta <= 0, it's a plain line or closing line -> single node.
-	if open_delta <= 0 do return ni, ni
-	// Node ni opens a block: walk forward accumulating brace balance.
-	balance := open_delta
-	for j := ni + 1; j < len(app.doc.nodes); j += 1 {
-		text_j := node_text(app.doc.nodes[j], context.temp_allocator)
-		for r in text_j {
-			if r == '{' do balance += 1
-			if r == '}' do balance -= 1
-		}
-		if balance == 0 do return ni, j
+	// end = from start, forward until the running balance returns to <= 0.
+	balance := 0
+	end = start
+	for j := start; j < n; j += 1 {
+		balance += brace_delta(app, j)
+		end = j
+		if balance <= 0 do break
 	}
-	// Never closed: return to end of document.
-	return ni, len(app.doc.nodes) - 1
+	return start, end
 }
 
 // Delete nodes [start..end] inclusive, freeing memory.
+// Delete the whole statement/construct the cursor is on (used by RT+Y).
+delete_focused_construct :: proc(app: ^App) {
+	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return
+	s, e := construct_range(app, app.editor_line)
+	delete_construct(app, s, e)
+}
+
+// Move the selection to the previous/next whole statement (used by RT + D-pad).
+editor_move_construct :: proc(app: ^App, dir: int) {
+	nlines := len(app.doc.nodes)
+	if nlines == 0 { app.editor_line = 0; app.editor_field = 0; return }
+	if dir > 0 {
+		if app.editor_line >= nlines do return // already at the green dot
+		_, e := construct_range(app, app.editor_line)
+		app.editor_line = e + 1 // start of the next construct, or the green dot
+	} else {
+		line := app.editor_line
+		if line > nlines do line = nlines
+		if line <= 0 { app.editor_line = 0; app.editor_field = 0; return }
+		prev := line - 1 // last line of the previous construct
+		if prev >= nlines do prev = nlines - 1
+		s, _ := construct_range(app, prev)
+		app.editor_line = s
+	}
+	app.editor_field = 0
+	if app.editor_line < nlines do clamp_field(app)
+}
+
 delete_construct :: proc(app: ^App, start, end_param: int) {
 	if start < 0 || start >= len(app.doc.nodes) do return
 	end := end_param
@@ -1313,17 +1356,23 @@ update :: proc(app: ^App, inp: Input) {
 	case .Editor:
 		nlines := len(app.doc.nodes)
 		if app.editor_line > nlines do app.editor_line = nlines
-		// Left/Right move between dots on the current line.
-		if app.editor_line < nlines {
-			cnt := selectable_in_node(app, app.editor_line)
-			if cnt > 0 {
-				if inp.left  do app.editor_field = max(0, app.editor_field - 1)
-				if inp.right do app.editor_field = min(cnt - 1, app.editor_field + 1)
+		if inp.rt_held {
+			// RT + D-pad: move by whole statements (construct granularity).
+			if inp.up   || inp.left  do editor_move_construct(app, -1)
+			if inp.down || inp.right do editor_move_construct(app, +1)
+		} else {
+			// Left/Right move between dots on the current line.
+			if app.editor_line < nlines {
+				cnt := selectable_in_node(app, app.editor_line)
+				if cnt > 0 {
+					if inp.left  do app.editor_field = max(0, app.editor_field - 1)
+					if inp.right do app.editor_field = min(cnt - 1, app.editor_field + 1)
+				}
 			}
+			// Up/Down move between lines (green insertion dot is the bottom stop).
+			if inp.up   do editor_move_line(app, -1)
+			if inp.down do editor_move_line(app, +1)
 		}
-		// Up/Down move between lines (green insertion dot is the bottom stop).
-		if inp.up   do editor_move_line(app, -1)
-		if inp.down do editor_move_line(app, +1)
 		if inp.cancel do app.state = .Menu
 		if inp.confirm {
 			if app.editor_line >= nlines {

@@ -1901,3 +1901,58 @@ test_body_calls_category_import :: proc(t: ^testing.T) {
 	// Verify a new body slot line was inserted
 	testing.expect_value(t, len(app.doc.nodes), initial_node_count + 1)
 }
+
+// ---- RT statement movement + delete tests ----
+
+@(test)
+test_construct_range_from_inside_proc :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app) // node 0
+	add_proc(&app)    // nodes 1..3 (header, body, close)
+	// From ANY line inside the proc, construct_range returns the whole proc (1..3).
+	for line in 1 ..= 3 {
+		s, e := construct_range(&app, line)
+		testing.expect_value(t, s, 1)
+		testing.expect_value(t, e, 3)
+	}
+	// The package line is its own single-node construct.
+	s0, e0 := construct_range(&app, 0)
+	testing.expect_value(t, s0, 0)
+	testing.expect_value(t, e0, 0)
+}
+
+@(test)
+test_editor_move_construct_steps_by_statement :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app)
+	add_proc(&app)
+	n := len(app.doc.nodes) // 4
+	app.editor_line = 0 // package
+	editor_move_construct(&app, +1)
+	testing.expect_value(t, app.editor_line, 1) // start of proc
+	editor_move_construct(&app, +1)
+	testing.expect_value(t, app.editor_line, n) // green insertion dot (past proc)
+	editor_move_construct(&app, -1)
+	testing.expect_value(t, app.editor_line, 1) // back to proc start (not the '}' line)
+	editor_move_construct(&app, -1)
+	testing.expect_value(t, app.editor_line, 0) // package
+}
+
+@(test)
+test_delete_focused_construct_removes_whole_proc :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app)
+	add_proc(&app)
+	app.editor_line = 2 // focus INSIDE the proc body
+	delete_focused_construct(&app)
+	// the entire proc (3 nodes) is gone; the package remains
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, "package"), "package should remain")
+}
