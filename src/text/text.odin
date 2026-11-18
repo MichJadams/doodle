@@ -98,6 +98,10 @@ draw_centered :: proc(r: ^gpu.Renderer, f: ^Font, area: gpu.Rect, s: string, col
 	draw_line(r, f, {x, y}, s, color)
 }
 
-shutdown :: proc(f: ^Font) {
-	if f != nil do free(f)
+// shutdown frees a font. Pass the renderer to also free its GPU atlas texture
+// (needed when fonts are replaced at runtime, e.g. re-sized on window resize).
+shutdown :: proc(f: ^Font, r: ^gpu.Renderer = nil) {
+	if f == nil do return
+	if r != nil do gpu.texture_destroy(r, &f.atlas)
+	free(f)
 }

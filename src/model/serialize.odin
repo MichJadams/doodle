@@ -77,9 +77,12 @@ doc_to_source :: proc(app: ^App, allocator := context.allocator) -> string {
 	
 	b := strings.builder_make(allocator)
 	for n, i in app.doc.nodes {
-		line := node_text(n, context.temp_allocator)
-		fixed := fixup_line(line, context.temp_allocator)
-		strings.write_string(&b, fixed)
+		// node_source_lines drops unfilled optional-arg dots and breaks long calls
+		// one argument per line (format.odin).
+		for line, li in node_source_lines(n) {
+			if li > 0 do strings.write_string(&b, "\n")
+			strings.write_string(&b, fixup_line(line, context.temp_allocator))
+		}
 		if i < len(app.doc.nodes) - 1 {
 			strings.write_string(&b, "\n")
 		}

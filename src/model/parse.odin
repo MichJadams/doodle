@@ -148,5 +148,6 @@ load_file :: proc(app: ^App, path: string) -> bool {
 	if err != nil do return false
 	
 	doc_from_source(app, string(data))
+	normalize_cursor(app)
 	return true
 }
