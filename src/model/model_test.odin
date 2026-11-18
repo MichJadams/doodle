@@ -384,8 +384,11 @@ test_proc_first_line_text :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_proc(&app)
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "do_thing"), "proc name should be do_thing")
-	testing.expect(t, strings.contains(txt, "proc("), "should contain proc(")
+	// Check that proc name is generated (adjective_animal pattern)
+	proc_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(proc_name) > 0, "proc should have a name")
+	testing.expect(t, strings.contains(proc_name, "_"), "proc name should be snake_case")
+	testing.expect(t, strings.contains(txt, ":: proc("), "should contain :: proc(")
 }
 
 @(test)
@@ -405,7 +408,10 @@ test_proc_name_editable_slots_are_slots :: proc(t: ^testing.T) {
 	ni, fi, ok = editor_target(&app)
 	testing.expect(t, ok)
 	testing.expect(t, app.doc.nodes[ni].fields[fi].editable, "name should be editable")
-	testing.expect_value(t, app.doc.nodes[ni].fields[fi].text, "do_thing")
+	// Check that name is generated snake_case
+	proc_name := app.doc.nodes[ni].fields[fi].text
+	testing.expect(t, len(proc_name) > 0, "name should not be empty")
+	testing.expect(t, strings.contains(proc_name, "_"), "name should be snake_case")
 
 	update(&app, Input{right = true}) // -> params slot
 	ni, fi, ok = editor_target(&app)
@@ -620,8 +626,11 @@ test_struct_first_line_text :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_type(&app, "Struct")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "MyType"), "struct name should be MyType")
-	testing.expect(t, strings.contains(txt, "struct {"), "should contain struct {")
+	// Check that type name is generated (PascalCase)
+	type_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(type_name) > 0, "struct should have a name")
+	testing.expect(t, type_name[0] >= 'A' && type_name[0] <= 'Z', "type name should be PascalCase")
+	testing.expect(t, strings.contains(txt, ":: struct {"), "should contain :: struct {")
 }
 
 @(test)
@@ -642,7 +651,10 @@ test_struct_name_editable_body_is_slot :: proc(t: ^testing.T) {
 	ni, fi, ok = editor_target(&app)
 	testing.expect(t, ok)
 	testing.expect(t, app.doc.nodes[ni].fields[fi].editable, "name should be editable")
-	testing.expect_value(t, app.doc.nodes[ni].fields[fi].text, "MyType")
+	// Check that name is generated PascalCase
+	type_name := app.doc.nodes[ni].fields[fi].text
+	testing.expect(t, len(type_name) > 0, "name should not be empty")
+	testing.expect(t, type_name[0] >= 'A' && type_name[0] <= 'Z', "name should be PascalCase")
 }
 
 @(test)
@@ -672,8 +684,11 @@ test_enum_first_line_text :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_type(&app, "Enum")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "MyType"), "enum name should be MyType")
-	testing.expect(t, strings.contains(txt, "enum {"), "should contain enum {")
+	// Check that type name is generated (PascalCase)
+	type_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(type_name) > 0, "enum should have a name")
+	testing.expect(t, type_name[0] >= 'A' && type_name[0] <= 'Z', "type name should be PascalCase")
+	testing.expect(t, strings.contains(txt, ":: enum {"), "should contain :: enum {")
 }
 
 @(test)
@@ -703,8 +718,11 @@ test_union_first_line_text :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_type(&app, "Union")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "MyType"), "union name should be MyType")
-	testing.expect(t, strings.contains(txt, "union {"), "should contain union {")
+	// Check that type name is generated (PascalCase)
+	type_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(type_name) > 0, "union should have a name")
+	testing.expect(t, type_name[0] >= 'A' && type_name[0] <= 'Z', "type name should be PascalCase")
+	testing.expect(t, strings.contains(txt, ":: union {"), "should contain :: union {")
 }
 
 @(test)
@@ -734,8 +752,11 @@ test_bit_set_text :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_type(&app, "Bit set")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "MyType"), "bit_set name should be MyType")
-	testing.expect(t, strings.contains(txt, "bit_set["), "should contain bit_set[")
+	// Check that type name is generated (PascalCase)
+	type_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(type_name) > 0, "bit_set should have a name")
+	testing.expect(t, type_name[0] >= 'A' && type_name[0] <= 'Z', "type name should be PascalCase")
+	testing.expect(t, strings.contains(txt, ":: bit_set["), "should contain :: bit_set[")
 	testing.expect(t, strings.contains(txt, "]"), "should contain ]")
 }
 
@@ -766,8 +787,11 @@ test_distinct_text :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_type(&app, "Distinct type")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "MyType"), "distinct name should be MyType")
-	testing.expect(t, strings.contains(txt, "distinct"), "should contain distinct")
+	// Check that type name is generated (PascalCase)
+	type_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(type_name) > 0, "distinct should have a name")
+	testing.expect(t, type_name[0] >= 'A' && type_name[0] <= 'Z', "type name should be PascalCase")
+	testing.expect(t, strings.contains(txt, ":: distinct"), "should contain :: distinct")
 }
 
 @(test)
@@ -797,7 +821,10 @@ test_alias_text :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_type(&app, "Type alias")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "MyType"), "alias name should be MyType")
+	// Check that type name is generated (PascalCase)
+	type_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(type_name) > 0, "alias should have a name")
+	testing.expect(t, type_name[0] >= 'A' && type_name[0] <= 'Z', "type name should be PascalCase")
 	testing.expect(t, strings.contains(txt, "::"), "should contain ::")
 }
 
@@ -827,7 +854,11 @@ test_const_has_name_and_slot :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_value(&app, "Constant")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "MAX_HP"), "const should have default name MAX_HP")
+	// Check that const name is generated (UPPER_SNAKE)
+	const_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(const_name) > 0, "const should have a name")
+	testing.expect(t, const_name[0] >= 'A' && const_name[0] <= 'Z', "const name should be UPPER_SNAKE")
+	testing.expect(t, strings.contains(const_name, "_"), "const name should contain _")
 	testing.expect(t, strings.contains(txt, "::"), "const should contain ::")
 	// 1 editable name + 1 value slot = 2 selectable
 	testing.expect_value(t, num_editable(&app), 2)
@@ -851,7 +882,11 @@ test_typed_const_has_name_and_two_slots :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_value(&app, "Typed constant")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "MAX_HP"), "typed const should have default name")
+	// Check that const name is generated (UPPER_SNAKE)
+	const_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(const_name) > 0, "const should have a name")
+	testing.expect(t, const_name[0] >= 'A' && const_name[0] <= 'Z', "const name should be UPPER_SNAKE")
+	testing.expect(t, strings.contains(const_name, "_"), "const name should contain _")
 	testing.expect(t, strings.contains(txt, " : "), "typed const should contain ' : ' pattern")
 	// 1 editable name + 1 type slot + 1 value slot = 3 selectable
 	testing.expect_value(t, num_editable(&app), 3)
@@ -875,7 +910,11 @@ test_config_const_has_config_syntax :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_value(&app, "Build-config constant")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "DEBUG"), "config const should have default name DEBUG")
+	// Check that const name is generated (UPPER_SNAKE)
+	const_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(const_name) > 0, "config const should have a name")
+	testing.expect(t, const_name[0] >= 'A' && const_name[0] <= 'Z', "const name should be UPPER_SNAKE")
+	testing.expect(t, strings.contains(const_name, "_"), "const name should contain _")
 	testing.expect(t, strings.contains(txt, "#config("), "config const should contain #config(")
 	// 1 editable name + 1 default value slot = 2 selectable
 	testing.expect_value(t, num_editable(&app), 2)
@@ -899,7 +938,10 @@ test_global_typed_has_name_and_type_slot :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_value(&app, "Global variable (typed)")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "score"), "global typed should have default name score")
+	// Check that var name is generated (snake_case)
+	var_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(var_name) > 0, "global typed should have a name")
+	testing.expect(t, strings.contains(var_name, "_"), "var name should be snake_case")
 	testing.expect(t, strings.contains(txt, ":"), "global typed should contain :")
 	// 1 editable name + 1 type slot = 2 selectable
 	testing.expect_value(t, num_editable(&app), 2)
@@ -923,7 +965,10 @@ test_global_init_has_walrus :: proc(t: ^testing.T) {
 	app.state = .Editor
 	add_value(&app, "Global variable (init)")
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "score"), "global init should have default name score")
+	// Check that var name is generated (snake_case)
+	var_name := app.doc.nodes[0].fields[0].text
+	testing.expect(t, len(var_name) > 0, "global init should have a name")
+	testing.expect(t, strings.contains(var_name, "_"), "var name should be snake_case")
 	testing.expect(t, strings.contains(txt, ":="), "global init should contain :=")
 	// 1 editable name + 1 value slot = 2 selectable
 	testing.expect_value(t, num_editable(&app), 2)
@@ -1000,17 +1045,19 @@ test_slot_fill_variable_then_type :: proc(t: ^testing.T) {
 	select_label(&app, "Variable (typed)")
 	// Should be back in Editor
 	testing.expect_value(t, app.state, State.Editor)
-	// Check that the body line now contains "value:"
+	// Check that the body line now contains a generated var name and ":"
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "value:"), "body should contain 'value:'")
-	// Verify we have an editable "value" field and a new slot
+	testing.expect(t, strings.contains(txt, ":"), "body should contain ':'")
+	// Verify we have an editable var name field and a new slot
 	ni := 1
-	found_value := false
+	found_var_name := false
+	var_name := ""
 	found_separator := false
 	found_slot := false
 	for f in app.doc.nodes[ni].fields {
-		if f.text == "value" && f.editable && !f.slot {
-			found_value = true
+		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
+			found_var_name = true
+			var_name = f.text
 		}
 		if f.text == ": " && !f.editable && !f.slot {
 			found_separator = true
@@ -1019,7 +1066,7 @@ test_slot_fill_variable_then_type :: proc(t: ^testing.T) {
 			found_slot = true
 		}
 	}
-	testing.expect(t, found_value, "should have editable 'value' field")
+	testing.expect(t, found_var_name, "should have editable var name field (snake_case)")
 	testing.expect(t, found_separator, "should have ': ' separator")
 	testing.expect(t, found_slot, "should have new type slot")
 	// Now navigate right to the new type slot and fill it with "bool"
@@ -1033,9 +1080,10 @@ test_slot_fill_variable_then_type :: proc(t: ^testing.T) {
 	select_label(&app, "bool")
 	// Should be back in Editor
 	testing.expect_value(t, app.state, State.Editor)
-	// Check that the body line now contains "value: bool"
+	// Check that the body line now contains the var name and ": bool"
 	txt2 := node_text(app.doc.nodes[1], context.temp_allocator)
-	testing.expect(t, strings.contains(txt2, "value: bool"), "body should contain 'value: bool'")
+	testing.expect(t, strings.contains(txt2, ": bool"), "body should contain ': bool'")
+	testing.expect(t, strings.contains(txt2, var_name), "body should contain the var name")
 }
 
 @(test)
@@ -1043,7 +1091,9 @@ test_user_defined_type_in_menu :: proc(t: ^testing.T) {
 	app: App
 	defer cleanup(&app)
 	app.state = .Editor
-	add_struct(&app) // inserts MyType :: struct { ... }
+	add_struct(&app) // inserts generated type name :: struct { ... }
+	// Capture the generated type name
+	type_name := app.doc.nodes[0].fields[0].text
 	// Add a member variable using new statement menu
 	update(&app, Input{up = true})
 	update(&app, Input{up = true})
@@ -1061,16 +1111,16 @@ test_user_defined_type_in_menu :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.state, State.Radial)
 	// Select "Type"
 	select_label(&app, "Type")
-	// Now check that "MyType" appears in the Type submenu
+	// Now check that the generated type name appears in the Type submenu
 	v := current_view(&app)
-	found_mytype := false
+	found_type := false
 	for e in v.entries {
-		if e.label == "MyType" {
-			found_mytype = true
+		if e.label == type_name {
+			found_type = true
 			break
 		}
 	}
-	testing.expect(t, found_mytype, "Type menu should contain 'MyType'")
+	testing.expect(t, found_type, "Type menu should contain the generated type name")
 	// Cancel back
 	update(&app, Input{cancel = true})
 	update(&app, Input{cancel = true})
@@ -1126,20 +1176,21 @@ test_add_parameter_transforms_slot :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true})
 	select_label(&app, "Add parameter")
 	testing.expect_value(t, app.state, State.Editor)
-	// Check the signature line now contains "param: "
+	// Check the signature line now contains a generated param name and ": "
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "param"), "should contain param name")
 	testing.expect(t, strings.contains(txt, ": "), "should contain colon separator")
-	// Verify fields: should have editable "param", fixed ": ", type slot, fixed ", ", params slot
+	// Verify fields: should have editable param name (snake_case), fixed ": ", type slot, fixed ", ", params slot
 	ni := 0
 	found_param := false
+	param_name := ""
 	found_separator := false
 	found_type_slot := false
 	found_comma := false
 	found_params_slot := false
 	for f in app.doc.nodes[ni].fields {
-		if f.text == "param" && f.editable && !f.slot {
+		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
 			found_param = true
+			param_name = f.text
 		}
 		if f.text == ": " && !f.editable && !f.slot {
 			found_separator = true
@@ -1167,12 +1218,21 @@ test_param_type_slot_fills_with_int :: proc(t: ^testing.T) {
 	defer cleanup(&app)
 	app.state = .Editor
 	add_proc(&app)
+	// Capture the generated param name before navigating
 	// Navigate to params slot and add parameter
 	update(&app, Input{up = true})
 	update(&app, Input{up = true})
 	update(&app, Input{right = true})
 	update(&app, Input{confirm = true})
 	select_label(&app, "Add parameter")
+	// Capture the param name
+	param_name := ""
+	for f in app.doc.nodes[0].fields {
+		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
+			param_name = f.text
+			break
+		}
+	}
 	// Now navigate to the type slot (right from param name)
 	update(&app, Input{right = true})
 	ni, fi, ok := editor_target(&app)
@@ -1184,9 +1244,10 @@ test_param_type_slot_fills_with_int :: proc(t: ^testing.T) {
 	select_label(&app, "Type")
 	select_label(&app, "int")
 	testing.expect_value(t, app.state, State.Editor)
-	// Check the signature contains "param: int"
+	// Check the signature contains the param name and ": int"
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "param: int"), "should contain 'param: int'")
+	testing.expect(t, strings.contains(txt, ": int"), "should contain ': int'")
+	testing.expect(t, strings.contains(txt, param_name), "should contain the param name")
 }
 
 @(test)
@@ -1271,10 +1332,18 @@ test_body_slot_variable_decl_transform :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true})
 	select_label(&app, "Variable (:=)")
 	testing.expect_value(t, app.state, State.Editor)
-	// Check that body line now contains ":="
+	// Check that body line now contains a generated var name and ":="
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
 	testing.expect(t, strings.contains(txt, ":="), "body should contain ':='")
-	testing.expect(t, strings.contains(txt, "value"), "body should contain 'value'")
+	// Verify there's a generated snake_case name
+	found_var_name := false
+	for f in app.doc.nodes[1].fields {
+		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
+			found_var_name = true
+			break
+		}
+	}
+	testing.expect(t, found_var_name, "body should contain a generated var name")
 	// Verify a new body slot line was inserted
 	testing.expect_value(t, len(app.doc.nodes), initial_node_count + 1)
 	// Check that the new line (node 2) has a body slot
@@ -1303,12 +1372,11 @@ test_body_slot_typed_variable_transform :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true})
 	select_label(&app, "Variable (typed)")
 	testing.expect_value(t, app.state, State.Editor)
-	// Check that body line now contains ": " and " = "
+	// Check that body line now contains a generated var name, ": " and " = "
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "value"), "body should contain 'value'")
 	testing.expect(t, strings.contains(txt, ": "), "body should contain ': '")
 	testing.expect(t, strings.contains(txt, " = "), "body should contain ' = '")
-	// Verify fields: editable "value", ": ", type slot, " = ", value slot
+	// Verify fields: editable var name (snake_case), ": ", type slot, " = ", value slot
 	ni := 1
 	found_name := false
 	found_colon := false
@@ -1316,7 +1384,7 @@ test_body_slot_typed_variable_transform :: proc(t: ^testing.T) {
 	found_equals := false
 	found_value_slot := false
 	for f in app.doc.nodes[ni].fields {
-		if f.text == "value" && f.editable && !f.slot {
+		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
 			found_name = true
 		}
 		if f.text == ": " && !f.editable && !f.slot {
@@ -1351,17 +1419,16 @@ test_body_slot_assignment_transform :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true})
 	select_label(&app, "Assignment")
 	testing.expect_value(t, app.state, State.Editor)
-	// Check that body line contains " = "
+	// Check that body line contains a generated var name and " = "
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "value"), "body should contain 'value'")
 	testing.expect(t, strings.contains(txt, " = "), "body should contain ' = '")
-	// Verify fields: editable "value", " = ", value slot
+	// Verify fields: editable var name (snake_case), " = ", value slot
 	ni := 1
 	found_name := false
 	found_equals := false
 	found_value_slot := false
 	for f in app.doc.nodes[ni].fields {
-		if f.text == "value" && f.editable && !f.slot {
+		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
 			found_name = true
 		}
 		if f.text == " = " && !f.editable && !f.slot {
@@ -1388,19 +1455,18 @@ test_body_slot_procedure_call_transform :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true})
 	select_label(&app, "Procedure call")
 	testing.expect_value(t, app.state, State.Editor)
-	// Check that body line contains "do_thing", "(", and ")"
+	// Check that body line contains a generated call name, "(", and ")"
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, "do_thing"), "body should contain 'do_thing'")
 	testing.expect(t, strings.contains(txt, "( "), "body should contain '( '")
 	testing.expect(t, strings.contains(txt, " )"), "body should contain ' )'")
-	// Verify fields: editable "do_thing", "( ", value slot, " )"
+	// Verify fields: editable call name (snake_case), "( ", value slot, " )"
 	ni := 1
 	found_name := false
 	found_lparen := false
 	found_value_slot := false
 	found_rparen := false
 	for f in app.doc.nodes[ni].fields {
-		if f.text == "do_thing" && f.editable && !f.slot {
+		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
 			found_name = true
 		}
 		if f.text == "( " && !f.editable && !f.slot {
@@ -1473,4 +1539,103 @@ test_body_slot_struct_body :: proc(t: ^testing.T) {
 		append(&labels, e.label)
 	}
 	testing.expect(t, slice.contains(labels[:], "Variable (:=)"), "struct body should offer statement menu")
+}
+
+// ---- Name generator tests ----
+
+@(test)
+test_name_generator_two_procs_different_names :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	add_proc(&app)
+	// Get the two procedure names
+	name1 := app.doc.nodes[0].fields[0].text
+	name2 := app.doc.nodes[3].fields[0].text // second proc starts at node 3
+	testing.expect(t, name1 != name2, "two procs should have different generated names")
+	testing.expect(t, len(name1) > 0, "first proc should have a name")
+	testing.expect(t, len(name2) > 0, "second proc should have a name")
+}
+
+@(test)
+test_name_generator_proc_snake_case :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	name := app.doc.nodes[0].fields[0].text
+	// Check adjective_animal pattern: lowercase, exactly one underscore
+	underscore_count := 0
+	for c in name {
+		if c == '_' do underscore_count += 1
+	}
+	testing.expect_value(t, underscore_count, 1)
+	testing.expect(t, len(name) > 2, "name should have at least adjective_animal")
+	// Check lowercase (first byte should be lowercase letter)
+	testing.expect(t, name[0] >= 'a' && name[0] <= 'z', "proc name should start lowercase")
+}
+
+@(test)
+test_name_generator_type_pascal_case :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_type(&app, "Struct")
+	name := app.doc.nodes[0].fields[0].text
+	// Check PascalCase: starts uppercase, no underscores
+	testing.expect(t, name[0] >= 'A' && name[0] <= 'Z', "type name should start uppercase")
+	testing.expect(t, !strings.contains(name, "_"), "type name should not contain underscore")
+	testing.expect(t, len(name) > 1, "type name should not be empty")
+}
+
+@(test)
+test_name_generator_const_upper_snake :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_value(&app, "Constant")
+	name := app.doc.nodes[0].fields[0].text
+	// Check UPPER_SNAKE: uppercase, contains underscore
+	testing.expect(t, name[0] >= 'A' && name[0] <= 'Z', "const name should start uppercase")
+	testing.expect(t, strings.contains(name, "_"), "const name should contain underscore")
+	// Check all letters are uppercase
+	all_upper := true
+	for c in name {
+		if c >= 'a' && c <= 'z' {
+			all_upper = false
+			break
+		}
+	}
+	testing.expect(t, all_upper, "const name should be all uppercase (except underscore)")
+}
+
+@(test)
+test_name_generator_uniqueness :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	// Generate many names to test uniqueness
+	for i in 0..<10 {
+		add_proc(&app)
+	}
+	// Collect all proc names
+	names: [dynamic]string
+	defer delete(names)
+	for ni in 0..<len(app.doc.nodes) {
+		for f in app.doc.nodes[ni].fields {
+			if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
+				append(&names, f.text)
+			}
+		}
+	}
+	// Check uniqueness: each name should appear only once
+	for i in 0..<len(names) {
+		count := 0
+		for j in 0..<len(names) {
+			if names[i] == names[j] do count += 1
+		}
+		testing.expect_value(t, count, 1)
+	}
+	testing.expect(t, len(names) >= 10, "should have at least 10 unique proc names")
 }

@@ -89,6 +89,8 @@ App :: struct {
 	slot_menu: []Entry, // built on-demand for slot filling
 	slot_ni:   int,     // node index of slot being filled
 	slot_fi:   int,     // field index of slot being filled
+
+	name_counter: int, // deterministic name generation counter
 }
 
 Input :: struct {
@@ -300,10 +302,12 @@ alias_default :: proc(path: string) -> string {
 
 // Append a procedure outline (3 nodes: signature, body indent, closing brace).
 // Name is editable; params/return/body are slots (orange dots).
-append_proc_node :: proc(app: ^App, name := "do_thing") {
+append_proc_node :: proc(app: ^App, name := "") {
 	// Line 1: <name> :: proc( <params> ) -> <ret> {
+	proc_name := name if name != "" else generate_ident(app)
 	n1: Node
-	append(&n1.fields, Field{strings.clone(name), true, false, ""})       // editable name
+	append(&n1.fields, Field{strings.clone(proc_name), true, false, ""})       // editable name
+	if name == "" do delete(proc_name) // free generated name after clone
 	append(&n1.fields, Field{strings.clone(" :: proc( "), false, false, ""})  // fixed
 	append(&n1.fields, Field{"", false, true, "params"})                  // params slot
 	append(&n1.fields, Field{strings.clone(" ) -> "), false, false, ""}) // fixed
@@ -325,11 +329,13 @@ append_proc_node :: proc(app: ^App, name := "do_thing") {
 
 // Append type declaration nodes (struct/enum/union/bit_set/distinct/alias).
 append_type_node :: proc(app: ^App, kind: string) {
+	type_name := generate_type(app)
+	defer delete(type_name)
 	switch kind {
 	case "struct":
-		// Line 1: MyType :: struct {
+		// Line 1: <type_name> :: struct {
 		n1: Node
-		append(&n1.fields, Field{strings.clone("MyType"), true, false, ""})       // editable name
+		append(&n1.fields, Field{strings.clone(type_name), true, false, ""})       // editable name
 		append(&n1.fields, Field{strings.clone(" :: struct {"), false, false, ""}) // fixed
 		append(&app.doc.nodes, n1)
 		// Line 2: <indent><body slot>
@@ -343,9 +349,9 @@ append_type_node :: proc(app: ^App, kind: string) {
 		append(&app.doc.nodes, n3)
 
 	case "enum":
-		// Line 1: MyType :: enum {
+		// Line 1: <type_name> :: enum {
 		n1: Node
-		append(&n1.fields, Field{strings.clone("MyType"), true, false, ""})       // editable name
+		append(&n1.fields, Field{strings.clone(type_name), true, false, ""})       // editable name
 		append(&n1.fields, Field{strings.clone(" :: enum {"), false, false, ""})  // fixed
 		append(&app.doc.nodes, n1)
 		// Line 2: <indent><body slot>
@@ -359,9 +365,9 @@ append_type_node :: proc(app: ^App, kind: string) {
 		append(&app.doc.nodes, n3)
 
 	case "union":
-		// Line 1: MyType :: union {
+		// Line 1: <type_name> :: union {
 		n1: Node
-		append(&n1.fields, Field{strings.clone("MyType"), true, false, ""})       // editable name
+		append(&n1.fields, Field{strings.clone(type_name), true, false, ""})       // editable name
 		append(&n1.fields, Field{strings.clone(" :: union {"), false, false, ""}) // fixed
 		append(&app.doc.nodes, n1)
 		// Line 2: <indent><body slot>
@@ -375,26 +381,26 @@ append_type_node :: proc(app: ^App, kind: string) {
 		append(&app.doc.nodes, n3)
 
 	case "bit_set":
-		// Single line: MyType :: bit_set[•]
+		// Single line: <type_name> :: bit_set[•]
 		n: Node
-		append(&n.fields, Field{strings.clone("MyType"), true, false, ""})        // editable name
+		append(&n.fields, Field{strings.clone(type_name), true, false, ""})        // editable name
 		append(&n.fields, Field{strings.clone(" :: bit_set["), false, false, ""}) // fixed
 		append(&n.fields, Field{"", false, true, "type"})                          // element type slot
 		append(&n.fields, Field{strings.clone("]"), false, false, ""})             // fixed
 		append(&app.doc.nodes, n)
 
 	case "distinct":
-		// Single line: MyType :: distinct •
+		// Single line: <type_name> :: distinct •
 		n: Node
-		append(&n.fields, Field{strings.clone("MyType"), true, false, ""})        // editable name
+		append(&n.fields, Field{strings.clone(type_name), true, false, ""})        // editable name
 		append(&n.fields, Field{strings.clone(" :: distinct "), false, false, ""}) // fixed
 		append(&n.fields, Field{"", false, true, "type"})                          // base type slot
 		append(&app.doc.nodes, n)
 
 	case "alias":
-		// Single line: MyType :: •
+		// Single line: <type_name> :: •
 		n: Node
-		append(&n.fields, Field{strings.clone("MyType"), true, false, ""})        // editable name
+		append(&n.fields, Field{strings.clone(type_name), true, false, ""})        // editable name
 		append(&n.fields, Field{strings.clone(" :: "), false, false, ""})          // fixed
 		append(&n.fields, Field{"", false, true, "type"})                          // type slot
 		append(&app.doc.nodes, n)
@@ -404,17 +410,21 @@ append_type_node :: proc(app: ^App, kind: string) {
 append_value_node :: proc(app: ^App, kind: string) {
 	switch kind {
 	case "const":
-		// Single line: MAX_HP :: •
+		// Single line: <const_name> :: •
+		const_name := generate_const(app)
+		defer delete(const_name)
 		n: Node
-		append(&n.fields, Field{strings.clone("MAX_HP"), true, false, ""})    // editable name
+		append(&n.fields, Field{strings.clone(const_name), true, false, ""})    // editable name
 		append(&n.fields, Field{strings.clone(" :: "), false, false, ""})      // fixed
 		append(&n.fields, Field{"", false, true, "value"})                     // value slot
 		append(&app.doc.nodes, n)
 
 	case "typed_const":
-		// Single line: MAX_HP : • : •
+		// Single line: <const_name> : • : •
+		const_name := generate_const(app)
+		defer delete(const_name)
 		n: Node
-		append(&n.fields, Field{strings.clone("MAX_HP"), true, false, ""})    // editable name
+		append(&n.fields, Field{strings.clone(const_name), true, false, ""})    // editable name
 		append(&n.fields, Field{strings.clone(" : "), false, false, ""})       // fixed
 		append(&n.fields, Field{"", false, true, "type"})                      // type slot
 		append(&n.fields, Field{strings.clone(" : "), false, false, ""})       // fixed
@@ -422,26 +432,34 @@ append_value_node :: proc(app: ^App, kind: string) {
 		append(&app.doc.nodes, n)
 
 	case "config":
-		// Single line: DEBUG :: #config(DEBUG, •)
+		// Single line: <const_name> :: #config(<const_name>, •)
+		const_name := generate_const(app)
+		defer delete(const_name)
 		n: Node
-		append(&n.fields, Field{strings.clone("DEBUG"), true, false, ""})     // editable name
-		append(&n.fields, Field{strings.clone(" :: #config(DEBUG, "), false, false, ""}) // fixed
+		append(&n.fields, Field{strings.clone(const_name), true, false, ""})     // editable name
+		config_text := fmt.aprintf(" :: #config(%s, ", const_name)
+		defer delete(config_text)
+		append(&n.fields, Field{strings.clone(config_text), false, false, ""}) // fixed
 		append(&n.fields, Field{"", false, true, "value"})                     // default value slot
 		append(&n.fields, Field{strings.clone(")"), false, false, ""})         // fixed
 		append(&app.doc.nodes, n)
 
 	case "global_typed":
-		// Single line: score: •
+		// Single line: <var_name>: •
+		var_name := generate_ident(app)
+		defer delete(var_name)
 		n: Node
-		append(&n.fields, Field{strings.clone("score"), true, false, ""})     // editable name
+		append(&n.fields, Field{strings.clone(var_name), true, false, ""})     // editable name
 		append(&n.fields, Field{strings.clone(": "), false, false, ""})        // fixed
 		append(&n.fields, Field{"", false, true, "type"})                      // type slot
 		append(&app.doc.nodes, n)
 
 	case "global_init":
-		// Single line: score := •
+		// Single line: <var_name> := •
+		var_name := generate_ident(app)
+		defer delete(var_name)
 		n: Node
-		append(&n.fields, Field{strings.clone("score"), true, false, ""})     // editable name
+		append(&n.fields, Field{strings.clone(var_name), true, false, ""})     // editable name
 		append(&n.fields, Field{strings.clone(" := "), false, false, ""})      // fixed
 		append(&n.fields, Field{"", false, true, "value"})                     // value slot
 		append(&app.doc.nodes, n)
@@ -493,7 +511,9 @@ make_slot_variable :: proc(app: ^App, ni, fi: int) {
 	// Remove the slot field
 	ordered_remove(fields, fi)
 	// Inject three fields at the same position
-	f1 := Field{strings.clone("value"), true, false, ""}  // editable name
+	var_name := generate_ident(app)
+	defer delete(var_name)
+	f1 := Field{strings.clone(var_name), true, false, ""}  // editable name
 	f2 := Field{strings.clone(": "), false, false, ""}    // fixed separator
 	f3 := Field{"", false, true, "type"}                   // new type slot
 	inject_at(fields, fi, f3)
@@ -508,7 +528,9 @@ make_slot_param :: proc(app: ^App, ni, fi: int) {
 	ordered_remove(fields, fi)
 	// Inject five fields at the same position:
 	// param name, ": ", type slot, ", ", trailing params slot
-	f1 := Field{strings.clone("param"), true, false, ""}  // editable param name
+	param_name := generate_ident(app)
+	defer delete(param_name)
+	f1 := Field{strings.clone(param_name), true, false, ""}  // editable param name
 	f2 := Field{strings.clone(": "), false, false, ""}    // fixed
 	f3 := Field{"", false, true, "type"}                   // type slot
 	f4 := Field{strings.clone(", "), false, false, ""}    // separator
@@ -528,7 +550,9 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	
 	switch kind {
 	case "__stmt_decl__": // Variable (:=) -> name := •
-		f1 := Field{strings.clone("value"), true, false, ""} // editable name
+		var_name := generate_ident(app)
+		defer delete(var_name)
+		f1 := Field{strings.clone(var_name), true, false, ""} // editable name
 		f2 := Field{strings.clone(" := "), false, false, ""} // fixed
 		f3 := Field{"", false, true, "value"}                 // value slot
 		inject_at(fields, fi, f3)
@@ -536,7 +560,9 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		inject_at(fields, fi, f1)
 		
 	case "__stmt_typed__": // Variable (typed) -> name: • = •
-		f1 := Field{strings.clone("value"), true, false, ""} // editable name
+		var_name := generate_ident(app)
+		defer delete(var_name)
+		f1 := Field{strings.clone(var_name), true, false, ""} // editable name
 		f2 := Field{strings.clone(": "), false, false, ""}   // fixed
 		f3 := Field{"", false, true, "type"}                  // type slot
 		f4 := Field{strings.clone(" = "), false, false, ""}  // fixed
@@ -548,7 +574,9 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		inject_at(fields, fi, f1)
 		
 	case "__stmt_assign__": // Assignment -> name = •
-		f1 := Field{strings.clone("value"), true, false, ""} // editable name
+		var_name := generate_ident(app)
+		defer delete(var_name)
+		f1 := Field{strings.clone(var_name), true, false, ""} // editable name
 		f2 := Field{strings.clone(" = "), false, false, ""}  // fixed
 		f3 := Field{"", false, true, "value"}                 // value slot
 		inject_at(fields, fi, f3)
@@ -556,7 +584,9 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		inject_at(fields, fi, f1)
 		
 	case "__stmt_call__": // Procedure call -> name( • )
-		f1 := Field{strings.clone("do_thing"), true, false, ""} // editable name
+		call_name := generate_ident(app)
+		defer delete(call_name)
+		f1 := Field{strings.clone(call_name), true, false, ""} // editable name
 		f2 := Field{strings.clone("( "), false, false, ""}      // fixed
 		f3 := Field{"", false, true, "value"}                    // value slot for arg
 		f4 := Field{strings.clone(" )"), false, false, ""}      // fixed
