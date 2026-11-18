@@ -40,6 +40,7 @@ Entry :: struct {
 	fill:           string, // "" = none; type name = fill slot with type; "__var__" = instantiate variable
 	call_name:      string, // proc or package name for call statements
 	call_pkg:       string, // package name for import calls; "" for this-package calls
+	owned_label:    bool,   // if true, label was cloned and should be freed
 	children:       []Entry,
 }
 
@@ -167,7 +168,8 @@ make_slice :: proc(items: ..Entry) -> []Entry {
 // Free a menu tree (child slices only; most strings are literals, but call_name/call_pkg are cloned).
 free_entries :: proc(entries: []Entry) {
 	for e in entries {
-		// Free cloned call data strings
+		// Free cloned strings
+		if e.owned_label && len(e.label) > 0 do delete(e.label)
 		if len(e.call_name) > 0 do delete(e.call_name)
 		if len(e.call_pkg) > 0 do delete(e.call_pkg)
 		free_entries(e.children)
@@ -577,6 +579,97 @@ collect_import_names :: proc(app: ^App) -> []string {
 	return result[:]
 }
 
+// Import reference with both the reference name and full path.
+ImportRef :: struct {
+	ref:  string, // reference name (alias or last path segment)
+	path: string, // full import path like "core:fmt"
+}
+
+// Collect import references and their paths from the document.
+collect_imports :: proc(app: ^App) -> []ImportRef {
+	result: [dynamic]ImportRef
+	for n in app.doc.nodes {
+		txt := node_text(n, context.temp_allocator)
+		if strings.has_prefix(txt, "import ") {
+			// Check if it's an aliased import: has an editable field
+			has_alias := false
+			for f in n.fields {
+				if f.editable && len(f.text) > 0 {
+					// Aliased import: extract the alias and path
+					start := strings.index(txt, "\"")
+					if start >= 0 {
+						start += 1
+						end := strings.last_index(txt, "\"")
+						if end > start {
+							path := txt[start:end]
+							already_added := false
+							for existing in result {
+								if existing.ref == f.text && existing.path == path {
+									already_added = true
+									break
+								}
+							}
+							if !already_added do append(&result, ImportRef{f.text, path})
+						}
+					}
+					has_alias = true
+					break
+				}
+			}
+			if !has_alias {
+				// Plain import: extract path and get last segment
+				start := strings.index(txt, "\"")
+				if start >= 0 {
+					start += 1
+					end := strings.last_index(txt, "\"")
+					if end > start {
+						path := txt[start:end]
+						ref_name := alias_default(path)
+						already_added := false
+						for existing in result {
+							if existing.ref == ref_name && existing.path == path {
+								already_added = true
+								break
+							}
+						}
+						if !already_added do append(&result, ImportRef{ref_name, path})
+					}
+				}
+			}
+		}
+	}
+	return result[:]
+}
+
+// Global cache: lazily-initialized map from import path to procedure names.
+@(private = "file")
+g_proc_cache: map[string][dynamic]string
+
+@(private = "file")
+g_proc_cache_built: bool
+
+// Build the procedure cache from CORE_PROCS (once, lazily).
+@(private = "file")
+build_proc_cache :: proc() {
+	if g_proc_cache_built do return
+	for entry in CORE_PROCS {
+		if entry.path not_in g_proc_cache {
+			g_proc_cache[entry.path] = make([dynamic]string)
+		}
+		append(&g_proc_cache[entry.path], entry.name)
+	}
+	g_proc_cache_built = true
+}
+
+// Get procedure names for a given import path.
+procs_for_path :: proc(path: string) -> []string {
+	build_proc_cache()
+	if path in g_proc_cache {
+		return g_proc_cache[path][:]
+	}
+	return nil
+}
+
 // Create a fill leaf entry.
 fill_leaf :: proc(label, fill_type: string) -> Entry {
 	return Entry{label = label, fill = fill_type}
@@ -959,6 +1052,34 @@ make_call_import :: proc(app: ^App, ni, fi: int, pkg_name: string) {
 	inject_at(&app.doc.nodes, ni + 1, new_body)
 }
 
+// Transform a body slot into a call to a specific procedure from an import.
+// Result: pkg.proc( • ) where both pkg and proc are fixed (non-editable).
+make_import_proc_call :: proc(app: ^App, ni, fi: int, pkg_name, proc_name: string) {
+	fields := &app.doc.nodes[ni].fields
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	// Insert call statement: pkg.proc( • )
+	f1 := Field{strings.clone(pkg_name), false, false, ""}     // fixed package name
+	f2 := Field{strings.clone("."), false, false, ""}        // fixed dot
+	f3 := Field{strings.clone(proc_name), false, false, ""}   // fixed proc name
+	f4 := Field{strings.clone("( "), false, false, ""}       // fixed
+	f5 := Field{"", false, true, "value"}                     // value slot for arg
+	f6 := Field{strings.clone(" )"), false, false, ""}       // fixed
+	inject_at(fields, fi, f6)
+	inject_at(fields, fi, f5)
+	inject_at(fields, fi, f4)
+	inject_at(fields, fi, f3)
+	inject_at(fields, fi, f2)
+	inject_at(fields, fi, f1)
+	
+	// Insert a new body slot line after the current node
+	new_body: Node
+	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
+	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+	inject_at(&app.doc.nodes, ni + 1, new_body)
+}
+
 // Transform a body slot into a jump/cleanup statement.
 make_jump_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	fields := &app.doc.nodes[ni].fields
@@ -1206,18 +1327,45 @@ open_slot_menu :: proc(app: ^App) {
 		append(&call_entries, grp("Procedure in this package", this_pkg_children))
 		
 		// Subcategory 2: Procedure from an import
-		import_names := collect_import_names(app)
-		defer delete(import_names)
+		imports := collect_imports(app)
+		defer delete(imports)
 		import_calls: [dynamic]Entry
 		defer delete(import_calls)
-		if len(import_names) == 0 {
-			append(&import_calls, grp_dim("(no imports defined)"))
+		if len(imports) == 0 {
+			append(&import_calls, grp_dim("(no imports yet - add one under Dependencies)"))
 		} else {
-			for pkg in import_names {
+			for imp in imports {
+				// Build procedure leaves for this import
+				procs := procs_for_path(imp.path)
+				pkg_children: [dynamic]Entry
+				defer delete(pkg_children)
+				
+				if len(procs) == 0 {
+					// No procedures in table (e.g., non-core import), provide fallback
+					append(&pkg_children, Entry{
+						label = "Other (name it yourself)",
+						fill = "__call_import__",
+						call_pkg = strings.clone(imp.ref),
+					})
+				} else {
+					// Add procedure leaves
+					for proc_name in procs {
+						append(&pkg_children, Entry{
+							label = strings.clone(proc_name),
+							fill = "__call_import_proc__",
+							call_pkg = strings.clone(imp.ref),
+							call_name = strings.clone(proc_name),
+							owned_label = true,
+						})
+					}
+				}
+				
+				// Make this package a group with procedure children
+				pkg_entry_children := make([]Entry, len(pkg_children))
+				copy(pkg_entry_children, pkg_children[:])
 				append(&import_calls, Entry{
-					label = pkg,
-					fill = "__call_import__",
-					call_pkg = strings.clone(pkg),
+					label = imp.ref,
+					children = pkg_entry_children,
 				})
 			}
 		}
@@ -1687,6 +1835,8 @@ menu_select :: proc(app: ^App) {
 			make_call_this_package(app, app.slot_ni, app.slot_fi, e.call_name)
 		} else if e.fill == "__call_import__" {
 			make_call_import(app, app.slot_ni, app.slot_fi, e.call_pkg)
+		} else if e.fill == "__call_import_proc__" {
+			make_import_proc_call(app, app.slot_ni, app.slot_fi, e.call_pkg, e.call_name)
 		} else if e.fill == "__br_if__" || e.fill == "__br_ifelse__" || e.fill == "__br_switch__" || e.fill == "__br_when__" {
 			make_branch_statement(app, app.slot_ni, app.slot_fi, e.fill)
 		} else if e.fill == "__loop_for__" || e.fill == "__loop_forin__" || e.fill == "__loop_forinf__" {

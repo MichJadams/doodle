@@ -1847,21 +1847,29 @@ test_body_calls_category_import :: proc(t: ^testing.T) {
 		append(&labels, e.label)
 	}
 	testing.expect(t, slice.contains(labels[:], "fmt"), "should contain 'fmt'")
-	// Select "fmt"
+	// Select "fmt" (now a group, not a leaf)
 	select_label(&app, "fmt")
+	// Should navigate into fmt's proc submenu (which will be bucketed)
+	testing.expect_value(t, app.state, State.Radial)
+	// Drill to first available proc leaf
+	leaf := drill_to_first_leaf(&app)
+	testing.expect(t, leaf != nil, "should find a proc leaf")
+	testing.expect(t, leaf.fill == "__call_import_proc__", "leaf should be a proc call")
+	// Select it
+	confirm(&app)
 	testing.expect_value(t, app.state, State.Editor)
 	// Verify it inserts a call statement with fmt.
 	txt := node_text(app.doc.nodes[2], context.temp_allocator) // proc body line
 	testing.expect(t, strings.contains(txt, "fmt."), "body should contain 'fmt.'")
-	// Verify there's an editable proc name field
-	found_editable := false
+	// Verify proc name is fixed (not editable) now
+	found_fixed_proc := false
 	for f in app.doc.nodes[2].fields {
-		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
-			found_editable = true
+		if !f.editable && !f.slot && len(f.text) > 0 && f.text != "." && f.text != "( " && f.text != " )" && f.text != "    " && f.text != "fmt" {
+			found_fixed_proc = true
 			break
 		}
 	}
-	testing.expect(t, found_editable, "should have editable proc name after fmt.")
+	testing.expect(t, found_fixed_proc, "should have fixed proc name after fmt.")
 	// Verify there's a value slot
 	found_value_slot := false
 	for f in app.doc.nodes[2].fields {
@@ -2484,4 +2492,127 @@ test_error_or_return_adds_continuation_body_slot :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, has_body_slot, "should have continuation body slot after or_return")
+}
+
+// ---- Procedure from import drill-down tests ----
+
+@(test)
+test_procs_for_path_finds_println :: proc(t: ^testing.T) {
+	procs := procs_for_path("core:fmt")
+	testing.expect(t, len(procs) > 0, "core:fmt should have procedures")
+	found := false
+	for p in procs {
+		if p == "println" {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "core:fmt should contain println")
+}
+
+@(test)
+test_import_proc_menu_lists_packages :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Add an import
+	append_text_node(&app, import_text("core:fmt", context.temp_allocator))
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	confirm(&app) // Open slot menu
+	// Navigate to Calls -> Procedure from an import
+	select_label(&app, "Calls")
+	select_label(&app, "Procedure from an import")
+	// Should list "fmt" as a package group
+	v := current_view(&app)
+	testing.expect(t, v != nil, "should have a view")
+	found := false
+	for e in v.entries {
+		if e.label == "fmt" {
+			found = true
+			break
+		}
+	}
+	testing.expect(t, found, "should list fmt package")
+}
+
+@(test)
+test_import_proc_menu_drills_to_proc :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Add an import
+	append_text_node(&app, import_text("core:fmt", context.temp_allocator))
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	confirm(&app) // Open slot menu
+	// Navigate to Calls -> Procedure from an import -> fmt
+	select_label(&app, "Calls")
+	select_label(&app, "Procedure from an import")
+	select_label(&app, "fmt")
+	// Should have entries (bucketed because fmt has 80+ procs)
+	v := current_view(&app)
+	testing.expect(t, v != nil, "should have a view")
+	testing.expect(t, len(v.entries) > 0, "should have entries (buckets or procs)")
+	// Drill into buckets to find a proc leaf
+	// (make_view auto-buckets, so we need to recursively enter groups)
+	leaf := drill_to_first_leaf(&app)
+	testing.expect(t, leaf != nil, "should find a leaf")
+	testing.expect(t, leaf.fill == "__call_import_proc__", "leaf should be a proc call")
+	// Select the leaf
+	confirm(&app)
+	// Check the inserted node
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect(t, len(app.doc.nodes) >= 3, "should have proc signature + body lines")
+	// Find the body line with the call
+	for n in app.doc.nodes {
+		txt := node_text(n, context.temp_allocator)
+		if strings.contains(txt, "fmt.") && strings.contains(txt, "( ") {
+			// Found the call line
+			testing.expect(t, strings.has_prefix(txt, "    fmt."), "call should start with indent and fmt.")
+			return
+		}
+	}
+	testing.expect(t, false, "should have inserted a fmt.proc( call")
+}
+
+@(test)
+test_no_imports_shows_placeholder :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot (no imports in doc)
+	update(&app, Input{up = true})
+	confirm(&app) // Open slot menu
+	// Navigate to Calls -> Procedure from an import
+	select_label(&app, "Calls")
+	select_label(&app, "Procedure from an import")
+	// Should show dim placeholder
+	v := current_view(&app)
+	testing.expect(t, v != nil, "should have a view")
+	testing.expect_value(t, len(v.entries), 1)
+	testing.expect(t, v.entries[0].dim, "entry should be dimmed")
+}
+
+@(private = "file")
+drill_to_first_leaf :: proc(app: ^App) -> ^Entry {
+	for _ in 0 ..< 50 {
+		v := current_view(app)
+		if v == nil || len(v.entries) == 0 do return nil
+		// Check if current entry is a leaf with fill
+		e := &v.entries[v.index]
+		if len(e.children) == 0 && e.fill != "" do return e
+		// Enter first group
+		for entry, i in v.entries {
+			if len(entry.children) > 0 {
+				v.index = i
+				confirm(app)
+				break
+			}
+		}
+	}
+	return nil
 }
