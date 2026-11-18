@@ -38,6 +38,8 @@ Entry :: struct {
 	quit:           bool,
 	alias:          bool,   // if true, navigating this group sets import_alias mode
 	fill:           string, // "" = none; type name = fill slot with type; "__var__" = instantiate variable
+	call_name:      string, // proc or package name for call statements
+	call_pkg:       string, // package name for import calls; "" for this-package calls
 	children:       []Entry,
 }
 
@@ -166,9 +168,14 @@ make_slice :: proc(items: ..Entry) -> []Entry {
 	return s
 }
 
-// Free a menu tree (child slices only; all strings are literals).
+// Free a menu tree (child slices only; most strings are literals, but call_name/call_pkg are cloned).
 free_entries :: proc(entries: []Entry) {
-	for e in entries do free_entries(e.children)
+	for e in entries {
+		// Free cloned call data strings
+		if len(e.call_name) > 0 do delete(e.call_name)
+		if len(e.call_pkg) > 0 do delete(e.call_pkg)
+		free_entries(e.children)
+	}
 	if entries != nil do delete(entries)
 }
 
@@ -498,6 +505,83 @@ collect_user_types :: proc(app: ^App) -> []string {
 	return result[:]
 }
 
+// Collect procedure names from the document (scan for " :: proc(").
+collect_proc_names :: proc(app: ^App) -> []string {
+	result: [dynamic]string
+	for n in app.doc.nodes {
+		txt := node_text(n, context.temp_allocator)
+		if strings.contains(txt, " :: proc(") {
+			// The proc name is the first editable field on this line
+			for f in n.fields {
+				if f.editable && len(f.text) > 0 {
+					// Add if not already in list
+					already_added := false
+					for s in result {
+						if s == f.text {
+							already_added = true
+							break
+						}
+					}
+					if !already_added do append(&result, f.text)
+					break // only the first editable field (the proc name)
+				}
+			}
+		}
+	}
+	return result[:]
+}
+
+// Collect import reference names from the document.
+// For plain imports like `import "core:fmt"`, the reference is the last path segment ("fmt").
+// For aliased imports like `import win "core:sys/windows"`, the reference is the alias ("win").
+collect_import_names :: proc(app: ^App) -> []string {
+	result: [dynamic]string
+	for n in app.doc.nodes {
+		txt := node_text(n, context.temp_allocator)
+		if strings.has_prefix(txt, "import ") {
+			// Check if it's an aliased import: has an editable field
+			has_alias := false
+			for f in n.fields {
+				if f.editable && len(f.text) > 0 {
+					// Aliased import: use the alias
+					already_added := false
+					for s in result {
+						if s == f.text {
+							already_added = true
+							break
+						}
+					}
+					if !already_added do append(&result, f.text)
+					has_alias = true
+					break
+				}
+			}
+			if !has_alias {
+				// Plain import: extract the last path segment from the import_path
+				// txt is "import \"path\"", extract path and get last segment
+				start := strings.index(txt, "\"")
+				if start >= 0 {
+					start += 1
+					end := strings.last_index(txt, "\"")
+					if end > start {
+						path := txt[start:end]
+						ref_name := alias_default(path)
+						already_added := false
+						for s in result {
+							if s == ref_name {
+								already_added = true
+								break
+							}
+						}
+						if !already_added do append(&result, ref_name)
+					}
+				}
+			}
+		}
+	}
+	return result[:]
+}
+
 // Create a fill leaf entry.
 fill_leaf :: proc(label, fill_type: string) -> Entry {
 	return Entry{label = label, fill = fill_type}
@@ -609,6 +693,60 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	inject_at(&app.doc.nodes, ni + 1, new_body)
 }
 
+// Transform a body slot into a call to a procedure in this package.
+// Result: name( • ) where name is fixed (non-editable).
+make_call_this_package :: proc(app: ^App, ni, fi: int, proc_name: string) {
+	fields := &app.doc.nodes[ni].fields
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	// Insert call statement: name( • )
+	f1 := Field{strings.clone(proc_name), false, false, ""} // fixed proc name
+	f2 := Field{strings.clone("( "), false, false, ""}      // fixed
+	f3 := Field{"", false, true, "value"}                    // value slot for arg
+	f4 := Field{strings.clone(" )"), false, false, ""}      // fixed
+	inject_at(fields, fi, f4)
+	inject_at(fields, fi, f3)
+	inject_at(fields, fi, f2)
+	inject_at(fields, fi, f1)
+	
+	// Insert a new body slot line after the current node
+	new_body: Node
+	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
+	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+	inject_at(&app.doc.nodes, ni + 1, new_body)
+}
+
+// Transform a body slot into a call to a procedure from an import.
+// Result: pkg.name( • ) where pkg is fixed and name is editable.
+make_call_import :: proc(app: ^App, ni, fi: int, pkg_name: string) {
+	fields := &app.doc.nodes[ni].fields
+	// Remove the body slot field
+	ordered_remove(fields, fi)
+	
+	// Insert call statement: pkg.name( • )
+	proc_name := generate_ident(app)
+	defer delete(proc_name)
+	f1 := Field{strings.clone(pkg_name), false, false, ""}     // fixed package name
+	f2 := Field{strings.clone("."), false, false, ""}        // fixed dot
+	f3 := Field{strings.clone(proc_name), true, false, ""}    // editable proc name
+	f4 := Field{strings.clone("( "), false, false, ""}       // fixed
+	f5 := Field{"", false, true, "value"}                     // value slot for arg
+	f6 := Field{strings.clone(" )"), false, false, ""}       // fixed
+	inject_at(fields, fi, f6)
+	inject_at(fields, fi, f5)
+	inject_at(fields, fi, f4)
+	inject_at(fields, fi, f3)
+	inject_at(fields, fi, f2)
+	inject_at(fields, fi, f1)
+	
+	// Insert a new body slot line after the current node
+	new_body: Node
+	append(&new_body.fields, Field{strings.clone("    "), false, false, ""}) // indent
+	append(&new_body.fields, Field{"", false, true, "body"})                  // body slot
+	inject_at(&app.doc.nodes, ni + 1, new_body)
+}
+
 // Open the slot filling menu.
 open_slot_menu :: proc(app: ^App) {
 	ni, fi, ok := editor_target(app)
@@ -633,12 +771,75 @@ open_slot_menu :: proc(app: ^App) {
 			Entry{label = "Add parameter", fill = "__param__"},
 		)
 	} else if slot_kind == "body" {
-		// Build body-specific statement menu
-		app.slot_menu = make_slice(
+		// Build body-specific statement menu with categories
+		
+		// Declarations category
+		decls := make_slice(
 			Entry{label = "Variable (:=)", fill = "__stmt_decl__"},
 			Entry{label = "Variable (typed)", fill = "__stmt_typed__"},
+		)
+		
+		// Assignment category
+		assignments := make_slice(
 			Entry{label = "Assignment", fill = "__stmt_assign__"},
-			Entry{label = "Procedure call", fill = "__stmt_call__"},
+		)
+		
+		// Calls category
+		call_entries: [dynamic]Entry
+		defer delete(call_entries)
+		
+		// Subcategory 1: Procedure in this package
+		proc_names := collect_proc_names(app)
+		defer delete(proc_names)
+		this_pkg_calls: [dynamic]Entry
+		defer delete(this_pkg_calls)
+		if len(proc_names) == 0 {
+			append(&this_pkg_calls, grp_dim("(no procedures defined)"))
+		} else {
+			for name in proc_names {
+				append(&this_pkg_calls, Entry{
+					label = name,
+					fill = "__call_this_pkg__",
+					call_name = strings.clone(name),
+				})
+			}
+		}
+		this_pkg_children := make([]Entry, len(this_pkg_calls))
+		copy(this_pkg_children, this_pkg_calls[:])
+		append(&call_entries, grp("Procedure in this package", this_pkg_children))
+		
+		// Subcategory 2: Procedure from an import
+		import_names := collect_import_names(app)
+		defer delete(import_names)
+		import_calls: [dynamic]Entry
+		defer delete(import_calls)
+		if len(import_names) == 0 {
+			append(&import_calls, grp_dim("(no imports defined)"))
+		} else {
+			for pkg in import_names {
+				append(&import_calls, Entry{
+					label = pkg,
+					fill = "__call_import__",
+					call_pkg = strings.clone(pkg),
+				})
+			}
+		}
+		import_children := make([]Entry, len(import_calls))
+		copy(import_children, import_calls[:])
+		append(&call_entries, grp("Procedure from an import", import_children))
+		
+		calls_children := make([]Entry, len(call_entries))
+		copy(calls_children, call_entries[:])
+		
+		app.slot_menu = make_slice(
+			grp("Declarations", decls),
+			grp("Assignment", assignments),
+			grp("Calls", calls_children),
+			grp_dim("Branching"),
+			grp_dim("Loops"),
+			grp_dim("Jumps and cleanup"),
+			grp_dim("Error handling"),
+			grp_dim("Scope and blocks"),
 		)
 	} else {
 		// Generic Type/Variable menu for other slots
@@ -1042,12 +1243,15 @@ menu_select :: proc(app: ^App) {
 			delete_construct(app, app.sel_start, app.sel_end)
 			clear_nav(app)
 			app.state = app.return_state
-			// Free the action menu
 			if app.action_menu != nil {
 				free_entries(app.action_menu)
 				app.action_menu = nil
 			}
 			return
+		} else if e.fill == "__call_this_pkg__" {
+			make_call_this_package(app, app.slot_ni, app.slot_fi, e.call_name)
+		} else if e.fill == "__call_import__" {
+			make_call_import(app, app.slot_ni, app.slot_fi, e.call_pkg)
 		} else {
 			set_slot_type(app, app.slot_ni, app.slot_fi, e.fill)
 		}
