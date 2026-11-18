@@ -1041,7 +1041,8 @@ test_slot_fill_variable_then_type :: proc(t: ^testing.T) {
 	// Confirm to open fill menu (now shows statement menu for body slots)
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
-	// Select "Variable (typed)" which creates name: type = value pattern
+	// Navigate to Declarations -> Variable (typed) which creates name: type = value pattern
+	select_label(&app, "Declarations")
 	select_label(&app, "Variable (typed)")
 	// Should be back in Editor
 	testing.expect_value(t, app.state, State.Editor)
@@ -1101,7 +1102,8 @@ test_user_defined_type_in_menu :: proc(t: ^testing.T) {
 	// Open fill menu (now shows statement menu)
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
-	// Select "Variable (typed)" to add a typed member
+	// Navigate to Declarations -> Variable (typed) to add a typed member
+	select_label(&app, "Declarations")
 	select_label(&app, "Variable (typed)")
 	testing.expect_value(t, app.state, State.Editor)
 	// Navigate to the type slot
@@ -1304,16 +1306,15 @@ test_body_slot_opens_statement_menu :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.state, State.Radial)
 	v := current_view(&app)
 	testing.expect_value(t, v.title, "Fill slot")
-	// Check for statement entries
+	// Check for category entries (new structure)
 	labels: [dynamic]string
 	defer delete(labels)
 	for e in v.entries {
 		append(&labels, e.label)
 	}
-	testing.expect(t, slice.contains(labels[:], "Variable (:=)"), "should contain 'Variable (:=)'")
-	testing.expect(t, slice.contains(labels[:], "Variable (typed)"), "should contain 'Variable (typed)'")
-	testing.expect(t, slice.contains(labels[:], "Assignment"), "should contain 'Assignment'")
-	testing.expect(t, slice.contains(labels[:], "Procedure call"), "should contain 'Procedure call'")
+	testing.expect(t, slice.contains(labels[:], "Declarations"), "should contain 'Declarations' category")
+	testing.expect(t, slice.contains(labels[:], "Assignment"), "should contain 'Assignment' category")
+	testing.expect(t, slice.contains(labels[:], "Calls"), "should contain 'Calls' category")
 	// Cancel back
 	update(&app, Input{cancel = true})
 	testing.expect_value(t, app.state, State.Editor)
@@ -1328,8 +1329,9 @@ test_body_slot_variable_decl_transform :: proc(t: ^testing.T) {
 	initial_node_count := len(app.doc.nodes)
 	// Navigate to body slot
 	update(&app, Input{up = true})
-	// Open menu and select "Variable (:=)"
+	// Open menu and navigate to Declarations -> Variable (:=)
 	update(&app, Input{confirm = true})
+	select_label(&app, "Declarations")
 	select_label(&app, "Variable (:=)")
 	testing.expect_value(t, app.state, State.Editor)
 	// Check that body line now contains a generated var name and ":="
@@ -1368,8 +1370,9 @@ test_body_slot_typed_variable_transform :: proc(t: ^testing.T) {
 	add_proc(&app)
 	// Navigate to body slot
 	update(&app, Input{up = true})
-	// Open menu and select "Variable (typed)"
+	// Open menu and navigate to Declarations -> Variable (typed)
 	update(&app, Input{confirm = true})
+	select_label(&app, "Declarations")
 	select_label(&app, "Variable (typed)")
 	testing.expect_value(t, app.state, State.Editor)
 	// Check that body line now contains a generated var name, ": " and " = "
@@ -1415,8 +1418,9 @@ test_body_slot_assignment_transform :: proc(t: ^testing.T) {
 	add_proc(&app)
 	// Navigate to body slot
 	update(&app, Input{up = true})
-	// Open menu and select "Assignment"
+	// Open menu and navigate to Assignment -> Assignment
 	update(&app, Input{confirm = true})
+	select_label(&app, "Assignment")
 	select_label(&app, "Assignment")
 	testing.expect_value(t, app.state, State.Editor)
 	// Check that body line contains a generated var name and " = "
@@ -1443,8 +1447,9 @@ test_body_slot_assignment_transform :: proc(t: ^testing.T) {
 	testing.expect(t, found_value_slot, "should have value slot")
 }
 
-@(test)
-test_body_slot_procedure_call_transform :: proc(t: ^testing.T) {
+// OLD TEST: Procedure call is now replaced by Calls category with subtypes
+// @(test)
+test_body_slot_procedure_call_transform_OLD :: proc(t: ^testing.T) {
 	app: App
 	defer cleanup(&app)
 	app.state = .Editor
@@ -1494,6 +1499,7 @@ test_body_slot_multiple_statements :: proc(t: ^testing.T) {
 	// Add first statement
 	update(&app, Input{up = true})
 	update(&app, Input{confirm = true})
+	select_label(&app, "Declarations")
 	select_label(&app, "Variable (:=)")
 	testing.expect_value(t, app.state, State.Editor)
 	// Navigate to new body slot (down from current position)
@@ -1504,6 +1510,7 @@ test_body_slot_multiple_statements :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "body")
 	// Add second statement
 	update(&app, Input{confirm = true})
+	select_label(&app, "Assignment")
 	select_label(&app, "Assignment")
 	testing.expect_value(t, app.state, State.Editor)
 	// Verify we now have 5 nodes: signature, stmt1, stmt2, new body slot, closing brace
@@ -1532,13 +1539,13 @@ test_body_slot_struct_body :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
 	v := current_view(&app)
-	// Check for statement entries
+	// Check for category entries (new structure)
 	labels: [dynamic]string
 	defer delete(labels)
 	for e in v.entries {
 		append(&labels, e.label)
 	}
-	testing.expect(t, slice.contains(labels[:], "Variable (:=)"), "struct body should offer statement menu")
+	testing.expect(t, slice.contains(labels[:], "Declarations"), "struct body should offer statement menu with categories")
 }
 
 // ---- Name generator tests ----
@@ -1638,4 +1645,188 @@ test_name_generator_uniqueness :: proc(t: ^testing.T) {
 		testing.expect_value(t, count, 1)
 	}
 	testing.expect(t, len(names) >= 10, "should have at least 10 unique proc names")
+}
+
+// ---- Body slot menu categories tests ----
+
+@(test)
+test_body_slot_shows_categories :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok, "should be on body slot")
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "body")
+	// Open menu
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	v := current_view(&app)
+	testing.expect_value(t, v.title, "Fill slot")
+	// Check for category entries
+	labels: [dynamic]string
+	defer delete(labels)
+	for e in v.entries {
+		append(&labels, e.label)
+	}
+	testing.expect(t, slice.contains(labels[:], "Declarations"), "should contain 'Declarations'")
+	testing.expect(t, slice.contains(labels[:], "Assignment"), "should contain 'Assignment'")
+	testing.expect(t, slice.contains(labels[:], "Calls"), "should contain 'Calls'")
+	testing.expect(t, slice.contains(labels[:], "Branching"), "should contain 'Branching'")
+	testing.expect(t, slice.contains(labels[:], "Loops"), "should contain 'Loops'")
+	testing.expect(t, slice.contains(labels[:], "Jumps and cleanup"), "should contain 'Jumps and cleanup'")
+	testing.expect(t, slice.contains(labels[:], "Error handling"), "should contain 'Error handling'")
+	testing.expect(t, slice.contains(labels[:], "Scope and blocks"), "should contain 'Scope and blocks'")
+	// Cancel back
+	update(&app, Input{cancel = true})
+	testing.expect_value(t, app.state, State.Editor)
+}
+
+@(test)
+test_body_declarations_category_has_variable_decl :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	initial_node_count := len(app.doc.nodes)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu
+	update(&app, Input{confirm = true})
+	// Navigate to Declarations category
+	select_label(&app, "Declarations")
+	// Check submenu contains "Variable (:=)"
+	v := current_view(&app)
+	labels: [dynamic]string
+	defer delete(labels)
+	for e in v.entries {
+		append(&labels, e.label)
+	}
+	testing.expect(t, slice.contains(labels[:], "Variable (:=)"), "Declarations should contain 'Variable (:=)'")
+	testing.expect(t, slice.contains(labels[:], "Variable (typed)"), "Declarations should contain 'Variable (typed)'")
+	// Select "Variable (:=)"
+	select_label(&app, "Variable (:=)")
+	testing.expect_value(t, app.state, State.Editor)
+	// Verify it inserts a := statement
+	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	testing.expect(t, strings.contains(txt, ":="), "body should contain ':='")
+	// Verify a new body slot line was inserted
+	testing.expect_value(t, len(app.doc.nodes), initial_node_count + 1)
+}
+
+@(test)
+test_body_calls_category_this_package :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	// Add two procs so we have one to call
+	add_proc(&app)
+	// Change the first proc name to something recognizable
+	update(&app, Input{up = true}) // to closing brace
+	update(&app, Input{up = true}) // to body slot
+	update(&app, Input{up = true}) // to signature line
+	ni, fi, ok := editor_target(&app)
+	testing.expect(t, ok)
+	// Set the proc name
+	set_field_text(&app, ni, fi, "my_proc")
+	// Navigate back to green dot
+	update(&app, Input{down = true}) // to body slot
+	update(&app, Input{down = true}) // to closing brace
+	update(&app, Input{down = true}) // to green dot
+	// Add a second proc
+	add_proc(&app)
+	initial_node_count := len(app.doc.nodes)
+	// Navigate to the second proc's body slot
+	update(&app, Input{up = true})
+	// Open menu
+	update(&app, Input{confirm = true})
+	// Navigate to Calls category
+	select_label(&app, "Calls")
+	// Navigate to "Procedure in this package"
+	select_label(&app, "Procedure in this package")
+	// Check that "my_proc" is in the list
+	v := current_view(&app)
+	labels: [dynamic]string
+	defer delete(labels)
+	for e in v.entries {
+		append(&labels, e.label)
+	}
+	testing.expect(t, slice.contains(labels[:], "my_proc"), "should contain 'my_proc'")
+	// Select "my_proc"
+	select_label(&app, "my_proc")
+	testing.expect_value(t, app.state, State.Editor)
+	// Verify it inserts a call statement
+	txt := node_text(app.doc.nodes[4], context.temp_allocator) // second proc's body line
+	testing.expect(t, strings.contains(txt, "my_proc("), "body should contain 'my_proc('")
+	// Verify there's a value slot
+	found_value_slot := false
+	for f in app.doc.nodes[4].fields {
+		if f.slot && f.kind == "value" {
+			found_value_slot = true
+			break
+		}
+	}
+	testing.expect(t, found_value_slot, "should have value slot for argument")
+	// Verify a new body slot line was inserted
+	testing.expect_value(t, len(app.doc.nodes), initial_node_count + 1)
+}
+
+@(test)
+test_body_calls_category_import :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	// Add an import first
+	confirm(&app) // open Add root
+	select_label(&app, "Dependencies")
+	select_label(&app, "Import")
+	select_label(&app, "core")
+	drill_to_path(&app, "core:fmt")
+	// Now add a proc
+	add_proc(&app)
+	initial_node_count := len(app.doc.nodes)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu
+	update(&app, Input{confirm = true})
+	// Navigate to Calls category
+	select_label(&app, "Calls")
+	// Navigate to "Procedure from an import"
+	select_label(&app, "Procedure from an import")
+	// Check that "fmt" is in the list
+	v := current_view(&app)
+	labels: [dynamic]string
+	defer delete(labels)
+	for e in v.entries {
+		append(&labels, e.label)
+	}
+	testing.expect(t, slice.contains(labels[:], "fmt"), "should contain 'fmt'")
+	// Select "fmt"
+	select_label(&app, "fmt")
+	testing.expect_value(t, app.state, State.Editor)
+	// Verify it inserts a call statement with fmt.
+	txt := node_text(app.doc.nodes[2], context.temp_allocator) // proc body line
+	testing.expect(t, strings.contains(txt, "fmt."), "body should contain 'fmt.'")
+	// Verify there's an editable proc name field
+	found_editable := false
+	for f in app.doc.nodes[2].fields {
+		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
+			found_editable = true
+			break
+		}
+	}
+	testing.expect(t, found_editable, "should have editable proc name after fmt.")
+	// Verify there's a value slot
+	found_value_slot := false
+	for f in app.doc.nodes[2].fields {
+		if f.slot && f.kind == "value" {
+			found_value_slot = true
+			break
+		}
+	}
+	testing.expect(t, found_value_slot, "should have value slot for argument")
+	// Verify a new body slot line was inserted
+	testing.expect_value(t, len(app.doc.nodes), initial_node_count + 1)
 }
