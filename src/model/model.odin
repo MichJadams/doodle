@@ -11,7 +11,16 @@ import "core:fmt"
 
 State :: enum { Menu, Editor, Radial }
 
-GRID_COLS        :: 8
+GRID_COLS        :: 8  // max columns
+
+// Columns for a menu of n entries: prefer a square-ish grid, capped at GRID_COLS.
+grid_cols :: proc(n: int) -> int {
+	if n <= 1 do return 1
+	c := 1
+	for c * c < n do c += 1
+	if c > GRID_COLS do c = GRID_COLS
+	return c
+}
 BUCKET_THRESHOLD :: 12
 BUCKET_TARGET    :: 9
 PAGE             :: 12  // Alpha-bucket page size
@@ -2483,13 +2492,34 @@ update :: proc(app: ^App, inp: Input) {
 	case .Radial:
 		v := current_view(app)
 		n := len(v.entries)
-		cols := GRID_COLS
-		if n < cols do cols = n
 		if n > 0 {
-			if inp.right do v.index = min(v.index + 1, n - 1)
-			if inp.left  do v.index = max(v.index - 1, 0)
-			if inp.down && v.index + cols < n do v.index += cols
-			if inp.up   && v.index - cols >= 0 do v.index -= cols
+			cols := grid_cols(n)
+			if inp.left {
+				rs := (v.index / cols) * cols
+				re := min(rs + cols, n) - 1
+				v.index = v.index == rs ? re : v.index - 1 // wrap to row end
+			}
+			if inp.right {
+				rs := (v.index / cols) * cols
+				re := min(rs + cols, n) - 1
+				v.index = v.index == re ? rs : v.index + 1 // wrap to row start
+			}
+			if inp.up {
+				c := v.index % cols
+				cand := v.index - cols
+				if cand < 0 {
+					last := c // wrap to bottom-most item in this column
+					for last + cols < n do last += cols
+					v.index = last
+				} else {
+					v.index = cand
+				}
+			}
+			if inp.down {
+				c := v.index % cols
+				cand := v.index + cols
+				v.index = cand >= n ? c : cand // wrap to top of column
+			}
 		}
 		if inp.cancel  do menu_cancel(app)
 		if inp.confirm do menu_select(app)

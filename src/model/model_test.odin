@@ -3129,3 +3129,42 @@ test_body_calls_category_has_builtin :: proc(t: ^testing.T) {
 	testing.expect(t, slice.contains(labels[:], "append"), "Built-in should contain 'append'")
 	testing.expect(t, slice.contains(labels[:], "make"), "Built-in should contain 'make'")
 }
+
+// ---- Square layout + wrap navigation ----
+
+@(test)
+test_grid_cols_prefers_square :: proc(t: ^testing.T) {
+	testing.expect_value(t, grid_cols(1), 1)
+	testing.expect_value(t, grid_cols(4), 2)   // 2x2
+	testing.expect_value(t, grid_cols(6), 3)   // 3 wide, 2 tall
+	testing.expect_value(t, grid_cols(9), 3)   // 3x3
+	testing.expect_value(t, grid_cols(16), 4)  // 4x4
+	testing.expect_value(t, grid_cols(64), 8)  // capped
+	testing.expect_value(t, grid_cols(100), 8) // capped at GRID_COLS
+}
+
+@(test)
+test_menu_wrap_navigation :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Radial
+	// 6 entries -> grid_cols(6)==3 -> rows: [0,1,2] / [3,4,5]
+	raw := make_slice(
+		leaf("a", "x"), leaf("b", "x"), leaf("c", "x"),
+		leaf("d", "x"), leaf("e", "x"), leaf("f", "x"),
+	)
+	defer delete(raw)
+	push_menu(&app, "t", raw)
+
+	current_view(&app).index = 0
+	update(&app, Input{left = true}) // left edge wraps to row end (2)
+	testing.expect_value(t, current_view(&app).index, 2)
+	update(&app, Input{right = true}) // right edge wraps to row start (0)
+	testing.expect_value(t, current_view(&app).index, 0)
+	update(&app, Input{down = true}) // down -> 3
+	testing.expect_value(t, current_view(&app).index, 3)
+	update(&app, Input{down = true}) // bottom wraps to top of column (0)
+	testing.expect_value(t, current_view(&app).index, 0)
+	update(&app, Input{up = true}) // up wraps to bottom-most in column (3)
+	testing.expect_value(t, current_view(&app).index, 3)
+}

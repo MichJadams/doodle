@@ -442,17 +442,19 @@ draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
 
 	n := len(v.entries)
 	if n == 0 do return
-	cols := model.GRID_COLS
-	if n < cols do cols = n
-	if cols < 1 do cols = 1
+	cols := model.grid_cols(n) // square-ish, capped at GRID_COLS
 	rows := (n + cols - 1) / cols
 
 	margin := f32(40)
-	gap := f32(10)
-	cellw := (fw - 2 * margin - f32(cols - 1) * gap) / f32(cols)
-	cellh := f32(42)
+	gap := f32(12)
+	// Cells are compact (fixed max) for small menus, shrinking only when needed
+	// to fit many columns; the grid is centered.
+	fit_w := (fw - 2 * margin - f32(cols - 1) * gap) / f32(cols)
+	cellw := min(f32(220), fit_w)
+	cellh := f32(44)
 	vgap := f32(8)
-	start_x := margin
+	grid_w := f32(cols) * cellw + f32(cols - 1) * gap
+	start_x := (fw - grid_w) * 0.5
 	start_y := fh * 0.14
 	bottom := f32(h) - 185 // leave room for the HUD + hint
 
