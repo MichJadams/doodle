@@ -106,6 +106,7 @@ main :: proc() {
 	
 	// Expose STT engine to file-nav for search speech input.
 	g_stt_e = stt_e
+	g_app = &m // for file-nav to load an opened file into the editor
 
 	raw: Raw
 	events: [dynamic]platform.Event

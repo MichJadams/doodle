@@ -26,6 +26,7 @@ g_current_file: string  // Path to currently open file (for saving / display).
 g_prev_file:    string  // Previously opened file (for alt-tab).
 
 g_stt_e: ^stt.Engine = nil // STT engine from main (for search speech input).
+g_app:   ^model.App = nil  // the editor doc (for loading an opened file into it).
 
 // Directory entry for display.
 Fn_Entry :: struct {
@@ -276,6 +277,8 @@ filenav_open_file :: proc(path: string) {
 		delete(g_current_file)
 	}
 	g_current_file = strings.clone(path)
+	// Load the opened file's content into the editor document.
+	if g_app != nil do model.load_file(g_app, path)
 }
 
 // filenav_alt_tab swaps to the previously opened file and exits file-nav.
