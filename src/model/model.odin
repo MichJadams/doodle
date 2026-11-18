@@ -103,14 +103,15 @@ Input :: struct {
 
 ensure_menus :: proc(app: ^App) {
 	if app.add_menu != nil do return
-	core := build_core_tree()
-	import_src := make_slice(grp("core", core))
+	// NOTE: build a SEPARATE core tree per branch. Sharing one slice would make
+	// free_entries() free the same subtree twice (double free).
+	import_src := make_slice(grp("core", build_core_tree()))
 	file_setup := make_slice(
 		kw_leaf("Package declaration", "package", "main"),
 		leaf("File tags", "#+build linux"),
 		leaf("Comments", "// comment"),
 	)
-	aliased_import_src := make_slice(grp("core", core))
+	aliased_import_src := make_slice(grp("core", build_core_tree()))
 	dependencies := make_slice(
 		grp("Import", import_src),
 		Entry{label = "Aliased import", alias = true, children = aliased_import_src},
