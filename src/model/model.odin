@@ -14,6 +14,8 @@ State :: enum { Menu, Editor, Radial }
 GRID_COLS        :: 8
 BUCKET_THRESHOLD :: 12
 BUCKET_TARGET    :: 9
+PAGE             :: 12  // Max items per menu level before grouping
+MIN_PREFIX_SHARE :: 3   // Min procs sharing a prefix to form a group
 
 MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder"}
 
@@ -652,6 +654,51 @@ procs_for_path :: proc(path: string) -> []string {
 	return result[:]
 }
 
+// Get full procedure info for a given import path.
+// Returns all CoreProc entries whose .path == path. Caller owns the returned slice
+// (delete it); the CoreProc field strings reference static CORE_PROCS data (do not free).
+procs_info_for_path :: proc(path: string) -> []CoreProc {
+	result: [dynamic]CoreProc
+	for entry in CORE_PROCS {
+		if entry.path == path do append(&result, entry)
+	}
+	return result[:]
+}
+
+// Collect procedures from a package that are already called in the document.
+// Returns a list of procedure names (caller owns slice).
+collect_called_procs :: proc(app: ^App, ref: string) -> []string {
+	result: [dynamic]string
+	// Scan document for calls like ref.proc_name(
+	for n in app.doc.nodes {
+		txt := node_text(n, context.temp_allocator)
+		// Look for ref.name( pattern
+		prefix := strings.concatenate({ref, "."}, context.temp_allocator)
+		if strings.contains(txt, prefix) {
+			// Extract procedure name
+			idx := strings.index(txt, prefix)
+			if idx >= 0 {
+				start := idx + len(prefix)
+				// Find the opening paren
+				paren_idx := strings.index(txt[start:], "(")
+				if paren_idx >= 0 {
+					proc_name := txt[start:start+paren_idx]
+					// Check if already added
+					already := false
+					for existing in result {
+						if existing == proc_name {
+							already = true
+							break
+						}
+					}
+					if !already && len(proc_name) > 0 do append(&result, strings.clone(proc_name))
+				}
+			}
+		}
+	}
+	return result[:]
+}
+
 // Create a fill leaf entry.
 fill_leaf :: proc(label, fill_type: string) -> Entry {
 	return Entry{label = label, fill = fill_type}
@@ -1247,6 +1294,382 @@ make_scope_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	}
 }
 
+// Build hierarchical menu for procedures from an imported package.
+// Returns children entries (caller doesn't own the returned slice but owns Entry internals).
+build_import_proc_menu :: proc(app: ^App, ref: string, path: string) -> []Entry {
+	all_procs := procs_info_for_path(path)
+	defer delete(all_procs)
+	
+	if len(all_procs) == 0 do return nil
+	
+	// Rule 1: Used procedures first
+	used := collect_called_procs(app, ref)
+	defer {
+		for u in used do delete(u)
+		delete(used)
+	}
+	
+	// Build used leaves and track which procs to exclude from grouped sections
+	used_set: map[string]bool
+	defer delete(used_set)
+	used_entries: [dynamic]Entry
+	defer delete(used_entries)
+	
+	for u in used {
+		used_set[u] = true
+		append(&used_entries, Entry{
+			label = strings.clone(u),
+			fill = "__call_import_proc__",
+			call_pkg = strings.clone(ref),
+			call_name = strings.clone(u),
+			owned_label = true,
+		})
+	}
+	
+	// Filter out used procs from grouping
+	grouped_procs: [dynamic]CoreProc
+	defer delete(grouped_procs)
+	for p in all_procs {
+		if p.name not_in used_set do append(&grouped_procs, p)
+	}
+	
+	// Build grouped hierarchy
+	grouped_children := build_proc_hierarchy(ref, grouped_procs[:])
+	defer delete(grouped_children) // Just delete the slice; Entry internals are copied to result
+	
+	// Combine: used first, then grouped
+	result: [dynamic]Entry
+	defer delete(result)
+	for u in used_entries do append(&result, u)
+	for g in grouped_children do append(&result, g)
+	
+	// Return a proper slice that the caller will own
+	if len(result) == 0 do return nil
+	final := make([]Entry, len(result))
+	copy(final, result[:])
+	return final
+}
+
+// Build hierarchical grouping for a list of procedures.
+// Applies rules 2-6: file grouping, block grouping, prefix splitting, alpha buckets, flat list.
+build_proc_hierarchy :: proc(ref: string, procs: []CoreProc) -> []Entry {
+	if len(procs) == 0 do return nil
+	if len(procs) <= PAGE {
+		// Rule 6: Small enough, return flat sorted leaves
+		return build_flat_leaves(ref, procs)
+	}
+	
+	// Rule 2: Group by source file
+	file_groups := group_by_file(procs)
+	defer {
+		for _, v in file_groups do delete(v)
+		delete(file_groups)
+	}
+	
+	if len(file_groups) > 1 {
+		// Multiple files: create file submenus
+		file_entries: [dynamic]Entry
+		defer delete(file_entries)
+		for file, file_procs in file_groups {
+			file_children := build_file_children(ref, file_procs[:])
+			// file_children slice will be owned by the Entry's children field
+			// and freed when free_entries is called on the parent
+			append(&file_entries, Entry{
+				label = strings.clone(file),
+				owned_label = true,
+				children = file_children,
+			})
+		}
+		// Sort file groups alphabetically
+		slice.sort_by(file_entries[:], proc(a, b: Entry) -> bool {
+			return a.label < b.label
+		})
+		// Return a proper slice that the caller will own
+		final := make([]Entry, len(file_entries))
+		copy(final, file_entries[:])
+		return final
+	}
+	
+	// Single file: skip file level, go directly to block/prefix/bucket grouping
+	return build_file_children(ref, procs)
+}
+
+// Build children for a single file's procedures.
+// Applies rules 3-6: block grouping, prefix splitting, alpha buckets, flat list.
+build_file_children :: proc(ref: string, procs: []CoreProc) -> []Entry {
+	if len(procs) == 0 do return nil
+	if len(procs) <= PAGE do return build_flat_leaves(ref, procs)
+	
+	// Rule 3: Group by foreign block
+	block_groups := group_by_block(procs)
+	defer {
+		for _, v in block_groups do delete(v)
+		delete(block_groups)
+	}
+	
+	// Count non-empty blocks
+	non_empty_blocks := 0
+	for block, _ in block_groups {
+		if len(block) > 0 do non_empty_blocks += 1
+	}
+	
+	if non_empty_blocks > 1 {
+		// Multiple non-empty blocks: create block submenus
+		block_entries: [dynamic]Entry
+		defer delete(block_entries)
+		for block, block_procs in block_groups {
+			if len(block) == 0 do continue // Skip top-level for now
+			block_children := build_block_children(ref, block_procs[:])
+			append(&block_entries, Entry{
+				label = strings.clone(block),
+				owned_label = true,
+				children = block_children,
+			})
+		}
+		// Add top-level procs if any
+		if "" in block_groups {
+			top_level := block_groups[""]
+			if len(top_level) > 0 {
+				top_children := build_block_children(ref, top_level[:])
+				append(&block_entries, Entry{
+					label = strings.clone("(top-level)"),
+					owned_label = true,
+					children = top_children,
+				})
+			}
+		}
+		// Sort block groups alphabetically
+		slice.sort_by(block_entries[:], proc(a, b: Entry) -> bool {
+			return a.label < b.label
+		})
+		// Return a proper slice that the caller will own
+		final := make([]Entry, len(block_entries))
+		copy(final, block_entries[:])
+		return final
+	}
+	
+	// Single block (or all top-level): skip block level, go to prefix/bucket grouping
+	return build_block_children(ref, procs)
+}
+
+// Build children for a single block's procedures.
+// Applies rules 4-6: prefix splitting, alpha buckets, flat list.
+build_block_children :: proc(ref: string, procs: []CoreProc) -> []Entry {
+	if len(procs) == 0 do return nil
+	if len(procs) <= PAGE do return build_flat_leaves(ref, procs)
+	
+	// Rule 4: Split by name prefix
+	prefix_groups := find_prefix_groups(procs)
+	defer {
+		for _, v in prefix_groups do delete(v)
+		delete(prefix_groups)
+	}
+	
+	if len(prefix_groups) > 0 {
+		// We found useful prefix groups
+		prefix_entries: [dynamic]Entry
+		defer delete(prefix_entries)
+		
+		// Add prefix groups
+		for prefix, prefix_procs in prefix_groups {
+			prefix_children := build_flat_leaves(ref, prefix_procs[:])
+			if len(prefix_children) > PAGE {
+				// Prefix group still too large, apply alpha buckets
+				prefix_children = build_alpha_buckets(ref, prefix_procs[:])
+			}
+			label := strings.concatenate({prefix, "..."}, context.allocator)
+			append(&prefix_entries, Entry{
+				label = label,
+				owned_label = true,
+				children = prefix_children,
+			})
+		}
+		
+		// Sort prefix groups alphabetically
+		slice.sort_by(prefix_entries[:], proc(a, b: Entry) -> bool {
+			return a.label < b.label
+		})
+		
+		// Return a proper slice that the caller will own
+		final := make([]Entry, len(prefix_entries))
+		copy(final, prefix_entries[:])
+		return final
+	}
+	
+	// Rule 5: Alphabetical buckets (fallback)
+	return build_alpha_buckets(ref, procs)
+}
+
+// Build flat sorted leaf entries for procedures.
+build_flat_leaves :: proc(ref: string, procs: []CoreProc) -> []Entry {
+	if len(procs) == 0 do return nil
+	
+	// Sort by name
+	sorted := make([dynamic]CoreProc, len(procs))
+	defer delete(sorted)
+	copy(sorted[:], procs)
+	slice.sort_by(sorted[:], proc(a, b: CoreProc) -> bool {
+		return a.name < b.name
+	})
+	
+	// Build leaves
+	result: [dynamic]Entry
+	defer delete(result)
+	for p in sorted {
+		append(&result, Entry{
+			label = strings.clone(p.name),
+			fill = "__call_import_proc__",
+			call_pkg = strings.clone(ref),
+			call_name = strings.clone(p.name),
+			owned_label = true,
+		})
+	}
+	// Return a proper slice that the caller will own
+	final := make([]Entry, len(result))
+	copy(final, result[:])
+	return final
+}
+
+// Build alphabetical bucket submenus for a large list of procedures.
+build_alpha_buckets :: proc(ref: string, procs: []CoreProc) -> []Entry {
+	if len(procs) <= PAGE do return build_flat_leaves(ref, procs)
+	
+	// Sort by name
+	sorted := make([dynamic]CoreProc, len(procs))
+	defer delete(sorted)
+	copy(sorted[:], procs)
+	slice.sort_by(sorted[:], proc(a, b: CoreProc) -> bool {
+		return a.name < b.name
+	})
+	
+	// Split into buckets of ~PAGE items
+	buckets: [dynamic]Entry
+	defer delete(buckets)
+	for i := 0; i < len(sorted); i += PAGE {
+		end := min(i + PAGE, len(sorted))
+		bucket_procs := sorted[i:end]
+		
+		// Create label from first to last
+		first_letter := strings.to_lower(bucket_procs[0].name[0:1], context.temp_allocator)
+		last_letter := strings.to_lower(bucket_procs[len(bucket_procs)-1].name[0:1], context.temp_allocator)
+		label: string
+		if first_letter == last_letter {
+			label = strings.clone(first_letter)
+		} else {
+			label = strings.concatenate({first_letter, "-", last_letter}, context.allocator)
+		}
+		
+		bucket_children := build_flat_leaves(ref, bucket_procs)
+		append(&buckets, Entry{
+			label = label,
+			owned_label = true,
+			children = bucket_children,
+		})
+	}
+	
+	// Return a proper slice that the caller will own
+	final := make([]Entry, len(buckets))
+	copy(final, buckets[:])
+	return final
+}
+
+// Group procedures by source file.
+group_by_file :: proc(procs: []CoreProc) -> map[string][dynamic]CoreProc {
+	result: map[string][dynamic]CoreProc
+	for p in procs {
+		if p.file not_in result {
+			result[p.file] = make([dynamic]CoreProc)
+		}
+		append(&result[p.file], p)
+	}
+	return result
+}
+
+// Group procedures by foreign block.
+group_by_block :: proc(procs: []CoreProc) -> map[string][dynamic]CoreProc {
+	result: map[string][dynamic]CoreProc
+	for p in procs {
+		if p.block not_in result {
+			result[p.block] = make([dynamic]CoreProc)
+		}
+		append(&result[p.block], p)
+	}
+	return result
+}
+
+// Find common prefix groups in procedure names (rule 4).
+// Returns map of prefix -> procs sharing that prefix.
+// Only includes prefixes shared by >= MIN_PREFIX_SHARE procedures.
+// Excludes procedures that don't belong to any qualifying prefix group.
+find_prefix_groups :: proc(procs: []CoreProc) -> map[string][dynamic]CoreProc {
+	if len(procs) <= PAGE do return nil
+	
+	// Count prefix occurrences
+	prefix_counts: map[string]int
+	defer delete(prefix_counts)
+	proc_prefixes: map[string]string // proc name -> its prefix
+	defer delete(proc_prefixes)
+	
+	for p in procs {
+		prefix := extract_prefix(p.name)
+		if len(prefix) > 0 {
+			proc_prefixes[p.name] = prefix
+			if prefix not_in prefix_counts {
+				prefix_counts[prefix] = 0
+			}
+			prefix_counts[prefix] += 1
+		}
+	}
+	
+	// Keep only prefixes with >= MIN_PREFIX_SHARE occurrences
+	qualifying_prefixes: map[string]bool
+	defer delete(qualifying_prefixes)
+	for prefix, count in prefix_counts {
+		if count >= MIN_PREFIX_SHARE {
+			qualifying_prefixes[prefix] = true
+		}
+	}
+	
+	if len(qualifying_prefixes) == 0 do return nil
+	
+	// Group procedures by their qualifying prefix
+	result: map[string][dynamic]CoreProc
+	for p in procs {
+		if prefix, ok := proc_prefixes[p.name]; ok && prefix in qualifying_prefixes {
+			if prefix not_in result {
+				result[prefix] = make([dynamic]CoreProc)
+			}
+			append(&result[prefix], p)
+		}
+		// Procs without qualifying prefixes are excluded (handled by fallback)
+	}
+	
+	return result
+}
+
+// Extract a prefix from a procedure name.
+// For PascalCase: first word (up to next capital or end).
+// For snake_case: up to first underscore (inclusive).
+extract_prefix :: proc(name: string) -> string {
+	if len(name) == 0 do return ""
+	
+	// Check for snake_case
+	if strings.contains(name, "_") {
+		idx := strings.index(name, "_")
+		if idx > 0 do return name[0:idx+1] // Include the underscore
+	}
+	
+	// PascalCase: find first capital letter after position 0
+	for i := 1; i < len(name); i += 1 {
+		if name[i] >= 'A' && name[i] <= 'Z' {
+			return name[0:i]
+		}
+	}
+	
+	// No clear prefix found
+	return ""
+}
+
 // Open the slot filling menu.
 open_slot_menu :: proc(app: ^App) {
 	ni, fi, ok := editor_target(app)
@@ -1317,38 +1740,22 @@ open_slot_menu :: proc(app: ^App) {
 			append(&import_calls, grp_dim("(no imports yet)"))
 		} else {
 			for imp in imports {
-				// Build procedure leaves for this import
-				procs := procs_for_path(imp.path)
-				defer delete(procs)
-				pkg_children: [dynamic]Entry
-				defer delete(pkg_children)
+				// Build hierarchical procedure menu for this import
+				pkg_children := build_import_proc_menu(app, imp.ref, imp.path)
 				
-				if len(procs) == 0 {
+				if len(pkg_children) == 0 {
 					// No procedures in table (e.g., non-core import), provide fallback
-					append(&pkg_children, Entry{
+					pkg_children = make_slice(Entry{
 						label = "Other (name it yourself)",
 						fill = "__call_import__",
 						call_pkg = strings.clone(imp.ref),
 					})
-				} else {
-					// Add procedure leaves
-					for proc_name in procs {
-						append(&pkg_children, Entry{
-							label = strings.clone(proc_name),
-							fill = "__call_import_proc__",
-							call_pkg = strings.clone(imp.ref),
-							call_name = strings.clone(proc_name),
-							owned_label = true,
-						})
-					}
 				}
 				
 				// Make this package a group with procedure children
-				pkg_entry_children := make([]Entry, len(pkg_children))
-				copy(pkg_entry_children, pkg_children[:])
 				append(&import_calls, Entry{
 					label = imp.ref,
-					children = pkg_entry_children,
+					children = pkg_children,
 				})
 			}
 		}

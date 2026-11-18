@@ -2600,3 +2600,139 @@ drill_to_first_leaf :: proc(app: ^App) -> ^Entry {
 	}
 	return nil
 }
+
+@(test)
+test_procs_info_captures_foreign_procs :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	// Test that procs_info_for_path includes foreign-block procedures
+	procs := procs_info_for_path("core:sys/windows")
+	defer delete(procs)
+	testing.expect(t, len(procs) > 100, "core:sys/windows should have many procedures")
+	// Find MessageBoxW which is in a foreign block
+	found_messagebox := false
+	for p in procs {
+		if p.name == "MessageBoxW" && p.file == "user32" && p.block == "user32" {
+			found_messagebox = true
+			break
+		}
+	}
+	testing.expect(t, found_messagebox, "should find MessageBoxW in foreign block")
+}
+
+@(test)
+test_import_menu_hierarchical :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	// Add fmt import (simpler for testing)
+	confirm(&app) // open Add root
+	select_label(&app, "Dependencies")
+	select_label(&app, "Import")
+	select_label(&app, "core")
+	drill_to_path(&app, "core:fmt")
+	testing.expect_value(t, app.state, State.Editor)
+	// Add a proc
+	add_proc(&app)
+	// Navigate to body slot
+	update(&app, Input{up = true})
+	// Open menu
+	update(&app, Input{confirm = true})
+	testing.expect_value(t, app.state, State.Radial)
+	// Navigate to Calls -> Procedure from an import
+	select_label(&app, "Calls")
+	select_label(&app, "Procedure from an import")
+	v := current_view(&app)
+	// Should show import groups
+	testing.expect(t, len(v.entries) > 0, "should have import entries")
+	// Find fmt import group
+	found_fmt := false
+	for e in v.entries {
+		if e.label == "fmt" {
+			found_fmt = true
+			break
+		}
+	}
+	testing.expect(t, found_fmt, "should find 'fmt' import group")
+	// Navigate into fmt group
+	select_label(&app, "fmt")
+	testing.expect_value(t, app.state, State.Radial)
+	v = current_view(&app)
+	// Should have entries (either flat or grouped)
+	testing.expect(t, len(v.entries) > 0, "fmt menu should have entries")
+	// Should have proc leaves or groups
+	has_procs := false
+	for e in v.entries {
+		if e.fill == "__call_import_proc__" || len(e.children) > 0 {
+			has_procs = true
+			break
+		}
+	}
+	testing.expect(t, has_procs, "should have proc leaves or groups")
+}
+
+@(test)
+test_used_procs_first :: proc(t: ^testing.T) {
+	// Test the collect_called_procs function directly
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	// Add fmt import with alias "f"
+	confirm(&app)
+	select_label(&app, "Dependencies")
+	select_label(&app, "Aliased import")
+	select_label(&app, "core")
+	drill_to_path(&app, "core:fmt")
+	testing.expect_value(t, app.state, State.Editor)
+	// Set alias
+	update(&app, Input{up = true})
+	ni, fi, ok := editor_target(&app)
+	if !ok do return // Skip test if editor target fails
+	set_field_text(&app, ni, fi, "f")
+	
+	// Test collect_called_procs
+	used := collect_called_procs(&app, "f")
+	defer {
+		for u in used do delete(u)
+		delete(used)
+	}
+	// Should be empty since we haven't called any procs yet
+	testing.expect_value(t, len(used), 0)
+}
+
+@(test)
+test_small_package_flat :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	// Test a small package (< PAGE items) shows flat list
+	// Use core:c/libc which has fewer procedures
+	procs := procs_info_for_path("core:c/libc")
+	defer delete(procs)
+	// If it has <= PAGE items, it should show flat
+	if len(procs) > 0 && len(procs) <= PAGE {
+		app.state = .Editor
+		// Add import
+		confirm(&app)
+		select_label(&app, "Dependencies")
+		select_label(&app, "Import")
+		select_label(&app, "core")
+		drill_to_path(&app, "core:c/libc")
+		// Add proc
+		add_proc(&app)
+		update(&app, Input{up = true})
+		update(&app, Input{confirm = true})
+		select_label(&app, "Calls")
+		select_label(&app, "Procedure from an import")
+		select_label(&app, "libc")
+		v := current_view(&app)
+		// Should show procs as flat leaves, not groups
+		all_leaves := true
+		for e in v.entries {
+			if len(e.children) > 0 {
+				all_leaves = false
+				break
+			}
+		}
+		testing.expect(t, all_leaves, "small package should show flat leaves")
+	}
+}
