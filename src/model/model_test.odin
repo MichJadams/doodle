@@ -1639,3 +1639,75 @@ test_name_generator_uniqueness :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, len(names) >= 10, "should have at least 10 unique proc names")
 }
+
+// ---- Statement-level selection and deletion tests ----
+
+@(test)
+test_construct_range_procedure :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// A procedure is 3 nodes: header, body, closing brace
+	testing.expect_value(t, len(app.doc.nodes), 3)
+	// construct_range on the first node (header) should return (0, 2)
+	start, end := construct_range(&app, 0)
+	testing.expect_value(t, start, 0)
+	testing.expect_value(t, end, 2)
+}
+
+@(test)
+test_construct_range_single_node :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_package(&app)
+	// package main is a single node
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	// construct_range should return (0, 0)
+	start, end := construct_range(&app, 0)
+	testing.expect_value(t, start, 0)
+	testing.expect_value(t, end, 0)
+}
+
+@(test)
+test_delete_construct_removes_nodes :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	add_proc(&app)
+	// 3 nodes total
+	testing.expect_value(t, len(app.doc.nodes), 3)
+	// Delete the procedure
+	delete_construct(&app, 0, 2)
+	// Should have no nodes left
+	testing.expect_value(t, len(app.doc.nodes), 0)
+}
+
+@(test)
+test_statement_menu_delete_flow :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	// Insert package and procedure
+	add_package(&app)
+	add_proc(&app)
+	testing.expect_value(t, len(app.doc.nodes), 4) // 1 package + 3 proc nodes
+	// Focus the procedure header (line 1)
+	app.editor_line = 1
+	app.editor_field = 0
+	// Open statement menu
+	open_statement_menu(&app)
+	testing.expect_value(t, app.state, State.Radial)
+	// Verify the construct range was recorded
+	testing.expect_value(t, app.sel_start, 1)
+	testing.expect_value(t, app.sel_end, 3)
+	// Select the "Delete" entry
+	select_label(&app, "Delete")
+	// Should be back in editor
+	testing.expect_value(t, app.state, State.Editor)
+	// Procedure should be gone, only package remains
+	testing.expect_value(t, len(app.doc.nodes), 1)
+	txt := node_text(app.doc.nodes[0], context.temp_allocator)
+	testing.expect_value(t, txt, "package main")
+}

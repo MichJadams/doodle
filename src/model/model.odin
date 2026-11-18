@@ -90,6 +90,10 @@ App :: struct {
 	slot_ni:   int,     // node index of slot being filled
 	slot_fi:   int,     // field index of slot being filled
 
+	action_menu: []Entry, // statement action menu (built on-demand)
+	sel_start:   int,     // construct range start for action menu
+	sel_end:     int,     // construct range end for action menu
+
 	name_counter: int, // deterministic name generation counter
 }
 
@@ -172,6 +176,7 @@ free_menus :: proc(app: ^App) {
 	if app.add_menu != nil { free_entries(app.add_menu); app.add_menu = nil }
 	if app.ide_menu != nil { free_entries(app.ide_menu); app.ide_menu = nil }
 	if app.slot_menu != nil { free_entries(app.slot_menu); app.slot_menu = nil }
+	if app.action_menu != nil { free_entries(app.action_menu); app.action_menu = nil }
 }
 
 // ---- Build the core tree from the generated flat rows ----
@@ -752,6 +757,76 @@ set_field_text :: proc(app: ^App, ni, fi: int, text: string) {
 	app.doc.nodes[ni].fields[fi].text = strings.clone(text)
 }
 
+// ---- Statement-level selection and deletion ----
+
+// Given a node index, return the inclusive range of nodes forming that statement/construct.
+// Uses brace matching: a plain line (like `package main`) returns (ni, ni); a construct
+// that opens a block (like a procedure header) returns (ni, j) where j is the matching close.
+construct_range :: proc(app: ^App, ni: int) -> (start: int, end: int) {
+	if ni < 0 || ni >= len(app.doc.nodes) do return ni, ni
+	// Compute brace balance (open_delta) for node ni.
+	text := node_text(app.doc.nodes[ni], context.temp_allocator)
+	open_delta := 0
+	for r in text {
+		if r == '{' do open_delta += 1
+		if r == '}' do open_delta -= 1
+	}
+	// If open_delta <= 0, it's a plain line or closing line -> single node.
+	if open_delta <= 0 do return ni, ni
+	// Node ni opens a block: walk forward accumulating brace balance.
+	balance := open_delta
+	for j := ni + 1; j < len(app.doc.nodes); j += 1 {
+		text_j := node_text(app.doc.nodes[j], context.temp_allocator)
+		for r in text_j {
+			if r == '{' do balance += 1
+			if r == '}' do balance -= 1
+		}
+		if balance == 0 do return ni, j
+	}
+	// Never closed: return to end of document.
+	return ni, len(app.doc.nodes) - 1
+}
+
+// Delete nodes [start..end] inclusive, freeing memory.
+delete_construct :: proc(app: ^App, start, end_param: int) {
+	if start < 0 || start >= len(app.doc.nodes) do return
+	end := end_param
+	if end < start do return
+	if end >= len(app.doc.nodes) do end = len(app.doc.nodes) - 1
+	// Free all fields and nodes in the range.
+	for i := start; i <= end; i += 1 {
+		for f in app.doc.nodes[i].fields {
+			if len(f.text) > 0 do delete(f.text)
+		}
+		delete(app.doc.nodes[i].fields)
+	}
+	// Remove the nodes from the slice.
+	remove_range(&app.doc.nodes, start, end + 1)
+	// Clamp editor position.
+	app.editor_line = min(app.editor_line, len(app.doc.nodes))
+	app.editor_field = 0
+	clamp_field(app)
+}
+
+// Open the statement action menu (LT+X in the editor).
+open_statement_menu :: proc(app: ^App) {
+	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return
+	// Record the construct range.
+	app.sel_start, app.sel_end = construct_range(app, app.editor_line)
+	// Free any previous action menu.
+	if app.action_menu != nil {
+		free_entries(app.action_menu)
+		app.action_menu = nil
+	}
+	// Build the action menu with a single "Delete" entry.
+	app.action_menu = make_slice(Entry{label = "Delete", fill = "__delete__"})
+	// Open the menu.
+	clear_nav(app)
+	app.return_state = .Editor
+	app.state = .Radial
+	push_menu(app, "Statement Actions", app.action_menu)
+}
+
 // Common words to bias dictation toward (keywords + frequent identifiers).
 COMMON_WORDS := [?]string{
 	"main", "package", "proc", "struct", "enum", "union", "import", "return",
@@ -784,6 +859,11 @@ doc_reset :: proc(app: ^App) {
 	if app.slot_menu != nil {
 		free_entries(app.slot_menu)
 		app.slot_menu = nil
+	}
+	// Free action menu if allocated
+	if app.action_menu != nil {
+		free_entries(app.action_menu)
+		app.action_menu = nil
 	}
 }
 
@@ -957,6 +1037,17 @@ menu_select :: proc(app: ^App) {
 			make_slot_param(app, app.slot_ni, app.slot_fi)
 		} else if e.fill == "__stmt_decl__" || e.fill == "__stmt_typed__" || e.fill == "__stmt_assign__" || e.fill == "__stmt_call__" {
 			make_body_statement(app, app.slot_ni, app.slot_fi, e.fill)
+		} else if e.fill == "__delete__" {
+			// Handle delete action from statement menu
+			delete_construct(app, app.sel_start, app.sel_end)
+			clear_nav(app)
+			app.state = app.return_state
+			// Free the action menu
+			if app.action_menu != nil {
+				free_entries(app.action_menu)
+				app.action_menu = nil
+			}
+			return
 		} else {
 			set_slot_type(app, app.slot_ni, app.slot_fi, e.fill)
 		}
@@ -985,6 +1076,11 @@ menu_cancel :: proc(app: ^App) {
 		if app.slot_menu != nil {
 			free_entries(app.slot_menu)
 			app.slot_menu = nil
+		}
+		// Free action menu if we're canceling out of it
+		if app.action_menu != nil {
+			free_entries(app.action_menu)
+			app.action_menu = nil
 		}
 	}
 }

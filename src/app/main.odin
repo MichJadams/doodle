@@ -44,6 +44,7 @@ g_time: f64
 g_recording: bool
 g_heard:     string
 g_mic_ready: bool            // a field is highlighted + whisper available
+g_lt_held:   bool            // left trigger held (for statement highlight)
 g_stt_parts: [dynamic]string // dictated fragments joined by "_"
 g_stt_ni:    int             // target node/field captured at record start
 g_stt_fi:    int
@@ -58,6 +59,7 @@ Raw :: struct {
 
 	e_confirm, e_cancel:           bool,
 	e_up, e_down, e_left, e_right: bool,
+	e_x:                           bool,
 }
 
 FaceBtn :: enum { A, B, X, Y }
@@ -116,11 +118,16 @@ main :: proc() {
 
 		inp := build_input(&raw)
 		down_edge := inp.down
-		mic_hold := inp.lt_held && raw.x_held
+		mic_hold := inp.rt_held && raw.x_held
+		g_lt_held = inp.lt_held
 		// While recording, the d-pad/buttons drive dictation, not navigation.
 		if g_recording {
 			inp.confirm = false; inp.cancel = false
 			inp.up = false; inp.down = false; inp.left = false; inp.right = false
+		}
+		// LT+X opens statement action menu in editor.
+		if inp.lt_held && raw.e_x && m.state == .Editor && m.editor_line < len(m.doc.nodes) {
+			model.open_statement_menu(&m)
 		}
 		model.update(&m, inp)
 
@@ -212,6 +219,7 @@ reset_edges :: proc(raw: ^Raw) {
 	raw.e_down = false
 	raw.e_left = false
 	raw.e_right = false
+	raw.e_x = false
 }
 
 build_input :: proc(raw: ^Raw) -> model.Input {
@@ -239,6 +247,7 @@ handle_event :: proc(raw: ^Raw, e: platform.Event) {
 			case .Down:  raw.e_down = true
 			case .Left:  raw.e_left = true
 			case .Right: raw.e_right = true
+			case .X:     raw.e_x = true
 			}
 		}
 	case platform.Axis_Event:
@@ -254,7 +263,9 @@ handle_key :: proc(raw: ^Raw, sym: i32, pressed: bool) {
 	switch sym {
 	case 'q': raw.key_lt = pressed
 	case 'e': raw.key_rt = pressed
-	case 'x': raw.x_held = pressed
+	case 'x': 
+		raw.x_held = pressed
+		if pressed do raw.e_x = true
 	}
 	if !pressed do return
 	switch sym {
@@ -272,7 +283,8 @@ handle_key :: proc(raw: ^Raw, sym: i32, pressed: bool) {
 // Glyph drawn on a face button for the given bank + context. As we bind
 // actions, the on-pad symbol changes (e.g. A -> "+"). ASCII only (atlas 32..127).
 face_glyph :: proc(m: ^model.App, bank: int, face: FaceBtn) -> string {
-	if bank == 0 && face == .X do return "" // LT + X = talk: drawn as a mic icon, no letter
+	if bank == 0 && face == .X do return "[]" // LT + X = statement select/delete
+	if bank == 2 && face == .X do return "" // RT + X = talk: drawn as a mic icon, no letter
 	if bank == 1 { // middle bank = default (no trigger) context
 		switch face {
 		case .A: return "+" // select / confirm
@@ -326,6 +338,14 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	y0 := f32(96)
 	x0 := pad + 34
 	tni, tfi, has_target := model.editor_target(m)
+	
+	// Statement highlight when LT held in editor.
+	if g_lt_held && m.state == .Editor && m.editor_line >= 0 && m.editor_line < len(m.doc.nodes) {
+		start, end := model.construct_range(m, m.editor_line)
+		start_y := y0 + f32(start) * lh
+		end_y := y0 + f32(end) * lh + lh
+		gpu.draw_rect(r, {pad, start_y, f32(w) - pad * 2, end_y - start_y}, {0.22, 0.40, 0.70, 0.25})
+	}
 	for node, ni in m.doc.nodes {
 		x := x0
 		y := y0 + f32(ni) * lh
@@ -458,8 +478,8 @@ draw_bank :: proc(r: ^gpu.Renderer, m: ^model.App, bank: int, cx, cy, scale: f32
 	// Face buttons (Y top, A bottom, X left, B right)
 	d := 32.0 * scale
 	rad := 16.0 * scale
-	// Mic-ready glow on LT+X (left bank, X button).
-	if bank == 0 && g_mic_ready {
+	// Mic-ready glow on RT+X (right bank, X button).
+	if bank == 2 && g_mic_ready {
 		pulse := 0.5 + 0.5 * math.sin(f32(g_time) * 5.0)
 		gpu.draw_circle_outline(r, face_cx - d, cy, rad + 4 + 2 * pulse, 2.5, {0.30, 0.95, 0.50, 0.35 + 0.4 * pulse})
 	}
@@ -469,8 +489,8 @@ draw_bank :: proc(r: ^gpu.Renderer, m: ^model.App, bank: int, cx, cy, scale: f32
 	draw_face(r, g_ui, face_cx - d, cy, rad, {0.28, 0.52, 0.90, a}, face_glyph(m, bank, .X))
 	draw_face(r, g_ui, face_cx + d, cy, rad, {0.86, 0.30, 0.30, a}, face_glyph(m, bank, .B))
 
-	// The LT+X (left bank, X) button is the "talk" control: draw a mic icon on it.
-	if bank == 0 {
+	// The RT+X (right bank, X) button is the "talk" control: draw a mic icon on it.
+	if bank == 2 {
 		draw_mic_icon(r, face_cx - d, cy, rad * 0.82, {0.97, 0.98, 1.0, a})
 	}
 }
