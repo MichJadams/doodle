@@ -1,15 +1,19 @@
-# SteamOS / Steam Deck release build.
+# SteamOS / Steam Deck + Windows release build.
 #
 # Trigger manually:   gh workflow run release-steamos.yml -f version=0.1.0
-# (or Actions tab -> "Release (SteamOS)" -> Run workflow)
+# (or Actions tab -> "Release (SteamOS + Windows)" -> Run workflow)
+# Build only, no GitHub Release:   ... -f publish=false   (packages stay on the run)
 #
-# Builds inside Valve's Steam Linux Runtime 3.0 "sniper" SDK so the binary runs
-# on SteamOS, the Steam Linux runtime, and ordinary Linux desktops. Output is a
-# tarball (doodle/bin/doodle + bundled SDL2/SDL3 + whisper-cli, models/ggml-base.en.bin,
-# assets) attached to a GitHub
-# Release tagged v<version>.
+# SteamOS: builds inside Valve's Steam Linux Runtime 3.0 "sniper" SDK so the
+# binary runs on SteamOS, the Steam Linux runtime, and ordinary Linux desktops.
+# Output is a tarball (doodle/bin/doodle + bundled SDL2/SDL3 + whisper-cli,
+# models/ggml-base.en.bin, assets).
+# Windows: an x64 build on windows-latest. Output is a zip with the same layout
+# (doodle/bin/doodle.exe + SDL2.dll + whisper-cli.exe, models/, assets/).
+# Both are attached to a GitHub Release tagged v<version>, each also under a
+# fixed name (doodle-steamos.tar.gz, doodle-windows.zip) for .../releases/latest/download/.
 
-name: Release (SteamOS)
+name: Release (SteamOS + Windows)
 
 on:
   workflow_dispatch:
@@ -26,6 +30,10 @@ on:
         description: "Run the model unit tests before building"
         type: boolean
         default: true
+      publish:
+        description: "Publish a GitHub Release (off = build only; packages stay as run artifacts)"
+        type: boolean
+        default: true
 
 env:
   ODIN_TAG: dev-2026-11 # keep in step with the Odin you build with locally
@@ -34,17 +42,13 @@ env:
   WHISPER_MODEL_SHA256: a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002
 
 jobs:
-  build:
+  # One version for every package (worked out once, so the builds can't disagree).
+  version:
     runs-on: ubuntu-latest
-    container: registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest
-    defaults:
-      run:
-        shell: bash # the container's default `sh` is dash (no ${VAR::n})
     outputs:
+      version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Work out version
         id: ver
         run: |
@@ -52,6 +56,16 @@ jobs:
           if [ -z "$v" ]; then v="$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "tag=v$v"    >> "$GITHUB_OUTPUT"
+
+  build-steamos:
+    needs: version
+    runs-on: ubuntu-latest
+    container: registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest
+    defaults:
+      run:
+        shell: bash # the container's default `sh` is dash (no ${VAR::n})
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Install tools
         run: |
@@ -179,8 +193,8 @@ jobs:
 
       - name: Archive
         run: |
-          echo "${{ steps.ver.outputs.version }} (${GITHUB_SHA::7}, Odin ${ODIN_TAG}, whisper.cpp ${WHISPER_TAG} ${WHISPER_MODEL})" > dist/doodle/VERSION
-          tar -czf "doodle-steamos-${{ steps.ver.outputs.version }}.tar.gz" -C dist doodle
+          echo "${{ needs.version.outputs.version }} (${GITHUB_SHA::7}, Odin ${ODIN_TAG}, whisper.cpp ${WHISPER_TAG} ${WHISPER_MODEL})" > dist/doodle/VERSION
+          tar -czf "doodle-steamos-${{ needs.version.outputs.version }}.tar.gz" -C dist doodle
 
       - uses: actions/upload-artifact@v4
         with:
@@ -188,25 +202,173 @@ jobs:
           path: doodle-steamos-*.tar.gz
           if-no-files-found: error
 
+  # ---- Windows (x64) ----
+  build-windows:
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odin ${{ env.ODIN_TAG }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "$env:RUNNER_TEMP\odin.zip"
+          Invoke-WebRequest -Uri "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_TAG/odin-windows-amd64-$env:ODIN_TAG.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath C:\odin-dist
+          # The zip may or may not have a top-level folder: use wherever odin.exe is.
+          $odin = Get-ChildItem C:\odin-dist -Recurse -Filter odin.exe | Select-Object -First 1
+          if (-not $odin) { throw "odin.exe not found in the Odin zip" }
+          $odin.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $odin.FullName version
+
+      - name: Test
+        if: ${{ inputs.run_tests }}
+        run: |
+          odin test src/model
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          odin test src/stt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # ---- whisper.cpp (speech-to-text) ----
+      - name: Fetch whisper.cpp ${{ env.WHISPER_TAG }}
+        run: git clone -q --depth 1 --branch "$env:WHISPER_TAG" https://github.com/ggml-org/whisper.cpp.git "$env:RUNNER_TEMP\whisper.cpp"
+
+      - name: Cache whisper-cli
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: whisper-out/whisper-cli.exe
+          key: whisper-cli-${{ env.WHISPER_TAG }}-win64-avx2-static-v1
+
+      - name: Build whisper-cli
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Same portable x86-64 build as SteamOS: AVX2/FMA/F16C, no AVX-512, no
+          # OpenMP. Static ggml/whisper and a static MSVC runtime: one .exe, no
+          # VC++ redistributable needed.
+          $src = "$env:RUNNER_TEMP\whisper.cpp"
+          cmake -S $src -B "$src\build" -A x64 `
+            -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF `
+            -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON `
+            -DGGML_AVX512=OFF -DGGML_OPENMP=OFF `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build "$src\build" --config Release --target whisper-cli -j $env:NUMBER_OF_PROCESSORS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force whisper-out | Out-Null
+          Copy-Item "$src\build\bin\Release\whisper-cli.exe" whisper-out\
+
+      - name: Cache model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: whisper-out/ggml-${{ env.WHISPER_MODEL }}.bin
+          key: whisper-model-win-${{ env.WHISPER_MODEL }}-${{ env.WHISPER_MODEL_SHA256 }}
+
+      - name: Download model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          New-Item -ItemType Directory -Force whisper-out | Out-Null
+          Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$env:WHISPER_MODEL.bin" -OutFile "whisper-out\ggml-$env:WHISPER_MODEL.bin"
+
+      - name: Check whisper-cli
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hash = (Get-FileHash "whisper-out\ggml-$env:WHISPER_MODEL.bin" -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:WHISPER_MODEL_SHA256) { throw "model checksum mismatch: $hash" }
+          # Real transcription with the exact model we ship.
+          $out = & whisper-out\whisper-cli.exe -m "whisper-out\ggml-$env:WHISPER_MODEL.bin" `
+                   -f "$env:RUNNER_TEMP\whisper.cpp\samples\jfk.wav" -nt -np -t 4 2>$null
+          $out
+          if (-not ($out -match 'ask not what your country')) { throw "whisper-cli didn't transcribe the sample" }
+
+      - name: Build
+        run: |
+          New-Item -ItemType Directory -Force bin | Out-Null
+          odin build src/app -out:bin/doodle.exe -o:speed -no-bounds-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg = "dist\doodle"
+          New-Item -ItemType Directory -Force "$pkg\bin", "$pkg\models", "$pkg\licenses" | Out-Null
+          Copy-Item bin\doodle.exe "$pkg\bin\"
+          # SDL2.dll from the Odin install we built against (build.bat does the same).
+          $odinRoot = (odin root).Trim()
+          Copy-Item (Join-Path $odinRoot "vendor\sdl2\SDL2.dll") "$pkg\bin\"
+          Copy-Item -Recurse assets "$pkg\"
+          # Speech-to-text: whisper-cli beside doodle, model in models\.
+          Copy-Item whisper-out\whisper-cli.exe "$pkg\bin\"
+          Copy-Item "whisper-out\ggml-$env:WHISPER_MODEL.bin" "$pkg\models\"
+          Copy-Item "$env:RUNNER_TEMP\whisper.cpp\LICENSE" "$pkg\licenses\whisper.cpp-LICENSE"
+          Get-ChildItem -Recurse "$pkg\bin", "$pkg\models" | Format-Table Name, Length
+
+      - name: Check bundled DLLs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Every DLL doodle.exe / whisper-cli.exe import must be in the package or
+          # part of Windows itself; never the VC++ runtime (users may not have it).
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin not found" }
+          $bin = "dist\doodle\bin"
+          $bad = @()
+          foreach ($exe in "doodle.exe", "whisper-cli.exe") {
+            $deps = & $dumpbin /nologo /dependents "$bin\$exe" | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() }
+            "$exe imports: $($deps -join ', ')"
+            foreach ($d in $deps) {
+              if ($d -match '^(vcruntime|msvcp)') { $bad += "$exe -> $d (VC++ runtime)"; continue }
+              if (Test-Path "$bin\$d") { continue }
+              if ($d -match '^api-ms-win-') { continue } # Windows API sets (UCRT is part of Windows 10+)
+              if (Test-Path "$env:WINDIR\System32\$d") { continue }
+              $bad += "$exe -> $d (missing)"
+            }
+          }
+          if ($bad) { $bad; throw "unbundled DLL dependencies" }
+
+      - name: Archive
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = "${{ needs.version.outputs.version }}"
+          "$v ($($env:GITHUB_SHA.Substring(0, 7)), Odin $env:ODIN_TAG, whisper.cpp $env:WHISPER_TAG $env:WHISPER_MODEL, windows-x64)" | Out-File -Encoding utf8 dist\doodle\VERSION
+          Compress-Archive -Path dist\doodle -DestinationPath "doodle-windows-$v.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doodle-windows
+          path: doodle-windows-*.zip
+          if-no-files-found: error
+
   release:
-    needs: build
+    needs: [version, build-steamos, build-windows]
+    if: ${{ inputs.publish }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: doodle-steamos
+          pattern: doodle-*
+          merge-multiple: true
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.build.outputs.tag }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
+          set -eu
           flags=""
           if [ "${{ inputs.prerelease }}" = "true" ]; then flags="--prerelease"; fi
-          # Also attach a fixed-name copy so .../releases/latest/download/doodle-steamos.tar.gz works.
-          versioned="$(ls doodle-steamos-*.tar.gz)"
-          cp "$versioned" doodle-steamos.tar.gz
-          gh release create "$TAG" "$versioned" doodle-steamos.tar.gz \
+          # Also attach fixed-name copies so .../releases/latest/download/doodle-steamos.tar.gz
+          # and .../doodle-windows.zip always point at the newest release.
+          steamos="$(ls doodle-steamos-*.tar.gz)"
+          windows="$(ls doodle-windows-*.zip)"
+          cp "$steamos" doodle-steamos.tar.gz
+          cp "$windows" doodle-windows.zip
+          gh release create "$TAG" "$steamos" doodle-steamos.tar.gz "$windows" doodle-windows.zip \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Doodle $TAG (SteamOS)" --generate-notes $flags
+            --title "Doodle $TAG" --generate-notes $flags
