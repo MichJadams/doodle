@@ -1,6 +1,7 @@
 package stt
 
 import "core:testing"
+import "core:strings"
 
 @(test)
 test_snap_maine_to_main :: proc(t: ^testing.T) {
@@ -46,4 +47,26 @@ test_clean_free_collapses_whitespace :: proc(t: ^testing.T) {
 	got := clean_free("  multiple   spaces here  ")
 	defer delete(got)
 	testing.expect_value(t, got, "multiple spaces here")
+}
+
+@(test)
+test_whisper_command_quoting :: proc(t: ^testing.T) {
+	cfg := Config{
+		cli_path = "/home/deck/My Apps/doodle/bin/whisper-cli",
+		model_path = "/m/ggml-base.en.bin",
+		tmp_wav = "/tmp/a.wav",
+		tmp_txt = "/tmp/a.txt",
+		prompt = "player's $HOME",
+	}
+	cmd := whisper_command(cfg)
+	defer delete(cmd)
+	when ODIN_OS == .Windows {
+		testing.expect(t, strings.has_prefix(cmd, `"/home/deck/My Apps/doodle/bin/whisper-cli" -m "/m/ggml-base.en.bin"`))
+		testing.expect(t, strings.has_suffix(cmd, `> "/tmp/a.txt" 2> nul`))
+	} else {
+		testing.expect(t, strings.has_prefix(cmd, `'/home/deck/My Apps/doodle/bin/whisper-cli' -m '/m/ggml-base.en.bin'`))
+		testing.expect(t, strings.contains(cmd, `--prompt 'player'\''s $HOME'`))
+		testing.expect(t, strings.has_suffix(cmd, `> '/tmp/a.txt' 2> /dev/null`))
+	}
+	testing.expect(t, !strings.contains(cmd, "--grammar"))
 }

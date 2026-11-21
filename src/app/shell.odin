@@ -16,7 +16,12 @@ ODIN_EXE_NAME :: "odin.exe" when ODIN_OS == .Windows else "odin"
 // Order: $ODIN_DIR, $ODIN_ROOT, a toolchain bundled next to Doodle
 // (<exe>/toolchain/odin or <exe>/../toolchain/odin), then default installs.
 odin_dir :: proc() -> string {
-	exe_dir := heat_exe_dir()
+	@(static) exe_dir: string // heat_exe_dir allocates; look it up once
+	@(static) exe_dir_done: bool
+	if !exe_dir_done {
+		exe_dir = heat_exe_dir()
+		exe_dir_done = true
+	}
 	home := os.get_env("HOME", context.temp_allocator)
 	candidates := [?]string{
 		os.get_env("ODIN_DIR", context.temp_allocator),

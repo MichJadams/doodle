@@ -48,19 +48,54 @@ Engine :: struct {
 	recording: bool,
 }
 
-// Defaults assume the app runs from the repo root.
+CLI_NAME   :: "whisper-cli.exe" when ODIN_OS == .Windows else "whisper-cli"
+MODEL_NAME :: "ggml-base.en.bin"
+
+// default_config finds whisper-cli and the model. A release package keeps them
+// beside Doodle (bin/whisper-cli, models/ggml-base.en.bin next to bin/); a dev
+// checkout has them under third_party/whisper.cpp (tools/stt/setup_whisper.sh),
+// found from the working folder or from bin/ upward. Paths that don't exist
+// fall through to the last candidate so init() reports "not set up".
+// Strings are heap-allocated and live for the program.
 default_config :: proc() -> Config {
-	cli := "third_party/whisper.cpp/build/bin/whisper-cli.exe"
-	when ODIN_OS != .Windows {
-		cli = "third_party/whisper.cpp/build/bin/whisper-cli"
-	}
+	exe := exe_dir(context.temp_allocator)
+	cli := first_existing({
+		fmt.tprintf("%s/%s", exe, CLI_NAME),
+		fmt.tprintf("third_party/whisper.cpp/build/bin/%s", CLI_NAME),
+		fmt.tprintf("%s/../third_party/whisper.cpp/build/bin/%s", exe, CLI_NAME),
+	})
+	model := first_existing({
+		fmt.tprintf("%s/../models/%s", exe, MODEL_NAME),
+		fmt.tprintf("%s/models/%s", exe, MODEL_NAME),
+		fmt.tprintf("third_party/whisper.cpp/models/%s", MODEL_NAME),
+		fmt.tprintf("%s/../third_party/whisper.cpp/models/%s", exe, MODEL_NAME),
+	})
+	tmp, terr := os.temp_directory(context.temp_allocator)
+	if terr != nil || tmp == "" do tmp = "."
 	return Config {
-		cli_path     = cli,
-		model_path   = "third_party/whisper.cpp/models/ggml-base.en.bin",
+		cli_path     = strings.clone(cli),
+		model_path   = strings.clone(model),
 		grammar_path = "", // set to "assets/stt/number.gbnf" for numeric fields
-		tmp_wav      = "bin/_stt_capture.wav",
-		tmp_txt      = "bin/_stt_out.txt",
+		tmp_wav      = fmt.aprintf("%s/doodle_stt_capture.wav", tmp),
+		tmp_txt      = fmt.aprintf("%s/doodle_stt_out.txt", tmp),
 	}
+}
+
+// exe_dir: folder of the running executable ("." if unknown).
+@(private)
+exe_dir :: proc(allocator := context.allocator) -> string {
+	if p, err := os.get_executable_path(context.temp_allocator); err == nil && p != "" {
+		d, _ := os.split_path(p)
+		return strings.clone(d, allocator)
+	}
+	return strings.clone(".", allocator)
+}
+
+// first_existing returns the first path that exists, else the last one.
+@(private)
+first_existing :: proc(paths: []string) -> string {
+	for p in paths do if file_exists(p) do return p
+	return paths[len(paths) - 1]
 }
 
 @(private)
@@ -238,24 +273,8 @@ shutdown :: proc(e: ^Engine) {
 
 @(private)
 run_whisper :: proc(cfg: Config) {
-	redirect := " > \"%s\" 2> nul"
-	when ODIN_OS != .Windows {
-		redirect = " > \"%s\" 2> /dev/null"
-	}
-	b := strings.builder_make()
-	defer strings.builder_destroy(&b)
-	// greedy, deterministic, no timestamps/prints -> fastest for one word
-	fmt.sbprintf(&b, "\"%s\" -m \"%s\" -f \"%s\" -nt -np -l en -tp 0 -bo 1 -bs 1 -t 4",
-		cfg.cli_path, cfg.model_path, cfg.tmp_wav)
-	if cfg.grammar_path != "" {
-		fmt.sbprintf(&b, " --grammar \"%s\" --grammar-rule root --grammar-penalty 100", cfg.grammar_path)
-	}
-	if cfg.prompt != "" {
-		fmt.sbprintf(&b, " --prompt \"%s\"", cfg.prompt)
-	}
-	fmt.sbprintf(&b, redirect, cfg.tmp_txt)
-
-	inner := strings.to_string(b)
+	inner := whisper_command(cfg)
+	defer delete(inner)
 	// cmd.exe /c strips the outer quotes when the string starts with a quote,
 	// so wrap the whole command in an extra pair on Windows.
 	full: string
@@ -266,6 +285,34 @@ run_whisper :: proc(cfg: Config) {
 	}
 	cmd := strings.clone_to_cstring(full, context.temp_allocator)
 	libc.system(cmd)
+}
+
+// whisper_command builds the whisper-cli command line (stdout -> tmp_txt).
+// Windows: double quotes for cmd.exe; elsewhere: POSIX single quotes, so
+// paths with spaces and prompts with quotes/`$` reach whisper-cli intact.
+// Caller owns the string.
+whisper_command :: proc(cfg: Config) -> string {
+	b := strings.builder_make()
+	q :: proc(s: string) -> string {
+		when ODIN_OS == .Windows {
+			return fmt.tprintf("\"%s\"", s)
+		} else {
+			esc, _ := strings.replace_all(s, "'", `'\''`, context.temp_allocator)
+			return fmt.tprintf("'%s'", esc)
+		}
+	}
+	// greedy, deterministic, no timestamps/prints -> fastest for one word
+	fmt.sbprintf(&b, "%s -m %s -f %s -nt -np -l en -tp 0 -bo 1 -bs 1 -t 4",
+		q(cfg.cli_path), q(cfg.model_path), q(cfg.tmp_wav))
+	if cfg.grammar_path != "" {
+		fmt.sbprintf(&b, " --grammar %s --grammar-rule root --grammar-penalty 100", q(cfg.grammar_path))
+	}
+	if cfg.prompt != "" {
+		fmt.sbprintf(&b, " --prompt %s", q(cfg.prompt))
+	}
+	null := "nul" when ODIN_OS == .Windows else "/dev/null"
+	fmt.sbprintf(&b, " > %s 2> %s", q(cfg.tmp_txt), null)
+	return strings.to_string(b)
 }
 
 // Lowercase, map non-alphanumeric runs to single underscores -> snake_case.

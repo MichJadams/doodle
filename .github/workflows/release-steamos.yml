@@ -5,7 +5,8 @@
 #
 # Builds inside Valve's Steam Linux Runtime 3.0 "sniper" SDK so the binary runs
 # on SteamOS, the Steam Linux runtime, and ordinary Linux desktops. Output is a
-# tarball (doodle/bin/doodle + bundled libSDL2 + assets) attached to a GitHub
+# tarball (doodle/bin/doodle + bundled SDL2/SDL3 + whisper-cli, models/ggml-base.en.bin,
+# assets) attached to a GitHub
 # Release tagged v<version>.
 
 name: Release (SteamOS)
@@ -28,6 +29,9 @@ on:
 
 env:
   ODIN_TAG: dev-2026-11 # keep in step with the Odin you build with locally
+  WHISPER_TAG: v1.9.5   # whisper.cpp release for speech-to-text
+  WHISPER_MODEL: base.en
+  WHISPER_MODEL_SHA256: a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002
 
 jobs:
   build:
@@ -52,7 +56,7 @@ jobs:
       - name: Install tools
         run: |
           apt-get update -qq
-          apt-get install -y -qq patchelf curl make
+          apt-get install -y -qq patchelf curl make cmake git binutils
           # Odin links through `clang`; the SDK may only ship versioned names.
           if ! command -v clang >/dev/null; then
             ln -s "$(ls /usr/bin/clang-[0-9]* | sort -V | tail -1)" /usr/local/bin/clang
@@ -75,7 +79,59 @@ jobs:
 
       - name: Test
         if: ${{ inputs.run_tests }}
-        run: odin test src/model
+        run: |
+          odin test src/model
+          odin test src/stt
+
+      # ---- whisper.cpp (speech-to-text) ----
+      - name: Fetch whisper.cpp ${{ env.WHISPER_TAG }}
+        run: git clone -q --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp.git /tmp/whisper.cpp
+
+      - name: Cache whisper-cli
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: whisper-out/whisper-cli
+          key: whisper-cli-${{ env.WHISPER_TAG }}-sniper-avx2-static-v1
+
+      - name: Build whisper-cli
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        run: |
+          # Portable x86-64 build: NOT -march=native (the CI CPU may have AVX-512,
+          # the Deck's Zen 2 doesn't). AVX2/FMA/F16C cover the Deck and most PCs
+          # since ~2015. Static whisper/ggml + libstdc++, no OpenMP: one binary.
+          cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DCMAKE_BUILD_TYPE=Release             -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF             -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON             -DGGML_AVX512=OFF -DGGML_OPENMP=OFF             -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+          cmake --build /tmp/whisper.cpp/build --target whisper-cli -j "$(nproc)"
+          mkdir -p whisper-out
+          cp /tmp/whisper.cpp/build/bin/whisper-cli whisper-out/
+          strip whisper-out/whisper-cli
+
+      - name: Cache model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: whisper-out/ggml-${{ env.WHISPER_MODEL }}.bin
+          key: whisper-model-${{ env.WHISPER_MODEL }}-${{ env.WHISPER_MODEL_SHA256 }}
+
+      - name: Download model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p whisper-out
+          curl -fsSL -o "whisper-out/ggml-$WHISPER_MODEL.bin"             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$WHISPER_MODEL.bin"
+
+      - name: Check whisper-cli
+        run: |
+          set -eu
+          echo "$WHISPER_MODEL_SHA256  whisper-out/ggml-$WHISPER_MODEL.bin" | sha256sum -c -
+          ldd whisper-out/whisper-cli
+          # No AVX-512 (zmm registers) may sneak in, or it crashes on the Deck.
+          if objdump -d whisper-out/whisper-cli | grep -q '%zmm'; then
+            echo "whisper-cli uses AVX-512" >&2; exit 1
+          fi
+          # Real transcription with the exact model we ship.
+          out="$(whisper-out/whisper-cli -m "whisper-out/ggml-$WHISPER_MODEL.bin"                  -f /tmp/whisper.cpp/samples/jfk.wav -nt -np -t 4 2>/dev/null)"
+          echo "$out"
+          echo "$out" | grep -qi "ask not what your country"
 
       - name: Build
         run: |
@@ -102,8 +158,13 @@ jobs:
             cp -L "$sdl3" "$pkg/bin/libSDL3.so.0"
             patchelf --set-rpath '$ORIGIN' "$pkg/bin/libSDL2-2.0.so.0"
           fi
+          # Speech-to-text: whisper-cli beside doodle, model in models/.
+          cp whisper-out/whisper-cli "$pkg/bin/"
+          mkdir -p "$pkg/models" "$pkg/licenses"
+          cp "whisper-out/ggml-$WHISPER_MODEL.bin" "$pkg/models/"
+          cp /tmp/whisper.cpp/LICENSE "$pkg/licenses/whisper.cpp-LICENSE"
           readelf -d "$pkg/bin/doodle" | grep -E 'RUNPATH|NEEDED'
-          ls -l "$pkg/bin"
+          ls -l "$pkg/bin" "$pkg/models"
 
       - name: Check bundled libraries load
         run: |
@@ -118,7 +179,7 @@ jobs:
 
       - name: Archive
         run: |
-          echo "${{ steps.ver.outputs.version }} (${GITHUB_SHA::7}, Odin ${ODIN_TAG})" > dist/doodle/VERSION
+          echo "${{ steps.ver.outputs.version }} (${GITHUB_SHA::7}, Odin ${ODIN_TAG}, whisper.cpp ${WHISPER_TAG} ${WHISPER_MODEL})" > dist/doodle/VERSION
           tar -czf "doodle-steamos-${{ steps.ver.outputs.version }}.tar.gz" -C dist doodle
 
       - uses: actions/upload-artifact@v4
