@@ -227,6 +227,239 @@ test_integration_enum_members_real_tables :: proc(t: ^testing.T) {
 	testing.expect(t, found, "runtime.Allocator_Mode has Alloc")
 }
 
+// Enum value on a bit_set dot: sdl.Init's InitFlags (distinct bit_set[InitFlag;
+// Uint32]) lists InitFlag's members as one-member sets; {.VIDEO} fills the dot.
+// Also a plain `bit_set[...]` package type and one declared in the document.
+@(test)
+test_integration_enum_value_bit_set :: proc(t: ^testing.T) {
+	e, ep := bit_set_elem(nil, "Logger_Options", "base:runtime")
+	testing.expect(t, e == "Logger_Option" && ep == "base:runtime", "plain bit_set row keeps its element")
+
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	doc_from_source(&app, "package main\n\nimport sdl \"vendor:sdl3\"\n\nFlag :: enum {\n\tA,\n\tB,\n}\nFlags :: bit_set[Flag; u8]\n\nmain :: proc() {\n\tsdl.Init()\n}")
+	de, dep := bit_set_elem(&app, "Flags", "")
+	testing.expect(t, de == "Flag" && dep == "", "document bit_set")
+
+	ni := line_with(&app, "sdl.Init(")
+	if !testing.expect(t, ni >= 0, "Init line") do return
+	for f, i in app.doc.nodes[ni].fields do if f.slot && f.kind == "value" { focus_field_index(&app, ni, i); break }
+	update(&app, Input{confirm = true})
+	pick(t, &app, "Enum value")
+	v := current_view(&app)
+	if !testing.expect(t, v != nil, "Enum value submenu") do return
+	labels := make([dynamic]string, context.temp_allocator)
+	for en in v.entries do append(&labels, en.label)
+	testing.expectf(t, len(labels) > 0 && labels[0] == "{.AUDIO}", "InitFlag members as sets, got %v", labels[:])
+	pick(t, &app, "{.VIDEO}")
+	testing.expect_value(t, strings.trim_space(node_text(app.doc.nodes[ni], context.temp_allocator)), "sdl.Init({.VIDEO})")
+
+	// The saved source parses back to the same line.
+	text := strings.clone(src(&app), context.temp_allocator)
+	again: App
+	defer cleanup(&again)
+	again.state = .Editor
+	doc_from_source(&again, text)
+	testing.expect_value(t, src(&again), text)
+}
+
+// Reopening a saved `● | ●` argument: the empty operands come back as dots
+// typed like the argument (Enum value lists InitFlag), and the file round-trips.
+@(test)
+test_integration_reload_empty_operator_operands :: proc(t: ^testing.T) {
+	Case :: struct { src_line: string, dots: int }
+	cases := [?]Case{
+		{"sdl3.Init( | )", 2},
+		{"sdl3.Init({.VIDEO} | )", 1},
+		{"sdl3.Init( | {.VIDEO})", 1},
+		{"sdl3.Init(sdl3.INIT_VIDEO | )", 1},
+	}
+	for c in cases {
+		text := strings.concatenate({"package main\n\nimport \"vendor:sdl3\"\n\nmain :: proc() {\n\t", c.src_line, "\n}"}, context.temp_allocator) // doc_to_source: no final newline
+		app: App
+		app.state = .Editor
+		doc_from_source(&app, text)
+		ni := line_with(&app, "sdl3.Init(")
+		if !testing.expectf(t, ni >= 0, "%s: Init line", c.src_line) { cleanup(&app); continue }
+		dots := 0
+		for f in app.doc.nodes[ni].fields do if f.slot && f.kind == "value" {
+			dots += 1
+			testing.expectf(t, f.hint == "InitFlags" && f.hint_pkg == "vendor:sdl3", "%s: dot typed InitFlags, got %q/%q", c.src_line, f.hint, f.hint_pkg)
+		}
+		testing.expectf(t, dots == c.dots, "%s: %d dots, want %d", c.src_line, dots, c.dots)
+		testing.expect_value(t, src(&app), text)
+		cleanup(&app)
+	}
+	// A unary operator with an empty operand: `~` alone, no spaces -> ~● (not ● ~ ●).
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	text := "package main\n\nimport \"vendor:sdl3\"\n\nmain :: proc() {\n\tsdl3.Init(~)\n}"
+	doc_from_source(&app, text)
+	ni := line_with(&app, "sdl3.Init(")
+	if testing.expect(t, ni >= 0, "Init line") {
+		n := 0
+		for f in app.doc.nodes[ni].fields do if f.slot && f.kind == "value" do n += 1
+		testing.expectf(t, n == 1, "~● has one dot, got %d", n)
+	}
+	testing.expect_value(t, src(&app), text)
+}
+
+// Assignment > Implicit Context > logger: `context.logger = ●`, the dot
+// expecting runtime.Logger (a Logger-returning call fits, a number doesn't).
+@(test)
+test_integration_assign_implicit_context :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	doc_from_source(&app, "package main\n\nimport \"core:log\"\n\nmain :: proc() {\n\tcl := log.create_console_logger()\n}")
+	// The green insertion dot before main's closing brace.
+	closing := -1
+	for n, i in app.doc.nodes do if strings.trim_space(node_text(n, context.temp_allocator)) == "}" do closing = i
+	if !testing.expect(t, closing >= 0, "main's closing brace") do return
+	focus_dot_at(&app, closing)
+	update(&app, Input{confirm = true})
+	pick(t, &app, "Assignment")
+	pick(t, &app, "Implicit Context")
+	v := current_view(&app)
+	if !testing.expect(t, v != nil, "Implicit Context submenu") do return
+	labels := make([dynamic]string, context.temp_allocator)
+	for e in v.entries do append(&labels, e.label)
+	testing.expectf(t, len(labels) == 7, "the runtime.Context fields without _internal, got %v", labels[:])
+	pick(t, &app, "logger   Logger")
+	free_all(context.temp_allocator)
+
+	ni := line_with(&app, "context.logger")
+	if !testing.expect(t, ni >= 0, "context.logger line") do return
+	fi := -1
+	for f, i in app.doc.nodes[ni].fields do if f.slot && f.kind == "value" { fi = i; break }
+	if !testing.expect(t, fi >= 0, "value dot") do return
+	f := app.doc.nodes[ni].fields[fi]
+	testing.expect(t, f.hint == "Logger" && f.hint_pkg == "base:runtime", "the dot expects runtime.Logger")
+
+	// Graying on the value dot: log.create_console_logger fits, a number doesn't.
+	focus_field_index(&app, ni, fi)
+	update(&app, Input{confirm = true})
+	mv := current_view(&app)
+	if testing.expect(t, mv != nil, "value menu") {
+		num, nok := top_entry(mv.entries, "Number")
+		testing.expect(t, nok && num.dim, "a Number can't be a Logger")
+		call, cok := top_entry(mv.entries, "Call")
+		if testing.expect(t, cok, "Call") {
+			path := make([dynamic]string, context.temp_allocator)
+			leaf, lok := find_leaf(call.children, "create_console_logger", &path)
+			testing.expectf(t, lok && !leaf.dim, "create_console_logger fits (%v)", path[:])
+		}
+	}
+	for _ in 0 ..< 6 do if app.state == .Radial do update(&app, Input{cancel = true})
+
+	set_slot_text(&app, ni, fi, "cl")
+	testing.expect_value(t, strings.trim_space(node_text(app.doc.nodes[ni], context.temp_allocator)), "context.logger = cl")
+	text := strings.clone(src(&app), context.temp_allocator)
+	again: App
+	defer cleanup(&again)
+	again.state = .Editor
+	doc_from_source(&again, text)
+	testing.expect_value(t, src(&again), text)
+}
+
+@(private = "file")
+find_leaf :: proc(entries: []Entry, label: string, path: ^[dynamic]string) -> (Entry, bool) {
+	for e in entries {
+		append(path, e.label)
+		if len(e.children) == 0 && e.label == label do return e, true
+		if len(e.children) > 0 { if r, ok := find_leaf(e.children, label, path); ok do return r, true }
+		pop(path)
+	}
+	return {}, false
+}
+
+// Reopening unfilled assignment / declaration values: `x =`, `x :=`, `x: T =`,
+// `x +=` (an empty dot saves as nothing) come back with their value dot, as
+// the menus build them; a value continued on the next line is left alone.
+@(test)
+test_integration_reload_open_values :: proc(t: ^testing.T) {
+	Case :: struct { line: string, form: string } // form: the fields' kinds, "" = fixed text
+	cases := [?]Case{
+		{"clever_otter =", "name assign_op dot"},
+		{"log :=", "name decl dot"},
+		{"w := ", "name decl dot"},
+		{"x: int =", "name decl type fixed dot"},
+		{"y +=", "name assign_op dot"},
+		{"context.logger =", "name assign_op dot"},
+	}
+	for c in cases {
+		text := strings.concatenate({"package main\n\nmain :: proc() {\n\ta := 1\n\t", c.line, "\n}"}, context.temp_allocator)
+		app: App
+		app.state = .Editor
+		doc_from_source(&app, text)
+		ni := line_with(&app, strings.trim_space(c.line)[:1])
+		for n, i in app.doc.nodes do if strings.has_prefix(strings.trim_space(node_text(n, context.temp_allocator)), strings.trim_space(c.line)) do ni = i
+		kinds := make([dynamic]string, context.temp_allocator)
+		for f in app.doc.nodes[ni].fields {
+			switch {
+			case f.slot && f.kind == "value":              append(&kinds, "dot")
+			case f.editable && f.kind == "":               append(&kinds, "name")
+			case f.kind == ASSIGN_OP_KIND:                 append(&kinds, "assign_op")
+			case f.kind == "decl" || f.kind == "type":     append(&kinds, f.kind)
+			case strings.trim_space(f.text) == "":         // indentation
+			case:                                          append(&kinds, "fixed")
+			}
+		}
+		got := strings.join(kinds[:], " ", context.temp_allocator)
+		testing.expectf(t, got == c.form, "%q: fields %q, want %q", c.line, got, c.form)
+		cleanup(&app)
+	}
+	// A value on the next line (more indented): no dot added, round-trips.
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	text := "package main\n\nmain :: proc() {\n\tx :=\n\t\t1\n}"
+	doc_from_source(&app, text)
+	for n in app.doc.nodes do for f in n.fields do testing.expect(t, !(f.slot && f.kind == "value"), "no dot for a continued value")
+	testing.expect_value(t, src(&app), text)
+}
+
+// A call argument's hint_pkg must outlive the frame. The app frees the temp
+// allocator every frame; call_signature used to hand out the import line's
+// per-frame path, so after one frame the dot's package was garbage and Enum
+// value (and graying) found nothing. Free it between steps like the app does.
+@(test)
+test_integration_call_hint_pkg_survives_frames :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	doc_from_source(&app, "package main\n\nimport \"vendor:sdl3\"\n\nmain :: proc() {\n\tsdl3.Init()\n}\n")
+	free_all(context.temp_allocator)
+	ni := line_with(&app, "sdl3.Init(")
+	if !testing.expect(t, ni >= 0, "Init line") do return
+	first_dot :: proc(app: ^App, ni: int) -> int {
+		for f, i in app.doc.nodes[ni].fields do if f.slot && f.kind == "value" do return i
+		return -1
+	}
+	// Operator > Bitwise > a | b, then Enum value on the left operand.
+	focus_field_index(&app, ni, first_dot(&app, ni))
+	update(&app, Input{confirm = true})
+	free_all(context.temp_allocator)
+	pick(t, &app, "Operator"); free_all(context.temp_allocator)
+	pick(t, &app, "Bitwise"); free_all(context.temp_allocator)
+	pick(t, &app, "a | b"); free_all(context.temp_allocator)
+	update(&app, Input{}); free_all(context.temp_allocator)
+	fi := first_dot(&app, ni)
+	if !testing.expect(t, fi >= 0, "operand dot") do return
+	testing.expect_value(t, app.doc.nodes[ni].fields[fi].hint_pkg, "vendor:sdl3")
+	focus_field_index(&app, ni, fi)
+	update(&app, Input{confirm = true})
+	free_all(context.temp_allocator)
+	pick(t, &app, "Enum value")
+	v := current_view(&app)
+	if !testing.expect(t, v != nil, "Enum value submenu") do return
+	testing.expectf(t, len(v.entries) == 8 && v.entries[1].label == "{.VIDEO}", "InitFlag members, got %d entries", len(v.entries))
+	pick(t, &app, "{.VIDEO}")
+	testing.expect_value(t, strings.trim_space(node_text(app.doc.nodes[ni], context.temp_allocator)), "sdl3.Init({.VIDEO} | )")
+}
+
 
 @(private = "file")
 pick :: proc(t: ^testing.T, app: ^App, label: string, loc := #caller_location) {
@@ -291,4 +524,10 @@ cursor_field_of :: proc(app: ^App) -> Field {
 	ni, fi, ok := editor_target(app)
 	if !ok do return {}
 	return app.doc.nodes[ni].fields[fi]
+}
+
+@(private = "file")
+top_entry :: proc(entries: []Entry, label: string) -> (Entry, bool) {
+	for e in entries do if e.label == label do return e, true
+	return {}, false
 }

@@ -664,8 +664,8 @@ attach_lit_hints :: proc(app: ^App) {
 				else if depth == 0 && f.slot && f.kind == "value" && f.hint == "" && i >= 2 && n.fields[i - 2].kind == LIT_KEY_KIND {
 					if ft, ok := field_type(app, t, n.fields[i - 2].text); ok {
 						h, hp := hint_of(app, ft)
-						app.doc.nodes[ni].fields[i].hint = h
-						app.doc.nodes[ni].fields[i].hint_pkg = hp
+						app.doc.nodes[ni].fields[i].hint = intern_hint(app, h)
+						app.doc.nodes[ni].fields[i].hint_pkg = intern_hint(app, hp)
 					}
 				}
 			}

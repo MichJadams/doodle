@@ -709,7 +709,8 @@ branch_prepare_slot :: proc(app: ^App, ni, fi: int) {
 	if !whole do return
 	s := case_switch(app, ni)
 	if s < 0 do return
-	f.hint, f.hint_pkg = switch_case_hint(app, s)
+	h, hp := switch_case_hint(app, s)
+	f.hint, f.hint_pkg = intern_hint(app, h), intern_hint(app, hp)
 }
 
 // branch_sync (per input, while editing): the empty case value dots of each

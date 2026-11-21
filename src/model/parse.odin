@@ -40,6 +40,12 @@ doc_from_source :: proc(app: ^App, src: string) {
 	for i := 0; i < len(lines); {
 		in_data := len(blocks) > 0 && blocks[len(blocks) - 1]
 		consumed := 1
+		// `x :=` / `x =` / `x: T =` / `x +=` with nothing after: an unfilled value
+		// dot (saved as nothing). Parse it with a placeholder value, so every
+		// parser below builds its usual fields, then make the placeholder a dot.
+		open_value := open_value_line(lines, i)
+		if open_value do lines[i] = strings.concatenate({strings.trim_right_space(lines[i]), " ", OPEN_VALUE_MARK}, context.temp_allocator)
+		nodes_before := len(app.doc.nodes)
 		if cnode, cok := parse_comment_line(lines[i]); cok {
 			append(&app.doc.nodes, cnode) // `// text`: the text is editable (stmt_layout.odin)
 		} else if node, ok := parse_ctrl_line(lines[i], roles[i]); ok {
@@ -62,6 +68,7 @@ doc_from_source :: proc(app: ^App, src: string) {
 		} else {
 			append(&app.doc.nodes, parse_line(lines[i], in_data))
 		}
+		if open_value && len(app.doc.nodes) > nodes_before do open_value_to_dot(&app.doc.nodes[len(app.doc.nodes) - 1])
 		for k in i ..< i + consumed do track_blocks(&blocks, lines[k])
 		i += consumed
 	}
@@ -75,6 +82,55 @@ doc_from_source :: proc(app: ^App, src: string) {
 	for c in calls do attach_call_signature(app, c.ni, c.callee)
 	attach_lit_hints(app) // struct literals' dots (struct_lit.odin)
 	attach_nested_call_hints(app) // dots of calls inside other expressions (expr.odin)
+}
+
+// The placeholder value for open_value_line (an identifier no one writes).
+@(private = "file")
+OPEN_VALUE_MARK :: "__doodle_open_value__"
+
+// open_value_line: does lines[i] end with an assignment / declaration operator
+// and no value (` =`, ` :=`, ` +=` ..., `x: T =`)? Not a comment line, and not
+// when the next line is indented further (a value continued on the next line).
+@(private = "file")
+open_value_line :: proc(lines: []string, i: int) -> bool {
+	s := strings.trim_right_space(lines[i])
+	if strings.contains(s, "//") || strings.trim_space(s) == "" do return false
+	open := strings.has_suffix(s, " :=")
+	if !open do for op in ASSIGN_OPS {
+		if strings.has_suffix(s, op) && len(s) > len(op) && s[len(s) - len(op) - 1] == ' ' { open = true; break }
+	}
+	if !open || len(strings.trim_space(s)) <= 3 do return false // something before the operator
+	indent :: proc(l: string) -> int {
+		k := 0
+		for k < len(l) && (l[k] == ' ' || l[k] == '\t') do k += 1
+		return k
+	}
+	for j in i + 1 ..< len(lines) {
+		if strings.trim_space(lines[j]) == "" do continue
+		return indent(lines[j]) <= indent(lines[i])
+	}
+	return true
+}
+
+// open_value_to_dot: the field ending in OPEN_VALUE_MARK loses it, and an
+// unfilled value dot follows (the field goes if nothing else was in it).
+@(private = "file")
+open_value_to_dot :: proc(n: ^Node) {
+	#reverse for &f, i in n.fields {
+		if f.slot || !strings.has_suffix(f.text, OPEN_VALUE_MARK) do continue
+		rest := f.text[:len(f.text) - len(OPEN_VALUE_MARK)]
+		dot := Field{"", false, true, "value", "", ""}
+		if rest == "" {
+			delete(f.text)
+			f = dot
+		} else {
+			kept := strings.clone(rest)
+			delete(f.text)
+			f.text = kept
+			inject_at(&n.fields, i + 1, dot)
+		}
+		return
+	}
 }
 
 @(private = "file")
@@ -256,13 +312,47 @@ emit_args :: proc(fields: ^[dynamic]Field, parts: []string) {
 		if arg == "" {
 			append(fields, Field{"", false, true, "value", "", ""}) // an unfilled argument
 		} else {
-			emit_expr(fields, arg)
+			emit_expr(fields, p) // untrimmed: ` | ` (two empty operands) isn't a unary `|`
 		}
 	}
 }
 
 @(private = "file")
 EXPR_BINARY_OPS := [?]string{"||", "&&", "==", "!=", "<=", ">=", "<<", ">>", "&~", "|", "&", "~", "+", "-", "*", "/", "%", "<", ">"}
+
+// emit_open_operator: an operator with an empty operand, as Doodle saves
+// unfilled dots (nothing): ` | ` -> ● | ●, `| b` -> ● | b, `a |` -> a | ●, and
+// a unary operator with an empty operand, `-` / `~` / `!` written without
+// spaces -> -●. `text` is untrimmed: spaces around a lone operator make it
+// binary (both operands empty).
+@(private = "file")
+emit_open_operator :: proc(fields: ^[dynamic]Field, text, s: string) -> bool {
+	if s == "-" || s == "~" || s == "!" {
+		if len(text) == len(s) {
+			append(fields, Field{strings.clone(s), false, false, "", "", ""})
+			append(fields, Field{"", false, true, "value", "", ""})
+			return true
+		}
+	}
+	for op in EXPR_BINARY_OPS {
+		left, right: string
+		switch {
+		case s == op:
+			if len(text) == len(s) do continue
+		case strings.has_prefix(s, op) && len(s) > len(op) && s[len(op)] == ' ':
+			right = s[len(op) + 1:]
+		case strings.has_suffix(s, op) && len(s) > len(op) && s[len(s) - len(op) - 1] == ' ':
+			left = s[:len(s) - len(op) - 1]
+		case:
+			continue
+		}
+		emit_expr(fields, left)
+		append(fields, Field{strings.concatenate({" ", op, " "}), false, false, "", "", ""})
+		emit_expr(fields, right)
+		return true
+	}
+	return false
+}
 
 // emit_expr appends the fields for one argument expression, structured so its
 // parts can be highlighted and changed:
@@ -272,6 +362,12 @@ EXPR_BINARY_OPS := [?]string{"||", "&&", "==", "!=", "<=", ">=", "<<", ">>", "&~
 //   anything else       -> one fixed field
 emit_expr :: proc(fields: ^[dynamic]Field, text: string) {
 	s := strings.trim_space(text)
+	// An operand left empty: Operator > a | b saves `● | ●` as ` | `.
+	if s == "" {
+		append(fields, Field{"", false, true, "value", "", ""})
+		return
+	}
+	if emit_open_operator(fields, text, s) do return
 	// `a if c else b`, `c ? a : b`, `a when c else b`: the lowest precedence (expr.odin).
 	if emit_ternary(fields, s) do return
 	// Top-level binary operator written with spaces around it (Doodle's format).
@@ -406,6 +502,27 @@ is_ident_byte :: proc(c: u8) -> bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 }
 
+// same_type_operands: is this argument a chain of operands joined only by
+// operators whose result has their operands' type (`a | b`, `a + b`; not
+// comparisons, logic or shifts)? Operands are single fields (a dot or a value).
+@(private = "file")
+same_type_operands :: proc(fs: []Field) -> bool {
+	for f, i in fs {
+		if i % 2 == 0 {
+			if !f.slot && (f.text == "" || strings.trim_space(f.text) != f.text) do return false
+			continue
+		}
+		if f.slot do return false
+		switch strings.trim_space(f.text) {
+		case "|", "&", "~", "&~", "+", "-", "*", "/", "%":
+			if len(f.text) < 3 do return false // " op " (a binary operator field)
+		case:
+			return false
+		}
+	}
+	return len(fs) % 2 == 1
+}
+
 // attach_call_signature gives a parsed call's dots their expected types, adds
 // dots for missing required arguments, and a green "add argument" dot when the
 // proc is variadic. Calls to procs Doodle doesn't know are left as they are.
@@ -442,6 +559,14 @@ attach_call_signature :: proc(app: ^App, ni: int, callee: string) {
 		if r[1] - r[0] == 1 && f.slot && f.kind == "value" && nargs < len(hints) {
 			f.hint = hint_for(app, sig, hints[nargs])
 			if f.hint != "" do f.hint_pkg = sig.pkg
+		} else if nargs < len(hints) && r[1] - r[0] > 1 {
+			// `● | ●` (a saved Operator fill): the operands of an operator that
+			// yields its operands' type take the argument's type, as
+			// make_slot_operator gave them (consts_menu.odin).
+			h := hint_for(app, sig, hints[nargs])
+			if h != "" && same_type_operands(fields[r[0]:r[1]]) {
+				for &g in fields[r[0]:r[1]] do if g.slot && g.kind == "value" && g.hint == "" do g.hint, g.hint_pkg = h, sig.pkg
+			}
 		}
 		nargs += 1
 	}

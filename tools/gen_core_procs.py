@@ -346,7 +346,8 @@ def classify_decl(rhs):
     Returns ('type', kind, target) for a definite type, ('alias', 'alias', target)
     when rhs is a bare identifier that is a type only if `target` is (resolved per
     package), or None for constants / procs / anything else. `target` is what the
-    type refers to ("" for struct/enum/union/bit_set/bit_field).
+    type refers to ("" for struct/enum/union/bit_field; the full `bit_set[...]`
+    spelling for bit_set).
     """
     rhs = norm_ws(strip_line_comment(rhs))
     if not rhs:
@@ -368,6 +369,10 @@ def classify_decl(rhs):
                     if depth == 0:
                         return ('type', word, rest[:i + 1])
             return ('type', word, "(?)")
+        # A bit_set keeps its whole spelling (`bit_set[Flag; u8]`): the value
+        # menu's Enum value lists the element enum's members as {.Member}.
+        if word == 'bit_set':
+            return ('type', word, rhs)
         return ('type', word, "")
     if rhs.startswith(TYPE_DIRECTIVES):
         return ('type', 'alias', rhs)
@@ -1141,7 +1146,7 @@ def main():
             for path, file, kind, name, target in sorted(set(types))]
     write_table(TYPES_OUT, [
         "Type declarations per package (core:, base:, vendor:). kind = struct/enum/union/bit_set/",
-        "bit_field/distinct/alias; target = what a distinct/alias refers to.",
+        "bit_field/distinct/alias; target = what a distinct/alias refers to (a bit_set: its bit_set[...] spelling).",
     ], "CoreType :: struct { path: string, file: string, kind: string, name: string, target: string }",
         "CORE_TYPES", rows)
     print(f"Generated {len(rows)} type entries -> {TYPES_OUT}")

@@ -499,16 +499,98 @@ enum_type_for_dot :: proc(app: ^App, ni, fi: int) -> (type_name, pkg: string) {
 	return "", ""
 }
 
+// bit_set_elem: the element type of a bit_set type - `InitFlags` (vendor:sdl3,
+// `distinct bit_set[InitFlag; Uint32]`) -> InitFlag, vendor:sdl3. Follows
+// distinct / alias rows of CORE_TYPES, and `Name :: bit_set[...]` declared in
+// the document or a sibling file. "" when the type isn't a bit_set.
+bit_set_elem :: proc(app: ^App, type_name, pkg: string, depth := 0) -> (elem, elem_pkg: string) {
+	if depth > 8 do return "", ""
+	t := strings.trim_space(type_name)
+	for strings.has_prefix(t, "distinct ") do t = strings.trim_space(t[len("distinct "):])
+	if t == "" do return "", ""
+	if strings.has_prefix(t, "bit_set[") {
+		// bit_set[Elem] / bit_set[Elem; Backing]: Elem up to the top-level `;` or `]`.
+		inner := t[len("bit_set["):]
+		nest := 0
+		end := -1
+		scan: for c, k in transmute([]u8)inner {
+			switch c {
+			case '[', '(', '{': nest += 1
+			case ')', '}':      nest -= 1
+			case ']':
+				if nest == 0 { end = k; break scan }
+				nest -= 1
+			case ';':
+				if nest == 0 { end = k; break scan }
+			}
+		}
+		if end < 0 do return "", ""
+		return strings.trim_space(inner[:end]), pkg
+	}
+	path, name := pkg, t
+	if dot := strings.index_byte(t, '.'); dot > 0 {
+		ref := t[:dot]
+		name = t[dot + 1:]
+		path = ""
+		imports := collect_imports(app)
+		defer delete(imports)
+		for imp in imports do if imp.ref == ref { path = strings.clone(imp.path, context.temp_allocator); break }
+		if path == "" do return "", ""
+	}
+	if !is_ident(name) do return "", ""
+	if path != "" {
+		i, found := core_type_index(path, name)
+		if !found do return "", ""
+		ct := CORE_TYPES[i]
+		switch ct.kind {
+		case "bit_set", "distinct", "alias": return bit_set_elem(app, ct.target, ct.path, depth + 1)
+		}
+		return "", ""
+	}
+	// This package: `Name :: bit_set[...]` / `Name :: distinct bit_set[...]` / an alias.
+	for n in app.doc.nodes {
+		txt := strings.trim_space(node_text(n, context.temp_allocator))
+		if !strings.has_prefix(txt, name) do continue
+		rest := strings.trim_left_space(txt[len(name):])
+		if !strings.has_prefix(rest, "::") do continue
+		rest = strings.trim_space(rest[2:])
+		if c := strings.index(rest, "//"); c >= 0 do rest = strings.trim_space(rest[:c])
+		if rest == name do return "", ""
+		return bit_set_elem(app, rest, "", depth + 1)
+	}
+	if st, ok := visible_sibling_type(app, name); ok && st.text != name do return bit_set_elem(app, st.text, "", depth + 1)
+	return "", ""
+}
+
 @(private = "file")
 build_enum_value_entries :: proc(app: ^App, ni, fi: int) -> (entries: []Entry, ok: bool) {
 	ty, pkg := enum_type_for_dot(app, ni, fi)
+	if ty == "" {
+		f := app.doc.nodes[ni].fields[fi]
+		ty, pkg = f.hint, f.hint_pkg
+	}
 	members := enum_members(app, ty, pkg)
+	// A bit_set dot (sdl.Init's InitFlags): its element enum's members, each a
+	// one-member set `{.VIDEO}` (join more with Operator > Bitwise > a | b).
+	set := false
+	if len(members) == 0 {
+		if e, ep := bit_set_elem(app, ty, pkg); e != "" {
+			if m := enum_members(app, e, ep); len(m) > 0 {
+				members, ty, pkg, set = m, e, ep, true
+			}
+		}
+	}
 	if len(members) == 0 do return make_slice(grp_dim("(no enum type here)")), false
 	out := make([]Entry, len(members))
 	for m, i in members {
 		v := fmt.aprintf(".%s", m)
 		// Heat (heat.odin) per enum: `.None` of one enum isn't another's.
 		hk := pkg != "" ? fmt.aprintf("%s.%s%s", pkg, ty, v) : fmt.aprintf("%s%s", ty, v)
+		if set {
+			s := fmt.aprintf("{{%s}}", v)
+			delete(v)
+			v = s
+		}
 		out[i] = Entry{label = v, owned_label = true, fill = ENUM_VALUE_FILL, call_name = strings.clone(v), heat_key = hk}
 	}
 	return out, true

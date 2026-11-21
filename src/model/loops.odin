@@ -51,6 +51,7 @@ LOOP_LABELED_FILL    :: "__loop_labeled__"
 LOOP_ITER_RANGE_FILL :: "__loop_iter_range__" // "Range" on an iterable dot (call_name = "..<" / "..=")
 LOOP_JUMP_FILL       :: "__loop_jump__"       // "Break outer" (call_name = "break outer")
 ASSIGN_OP_FILL       :: "__stmt_assign_op__"  // "+=" ... in the Assignment group (call_name = the op)
+CTX_ASSIGN_FILL      :: "__stmt_ctx_assign__" // Assignment > Implicit Context > field: context.field = ● (call_name = field, ret = its type)
 LOOP_OPT_FILL        :: "__loop_opt__"        // an option of a loop / operator / jump menu (call_name = id, call_pkg = "ni fi")
 
 ASSIGN_OPS := [?]string{"=", "+=", "-=", "*=", "/=", "%=", "%%=", "|=", "&=", "~=", "&~=", "<<=", ">>=", "&&=", "||="}
@@ -653,19 +654,39 @@ loop_menu_entries :: proc() -> []Entry {
 	)
 }
 
-// The Assignment group: `x = ●` and the compound operators `x += ●`, ...
+// The Assignment group: `x = ●`, Implicit Context (`context.logger = ●`) and
+// the compound operators `x += ●`, ...
 assign_menu_entries :: proc() -> []Entry {
-	out := make([]Entry, len(ASSIGN_OPS))
+	out := make([]Entry, len(ASSIGN_OPS) + 1)
 	out[0] = Entry{label = "Assignment", fill = "__stmt_assign__"}
-	for op, i in ASSIGN_OPS[1:] do out[i + 1] = Entry{label = op, fill = ASSIGN_OP_FILL, call_name = strings.clone(op)}
+	out[1] = Entry{label = "Implicit Context", children = context_field_entries()}
+	for op, i in ASSIGN_OPS[1:] do out[i + 2] = Entry{label = op, fill = ASSIGN_OP_FILL, call_name = strings.clone(op)}
 	return out
+}
+
+// The fields of runtime.Context you can assign (`_internal` and other `_`
+// fields are the runtime's own): "logger   Logger" -> context.logger = ●.
+context_field_entries :: proc() -> []Entry {
+	out := make([dynamic]Entry, 0, 8)
+	defer delete(out)
+	for f in CORE_FIELDS {
+		if f.path != "base:runtime" || f.type_name != "Context" || strings.has_prefix(f.name, "_") do continue
+		append(&out, Entry{
+			label = fmt.aprintf("%s   %s", f.name, f.type), owned_label = true,
+			fill = CTX_ASSIGN_FILL, call_name = strings.clone(f.name),
+			ret = f.type, ret_pkg = f.path, // static table strings: they become the value dot's hint
+		})
+	}
+	result := make([]Entry, len(out))
+	copy(result, out[:])
+	return result
 }
 
 is_loop_fill :: proc(fill: string) -> bool {
 	switch fill {
 	case "__loop_for__", "__loop_forin__", "__loop_forinf__", LOOP_CSTYLE_FILL, LOOP_IN2_FILL, LOOP_RANGE_FILL,
 	     LOOP_RANGE_INCL_FILL, LOOP_BYREF_FILL, LOOP_REVERSE_FILL, LOOP_UNROLL_FILL, LOOP_LABELED_FILL,
-	     LOOP_ITER_RANGE_FILL, LOOP_JUMP_FILL, ASSIGN_OP_FILL, "__jmp_break__", "__jmp_continue__":
+	     LOOP_ITER_RANGE_FILL, LOOP_JUMP_FILL, ASSIGN_OP_FILL, CTX_ASSIGN_FILL, "__jmp_break__", "__jmp_continue__":
 		return true
 	}
 	return false
@@ -677,6 +698,7 @@ loop_fill :: proc(app: ^App, e: Entry) {
 	if ni < 0 || ni >= len(app.doc.nodes) || fi < 0 || fi >= len(app.doc.nodes[ni].fields) do return
 	switch e.fill {
 	case ASSIGN_OP_FILL:       make_assign_op_statement(app, ni, fi, e.call_name)
+	case CTX_ASSIGN_FILL:      make_ctx_assign_statement(app, ni, fi, e.call_name, e.ret, e.ret_pkg)
 	case LOOP_ITER_RANGE_FILL: make_slot_range(app, ni, fi, e.call_name == "..=")
 	case "__jmp_break__":      make_jump(app, ni, fi, "break")
 	case "__jmp_continue__":   make_jump(app, ni, fi, "continue")
@@ -791,6 +813,21 @@ make_assign_op_statement :: proc(app: ^App, ni, fi: int, op: string) {
 	if len(fields[fi].text) > 0 do delete(fields[fi].text)
 	ordered_remove(fields, fi)
 	inject_at(fields, fi, fname(name), fop(op), fdot())
+	add_next_line(app, ni, indent)
+}
+
+// make_ctx_assign_statement: `context.<field> = ●`, the value dot expecting the
+// field's type (written in base:runtime: Logger, Allocator, ...). The target is
+// one editable field, as the loader makes it (field_access.odin).
+@(private = "file")
+make_ctx_assign_statement :: proc(app: ^App, ni, fi: int, field, type, pkg: string) {
+	indent := get_body_indent(app, ni)
+	defer delete(indent)
+	fields := &app.doc.nodes[ni].fields
+	if len(fields[fi].text) > 0 do delete(fields[fi].text)
+	ordered_remove(fields, fi)
+	target := strings.concatenate({"context.", field}, context.temp_allocator)
+	inject_at(fields, fi, fname(target), fop("="), Field{"", false, true, "value", type, pkg})
 	add_next_line(app, ni, indent)
 }
 
@@ -1148,7 +1185,7 @@ set_assign_op :: proc(app: ^App, ni, fi: int, op: string) {
 		if op != "<<=" && op != ">>=" {
 			if t, ok := expr_type_at(app, ni, fields[fi - 1].text); ok && t.expr != "" {
 				if t.pkg == "" do v.hint = intern_hint(app, t.expr)
-				else do v.hint, v.hint_pkg = t.expr, t.pkg
+				else do v.hint, v.hint_pkg = intern_hint(app, t.expr), intern_hint(app, t.pkg) // t.pkg can be per-frame (var_types.odin)
 			}
 		}
 	}

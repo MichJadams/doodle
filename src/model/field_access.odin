@@ -188,7 +188,7 @@ set_assign_target :: proc(app: ^App, ni, fi: int, text: string) {
 		f.hint, f.hint_pkg = "", ""
 		if ok && t.expr != "" {
 			if t.pkg == "" do f.hint = intern_hint(app, t.expr)
-			else do f.hint, f.hint_pkg = t.expr, t.pkg
+			else do f.hint, f.hint_pkg = intern_hint(app, t.expr), intern_hint(app, t.pkg) // t.pkg can be per-frame (var_types.odin)
 		}
 	}
 	focus_field_index(app, ni, fi)

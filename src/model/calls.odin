@@ -149,12 +149,15 @@ call_signature :: proc(app: ^App, pkg_ref, name: string) -> Call_Sig {
 		defer delete(imports)
 		path := ""
 		for imp in imports do if imp.ref == pkg_ref { path = imp.path; break }
-		sig := Call_Sig{variadic = true, pkg = path, ret = RET_UNKNOWN}
+		// sig.pkg ends up in Field.hint_pkg, which outlives this frame: imp.path
+		// points into the import line's (per-frame) text, so use the table's
+		// static path, or an interned copy for a package the table doesn't know.
+		sig := Call_Sig{variadic = true, pkg = intern_hint(app, path), ret = RET_UNKNOWN}
 		found := false
 		for p in CORE_PROCS {
 			if p.path != path || p.name != name do continue
 			if !found {
-				sig = Call_Sig{p.req, p.variadic, parse_params(p.params), p.ret, path, true}
+				sig = Call_Sig{p.req, p.variadic, parse_params(p.params), p.ret, p.path, true}
 				found = true
 			} else if p.req != sig.req || p.variadic != sig.variadic {
 				// Same name in several files (e.g. per-OS): be permissive.
