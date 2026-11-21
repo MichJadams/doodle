@@ -33,7 +33,7 @@ RUN_MSG_DURATION :: 2.0 // Show run message for 2 seconds
 // Template commands for "+ New command" submenu
 TEMPLATES := [?]string{
 	"odin run .",
-	"odin build . -out:app.exe",
+	"odin build . -out:app.exe" when ODIN_OS == .Windows else "odin build . -out:app",
 	"odin test .",
 	"odin run . -debug",
 }
@@ -130,6 +130,15 @@ run_command :: proc(cmd: string, keep_open := false) {
 	if dir == "" {
 		dir = "."
 	}
+	when ODIN_OS == .Windows {
+		run_command_windows(cmd, dir, keep_open)
+	} else {
+		run_command_posix(cmd, dir, keep_open)
+	}
+}
+
+// run_command_windows opens a new cmd.exe console running cmd in dir.
+run_command_windows :: proc(cmd, dir: string, keep_open: bool) {
 	// cmd.exe wants backslashes; quote the path in case it has spaces.
 	win_dir, _ := strings.replace_all(dir, "/", "\\", context.temp_allocator)
 
@@ -154,23 +163,42 @@ run_command :: proc(cmd: string, keep_open := false) {
 	set_status(fmt.tprintf("ran: %s", cmd))
 }
 
-// odin_dir finds the folder holding odin.exe (backslashed, temp-allocated), or "".
-// Order: $ODIN_DIR, $ODIN_ROOT, then the default install at C:\Odin.
-odin_dir :: proc() -> string {
-	when ODIN_OS != .Windows do return ""
-	candidates := [?]string{
-		os.get_env("ODIN_DIR", context.temp_allocator),
-		os.get_env("ODIN_ROOT", context.temp_allocator),
-		"C:\\Odin",
+// run_command_posix (Linux / macOS): write the run as a small sh script, then
+// open it in a terminal window. With no terminal (no display, inside the Steam
+// runtime, DOODLE_TERMINAL=none) it runs in the background and its output goes
+// to <project>/.doodle/run.log instead.
+run_command_posix :: proc(cmd, dir: string, keep_open: bool) {
+	abs_dir := dir
+	if a, err := os.get_absolute_path(dir, context.temp_allocator); err == nil do abs_dir = a
+
+	tmp, terr := os.temp_directory(context.temp_allocator)
+	if terr != nil do tmp = "/tmp"
+	script := fmt.tprintf("%s/doodle_run.sh", tmp)
+	body := run_script_text(abs_dir, odin_dir(), cmd, keep_open)
+	if os.write_entire_file(script, transmute([]byte)body) != nil {
+		set_status("run: couldn't write the run script")
+		return
 	}
-	for c in candidates {
-		if c == "" do continue
-		if os.exists(fmt.tprintf("%s\\odin.exe", c)) {
-			d, _ := strings.replace_all(c, "/", "\\", context.temp_allocator)
-			return d
-		}
+
+	term := terminal_prefix()
+	line: string
+	log := ""
+	switch {
+	case term == "open -a Terminal":
+		// Terminal.app opens an executable script file, not a command line.
+		line = fmt.tprintf("chmod +x %s && open -a Terminal %s", sh_quote(script), sh_quote(script))
+	case term != "":
+		line = fmt.tprintf("%s sh %s >/dev/null 2>&1 &", term, sh_quote(script))
+	case:
+		os.make_directory(fmt.tprintf("%s/.doodle", abs_dir))
+		log = fmt.tprintf("%s/.doodle/run.log", abs_dir)
+		line = fmt.tprintf("sh %s </dev/null >%s 2>&1 &", sh_quote(script), sh_quote(log))
 	}
-	return ""
+
+	if !trace_replaying() do libc.system(strings.clone_to_cstring(line, context.temp_allocator))
+
+	if log != "" do set_status(fmt.tprintf("ran (no terminal): %s -> .doodle/run.log", cmd))
+	else do set_status(fmt.tprintf("ran: %s", cmd))
 }
 
 // set_status shows a short message in the bottom-right corner (save/run feedback).

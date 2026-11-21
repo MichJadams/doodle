@@ -67,7 +67,7 @@ jobs:
           /opt/odin/odin version
           # vendor:stb needs its static libs built on Linux.
           if ! ls /opt/odin/vendor/stb/lib/*.a >/dev/null 2>&1; then
-            make -C /opt/odin/vendor/stb/src
+            (cd /opt/odin/vendor/stb/src && sh ./build_stb.sh)
           fi
 
       - name: Test

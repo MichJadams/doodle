@@ -76,8 +76,7 @@ check_tick :: proc(m: ^model.App) {
 	job.file_name = strings.clone(g_current_file != "" ? filepath.base(g_current_file) : "main.odin")
 	folder := g_current_file != "" ? filepath.dir(g_current_file) : g_project_dir
 	job.project = strings.clone(folder)
-	od := odin_dir()
-	job.odin_exe = od != "" ? fmt.aprintf("%s\\odin.exe", od) : strings.clone("odin")
+	job.odin_exe = odin_exe()
 	g_check_job = job
 	g_check_thread = thread.create_and_start_with_poly_data(job, run_check)
 }
@@ -124,10 +123,15 @@ run_check :: proc(job: ^Check_Job) {
 	_ = os.write_entire_file(fmt.tprintf("%s/%s", dir, job.file_name), transmute([]byte)job.src)
 
 	out_path := fmt.tprintf("%s/_check_output.txt", dir)
-	win_dir, _ := strings.replace_all(dir, "/", "\\", context.temp_allocator)
-	win_out, _ := strings.replace_all(out_path, "/", "\\", context.temp_allocator)
-	// cmd /c strips the outer quotes: ""odin.exe" check "dir" ... > "out" 2>&1"
-	cmd := fmt.tprintf("\"\"%s\" check \"%s\" -no-entry-point > \"%s\" 2>&1\"", job.odin_exe, win_dir, win_out)
+	cmd: string
+	when ODIN_OS == .Windows {
+		win_dir, _ := strings.replace_all(dir, "/", "\\", context.temp_allocator)
+		win_out, _ := strings.replace_all(out_path, "/", "\\", context.temp_allocator)
+		// cmd /c strips the outer quotes: ""odin.exe" check "dir" ... > "out" 2>&1"
+		cmd = fmt.tprintf("\"\"%s\" check \"%s\" -no-entry-point > \"%s\" 2>&1\"", job.odin_exe, win_dir, win_out)
+	} else {
+		cmd = fmt.tprintf("%s check %s -no-entry-point > %s 2>&1", sh_quote(job.odin_exe), sh_quote(dir), sh_quote(out_path))
+	}
 	libc.system(strings.clone_to_cstring(cmd, context.temp_allocator))
 	if data, err := os.read_entire_file(out_path, context.allocator); err == nil {
 		job.output = string(data)
