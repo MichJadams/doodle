@@ -241,7 +241,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: whisper-out/whisper-cli.exe
-          key: whisper-cli-${{ env.WHISPER_TAG }}-win64-avx2-static-v1
+          key: whisper-cli-${{ env.WHISPER_TAG }}-win64-avx2-static-v2
 
       - name: Build whisper-cli
         if: steps.whisper-cache.outputs.cache-hit != 'true'
@@ -249,13 +249,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           # Same portable x86-64 build as SteamOS: AVX2/FMA/F16C, no AVX-512, no
           # OpenMP. Static ggml/whisper and a static MSVC runtime: one .exe, no
-          # VC++ redistributable needed.
+          # VC++ redistributable needed. (CMAKE_MSVC_RUNTIME_LIBRARY only applies
+          # under policy CMP0091, which whisper.cpp's cmake_minimum_required leaves OLD.)
           $src = "$env:RUNNER_TEMP\whisper.cpp"
           cmake -S $src -B "$src\build" -A x64 `
             -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF `
             -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON `
             -DGGML_AVX512=OFF -DGGML_OPENMP=OFF `
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build "$src\build" --config Release --target whisper-cli -j $env:NUMBER_OF_PROCESSORS
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
