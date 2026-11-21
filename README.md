@@ -4,20 +4,16 @@
 
 ![Doodle editing an Odin file](docs/screenshots/editor.png)
 
-Doodle is an Odin editor you drive with a controller from the couch. It's written in Odin, it runs on Windows and Steam Deck, and it is full of nonsense on purpose:
+Doodle is an Odin editor you drive with a controller from the couch. It's written in Odin, it runs on Windows and Steam Deck
 
-- 📝 **Pencil scribble sounds** when you add code, and a **paper crumple** when you switch files
 - 🎮 **Gamepad first.** You move around by code structure, and a button HUD always shows what each button does
 - 🔀 **Rearrange the buttons** on the Key Layout page (main menu or IDE menu): d-pad + X/Y/A/B, with the triggers as modifiers
-- 🗣️ **Talk to it.** Hold a trigger and dictate through local Whisper (no cloud)
-- 🖍️ **Hand-drawn icons**, warm paper colors, syntax highlighting, and live error checking with `odin check`
-- ▶️ **Run your project** (`odin run .`) without leaving the couch
+- 🗣️ **Talk to it.** Hold a trigger and dictate through local Whisper (no cloud) for naming variables and screaming numbers at your computer
+
 
 ![Doodle home screen](docs/screenshots/home.png)
 
-## This is for fun
 
-It's a hobby project. It is not trying to replace your real editor, it has rough edges, and some features exist only because they made me smile. So everyone please calm down. 🫖
 
 ## Running it
 
@@ -41,6 +37,17 @@ You need the **Odin compiler** on your `PATH`, plus a gamepad.
 Debug builds record every run so you can replay it or see which buttons you use most; see [`docs/TRACE.md`](docs/TRACE.md).
 
 Need more detail (SDL2, Whisper, Steam Deck setup)? See [`docs/INSTALL.md`](docs/INSTALL.md). Curious how it's put together? See [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+### SteamOS release builds
+
+A manual GitHub Actions workflow builds Doodle in Valve's Steam Linux Runtime ("sniper") SDK and publishes a `doodle-steamos-<version>.tar.gz` release:
+
+```sh
+gh workflow run release-steamos.yml -f version=0.1.0   # add -f prerelease=true for a test build
+gh run watch                                            # follow it
+```
+
+On the Deck, `tools/deck_install.sh [tag]` downloads a release into `~/Applications/doodle` (needs `gh` logged in, since the repo is private).
 
 ![Doodle's hand-drawn icons](assets/icons/preview.png)
 
