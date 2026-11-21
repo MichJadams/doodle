@@ -180,3 +180,9 @@ shutdown :: proc(win: ^Window) {
 	sdl.Quit()
 	free(win)
 }
+
+// set_clipboard_text puts `s` on the system clipboard. Returns false on failure.
+set_clipboard_text :: proc(s: string) -> bool {
+	cs := strings.clone_to_cstring(s, context.temp_allocator)
+	return sdl.SetClipboardText(cs) == 0
+}

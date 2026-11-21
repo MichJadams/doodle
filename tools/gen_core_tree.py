@@ -1,27 +1,37 @@
 #!/usr/bin/env python3
-"""Scan Odin's core/ library and emit src/model/core_tree.odin as a flat row table.
+"""Scan Odin's built-in collections (core:, base:, vendor:) and emit
+src/model/core_tree.odin: one flat row table per collection (CORE_ROWS,
+BASE_ROWS, VENDOR_ROWS) for the Import menu, plus IMPORT_NAMES.
 
 Applies the structural reductions that only depend on file contents:
-  - prune folders with no .odin anywhere beneath, test-only, and example/tests dirs
+  - prune folders with no .odin anywhere beneath, test-only, example/tests dirs,
+    `package main` folders (tools/demos), and base:builtin (documentation only)
   - platform tags from path + #+build parsing (runtime filters by ODIN_OS)
   - collapse single-child chains (intrusive/list)
   - sink internal sub-packages (imported only within their parent subtree) under
     a dimmed "internals" group
 
+IMPORT_NAMES lists the packages whose folder name isn't an identifier
+(vendor:lua/5.4): Odin can only import those with an explicit name, so Doodle
+always inserts them as `import <name> "<path>"`.
+
 Bucketing (big menus -> alpha ranges) and usage-first ordering are done at RUNTIME
-in the model package, since they depend on counts/user state.
+in the model package, since they depend on counts/user state. The `shared:`
+collection is user-specific and is listed at runtime too (src/model/collections.odin).
+
+Usage: python tools/gen_core_tree.py [ODIN_ROOT] [OUT_FILE]
 """
 import os, re, sys
 
-CORE = sys.argv[1] if len(sys.argv) > 1 else r"C:\Odin\core"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from odin_collections import (ODIN_ROOT, COLLECTIONS, SKIP_DIRS, NOT_IMPORTABLE,
+                              collection_root, import_path, is_program, import_name,
+                              package_platform, ident_re, has_file_scope_panic)
+
+ROOT = sys.argv[1] if len(sys.argv) > 1 else ODIN_ROOT
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
-    os.path.dirname(__file__), "..", "src", "model", "core_tree.odin")
+    os.path.dirname(os.path.abspath(__file__)), "..", "src", "model", "core_tree.odin")
 
-OS_NAMES = {"windows","linux","darwin","freebsd","openbsd","netbsd","haiku",
-            "essence","wasi","js","orca","android","unix"}
-SKIP_DIRS = {"tests", "examples", "example"}
-
-build_re = re.compile(r'^\s*#\+build\s+(.+?)\s*$')
 import_re = re.compile(r'^\s*import\s+(?:[A-Za-z_]\w*\s+)?"([^"]+)"')
 
 
@@ -37,107 +47,6 @@ def non_test(files):
     return [f for f in files if not f.endswith("_test.odin")]
 
 
-def platform_from_path(rel):
-    """Infer platform from path (e.g., sys/windows -> windows)."""
-    if not rel:
-        return ""
-    parts = rel.split("/")
-    # sys/<os> directories
-    if len(parts) >= 2 and parts[0] == "sys":
-        os_dir = parts[1]
-        if os_dir == "windows":
-            return "windows"
-        elif os_dir == "linux":
-            return "linux"
-        elif os_dir == "darwin":
-            return "darwin"
-        elif os_dir == "freebsd":
-            return "freebsd"
-        elif os_dir == "openbsd":
-            return "openbsd"
-        elif os_dir == "netbsd":
-            return "netbsd"
-        elif os_dir == "haiku":
-            return "haiku"
-        elif os_dir == "android":
-            return "android"
-        elif os_dir == "wasm":
-            # wasm/js or wasm/wasi
-            if len(parts) >= 3:
-                if parts[2] == "js":
-                    return "js"
-                elif parts[2] == "wasi":
-                    return "wasi"
-            return ""  # wasm root is not OS-specific by itself
-        elif os_dir in {"posix", "unix"}:
-            # POSIX/Unix apply to multiple platforms
-            return "linux,darwin,freebsd,openbsd,netbsd"
-        elif os_dir == "kqueue":
-            # kqueue is available on BSD systems + macOS
-            return "darwin,freebsd,netbsd,openbsd"
-        elif os_dir == "valgrind":
-            # valgrind is primarily Linux, but also some BSDs
-            return "linux,freebsd"
-    return ""
-
-
-def parse_platform(folder, files, rel=""):
-    """Approximate allowed-OS set. '' means builds everywhere."""
-    nt = non_test(files)
-    if not nt:
-        return ""
-    
-    # Check path-based platform first
-    path_platform = platform_from_path(rel)
-    
-    # For sys/* directories, path-based detection is authoritative
-    # (many sys/* packages have broader #+build tags than their directory suggests)
-    if path_platform and rel.startswith("sys/"):
-        path_parts = rel.split("/")
-        # For specific OS directories under sys/, prefer the path
-        if len(path_parts) >= 2 and path_parts[1] in {"windows", "linux", "darwin", "freebsd", 
-                                                         "openbsd", "netbsd", "haiku", "android"}:
-            return path_platform
-        # For wasm subdirs (js, wasi), also prefer path
-        if len(path_parts) >= 3 and path_parts[1] == "wasm" and path_parts[2] in {"js", "wasi"}:
-            return path_platform
-    
-    allowed = set()
-    any_unconstrained = False
-    for f in nt:
-        constrained = False
-        try:
-            with open(os.path.join(folder, f), encoding="utf-8", errors="ignore") as fh:
-                for line in fh:
-                    if not line.startswith("#+"):
-                        if line.strip() and not line.startswith("//") and not line.startswith("package"):
-                            break  # constraints must be at top
-                    m = build_re.match(line)
-                    if m:
-                        constrained = True
-                        for tok in re.split(r"[,\s]+", m.group(1)):
-                            tok = tok.strip().lower()
-                            neg = tok.startswith("!")
-                            name = tok[1:] if neg else tok
-                            if name in OS_NAMES and not neg:
-                                allowed.add(name)
-        except OSError:
-            pass
-        if not constrained:
-            any_unconstrained = True
-    
-    # If we have #+build constraints, use them (unless path override above applied)
-    if allowed and not any_unconstrained:
-        return ",".join(sorted(allowed))
-    
-    # If path-based detection found something, use it
-    if path_platform:
-        return path_platform
-    
-    # Otherwise unconstrained (builds everywhere)
-    return ""
-
-
 def parse_imports(folder, files):
     out = set()
     for f in files:
@@ -145,7 +54,7 @@ def parse_imports(folder, files):
             with open(os.path.join(folder, f), encoding="utf-8", errors="ignore") as fh:
                 for line in fh:
                     m = import_re.match(line)
-                    if m and m.group(1).startswith("core:"):
+                    if m and ":" in m.group(1):
                         out.add(m.group(1))
         except OSError:
             pass
@@ -153,7 +62,8 @@ def parse_imports(folder, files):
 
 
 class Node:
-    def __init__(self, name, rel):
+    def __init__(self, collection, name, rel):
+        self.collection = collection
         self.name = name
         self.rel = rel  # e.g. "text/regex" ("" for root)
         self.importable = False
@@ -163,24 +73,28 @@ class Node:
 
     @property
     def path(self):
-        return "core:" + self.rel if self.importable else ""
+        return import_path(self.collection, self.rel) if self.importable else ""
 
 
-IMPORTERS = {}  # "core:foo" -> set of importer rel-ids ("core:bar")
+IMPORTERS = {}  # "core:foo" -> set of importer paths ("core:bar")
+IMPORT_NAMES = {}  # path -> import name, for folders that aren't identifiers
 
 
-def scan(folder, rel):
-    name = os.path.basename(folder) if rel else "core"
-    node = Node(name, rel)
+def scan(collection, folder, rel):
+    name = os.path.basename(folder) if rel else collection
+    node = Node(collection, name, rel)
     files = odin_files(folder)
     nt = non_test(files)
-    node.importable = len(nt) > 0
-    node.platform = parse_platform(folder, files, rel)
+    path = import_path(collection, rel)
+    node.importable = (len(nt) > 0 and rel != "" and path not in NOT_IMPORTABLE
+                       and not is_program(folder, nt) and not has_file_scope_panic(folder, nt))
+    if node.importable:
+        node.platform = package_platform(folder, files, path)
+        if not ident_re.match(os.path.basename(folder)):
+            IMPORT_NAMES[path] = import_name(path)
     if files:
-        imps = parse_imports(folder, files)
-        myid = "core:" + rel
-        for imp in imps:
-            IMPORTERS.setdefault(imp, set()).add(myid)
+        for imp in parse_imports(folder, files):
+            IMPORTERS.setdefault(imp, set()).add(path)
     try:
         subs = sorted(d for d in os.listdir(folder)
                       if os.path.isdir(os.path.join(folder, d)))
@@ -189,7 +103,7 @@ def scan(folder, rel):
     for d in subs:
         if d in SKIP_DIRS or d.startswith("."):
             continue
-        child = scan(os.path.join(folder, d), (rel + "/" + d) if rel else d)
+        child = scan(collection, os.path.join(folder, d), (rel + "/" + d) if rel else d)
         if child is not None:
             node.children[d] = child
     # prune: keep only if importable or has surviving children
@@ -211,12 +125,24 @@ def collapse(node):
         node.children = only.children
 
 
+def group_platform(node):
+    """A group whose packages all build on the same platforms gets that tag, so
+    e.g. vendor:darwin is hidden on Windows as a whole."""
+    for c in node.children.values():
+        group_platform(c)
+    if node.importable or not node.children:
+        return
+    plats = {c.platform for c in node.children.values()}
+    if len(plats) == 1:
+        node.platform = plats.pop()
+
+
 def sink_internals(node):
     for c in node.children.values():
         sink_internals(c)
     if not node.children:
         return
-    prefix = "core:" + node.rel
+    prefix = import_path(node.collection, node.rel)
     internal = []
     for name, c in node.children.items():
         if not c.importable:
@@ -228,33 +154,30 @@ def sink_internals(node):
     if len(internal) >= 2:
         for name in internal:
             node.children[name].dim = True
-        bucket = Node("internals", node.rel + "/_internals")
+        bucket = Node(node.collection, "internals", node.rel + "/_internals")
         bucket.dim = True
         for name in internal:
             bucket.children[name] = node.children.pop(name)
         node.children["internals"] = bucket
 
 
-ROWS = []
-
-
-def emit(node, depth, top=False):
+def emit(node, depth, rows, top=False):
     kids = sorted(node.children.values(), key=lambda n: (n.dim, n.name.lower()))
     if top:
         for k in kids:
-            emit(k, depth)
+            emit(k, depth, rows)
         return
     if node.importable and kids:
-        ROWS.append((depth, node.name, "", node.platform, node.dim))
-        ROWS.append((depth + 1, "import " + node.name, node.path, node.platform, node.dim))
+        rows.append((depth, node.name, "", node.platform, node.dim))
+        rows.append((depth + 1, "import " + node.name, node.path, node.platform, node.dim))
         for k in kids:
-            emit(k, depth + 1)
+            emit(k, depth + 1, rows)
     elif kids:
-        ROWS.append((depth, node.name, "", node.platform, node.dim))
+        rows.append((depth, node.name, "", node.platform, node.dim))
         for k in kids:
-            emit(k, depth + 1)
+            emit(k, depth + 1, rows)
     else:
-        ROWS.append((depth, node.name, node.path, node.platform, node.dim))
+        rows.append((depth, node.name, node.path, node.platform, node.dim))
 
 
 def esc(s):
@@ -262,29 +185,45 @@ def esc(s):
 
 
 def main():
-    root = scan(CORE, "")
-    collapse(root)
-    sink_internals(root)
-    emit(root, 0, top=True)
+    tables = []
+    for collection in COLLECTIONS:
+        root = scan(collection, collection_root(collection, ROOT), "")
+        rows = []
+        if root is not None:
+            collapse(root)
+            sink_internals(root)
+            group_platform(root)
+            emit(root, 0, rows, top=True)
+        tables.append((collection.upper() + "_ROWS", collection, rows))
 
     lines = []
     lines.append("package model")
     lines.append("")
     lines.append("// AUTO-GENERATED by tools/gen_core_tree.py -- do not edit by hand.")
-    lines.append("// Flat depth-indented rows describing the importable core tree.")
+    lines.append("// Flat depth-indented rows describing the importable packages of each")
+    lines.append("// built-in collection (core:, base:, vendor:).")
     lines.append("")
     lines.append("CoreRow :: struct { depth: int, label: string, path: string, platform: string, dim: bool }")
+    for table, collection, rows in tables:
+        lines.append("")
+        lines.append("%s := [?]CoreRow{" % table)
+        for d, label, path, plat, dim in rows:
+            lines.append('\t{%d, "%s", "%s", "%s", %s},' % (
+                d, esc(label), esc(path), esc(plat), "true" if dim else "false"))
+        lines.append("}")
+        print("%s rows: %d" % (table, len(rows)))
     lines.append("")
-    lines.append("CORE_ROWS := [?]CoreRow{")
-    for d, label, path, plat, dim in ROWS:
-        lines.append('\t{%d, "%s", "%s", "%s", %s},' % (
-            d, esc(label), esc(path), esc(plat), "true" if dim else "false"))
+    lines.append("// Packages whose folder name isn't an identifier: the name to import them as.")
+    lines.append("ImportName :: struct { path: string, name: string }")
+    lines.append("")
+    lines.append("IMPORT_NAMES := [?]ImportName{")
+    for path in sorted(IMPORT_NAMES):
+        lines.append('\t{"%s", "%s"},' % (esc(path), esc(IMPORT_NAMES[path])))
     lines.append("}")
     lines.append("")
 
     with open(OUT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print("rows:", len(ROWS))
     print("written:", os.path.abspath(OUT))
 
 

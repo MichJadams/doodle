@@ -9,7 +9,9 @@ package model
 //   - calls by return type: same type after aliases (distinct types must match by name)
 // Anything we can't resolve is Unknown and never grayed out.
 
+import "base:runtime"
 import "core:strings"
+import "core:sync"
 
 Type_Cat :: enum {
 	Unknown, Any, Integer, Float, Rune, Bool, String, CString, CString16,
@@ -26,6 +28,8 @@ Resolved_Type :: struct {
 Type_Ctx :: struct {
 	app:   ^App,
 	cache: map[string]Resolved_Type,
+	refs:  map[string]string, // import alias -> path (filled on first use)
+	refs_ready: bool,
 }
 
 type_ctx_make :: proc(app: ^App) -> Type_Ctx {
@@ -60,12 +64,17 @@ builtin_cat :: proc(name: string) -> (Type_Cat, bool) {
 // core package whose last path segment is `ref` ("c" -> "core:c").
 @(private = "file")
 path_for_ref :: proc(ctx: ^Type_Ctx, ref, name: string) -> string {
-	imports := collect_imports(ctx.app)
-	defer delete(imports)
-	for imp in imports do if imp.ref == ref do return imp.path
+	if !ctx.refs_ready {
+		ctx.refs = make(map[string]string, 8, context.temp_allocator)
+		imports := collect_imports(ctx.app)
+		defer delete(imports)
+		for imp in imports do if imp.ref not_in ctx.refs do ctx.refs[strings.clone(imp.ref, context.temp_allocator)] = strings.clone(imp.path, context.temp_allocator)
+		ctx.refs_ready = true
+	}
+	if p, ok := ctx.refs[ref]; ok do return p
 	for t in CORE_TYPES {
 		if t.name != name do continue
-		if t.path == strings.concatenate({"core:", ref}, context.temp_allocator) || strings.has_suffix(t.path, strings.concatenate({"/", ref}, context.temp_allocator)) {
+		if t.path == strings.concatenate({"core:", ref}, context.temp_allocator) || t.path == strings.concatenate({"base:", ref}, context.temp_allocator) || strings.has_suffix(t.path, strings.concatenate({"/", ref}, context.temp_allocator)) {
 			return t.path
 		}
 	}
@@ -74,8 +83,29 @@ path_for_ref :: proc(ctx: ^Type_Ctx, ref, name: string) -> string {
 
 @(private = "file")
 find_core_type :: proc(path, name: string) -> (CoreType, bool) {
-	for t in CORE_TYPES do if t.path == path && t.name == name do return t, true
+	if i, ok := core_type_index(path, name); ok do return CORE_TYPES[i], true
 	return {}, false
+}
+
+// Lazily built "path|name" -> first CORE_TYPES row (the table is ~14k rows; a
+// linear scan per lookup made menus with many entries slow). Lives for the
+// whole run, outside any tracked allocator.
+@(private = "file")
+core_type_map: map[string]int
+@(private = "file")
+core_type_once: sync.Once
+
+core_type_index :: proc(path, name: string) -> (int, bool) {
+	sync.once_do(&core_type_once, proc() {
+		a := runtime.heap_allocator()
+		core_type_map = make(map[string]int, len(CORE_TYPES), a)
+		for t, i in CORE_TYPES {
+			k := strings.concatenate({t.path, "|", t.name}, a)
+			if k in core_type_map { delete(k, a); continue }
+			core_type_map[k] = i
+		}
+	})
+	return core_type_map[strings.concatenate({path, "|", name}, context.temp_allocator)]
 }
 
 // resolve_type works out the category and identity of a type expression
@@ -199,6 +229,12 @@ entry_fits :: proc(ctx: ^Type_Ctx, e: Entry, exp: Resolved_Type) -> bool {
 	case "__call_this_pkg__":
 		sig := call_signature(ctx.app, "", e.call_name)
 		return ret_fits(ctx, sig.ret, "", exp)
+	case BUILTIN_CONST_FILL, ENUM_VALUE_FILL:
+		return ctrl_entry_fits(e, exp) // ODIN_OS, .Windows (ctrl.odin)
+	case LIT_TYPE_FILL:
+		return lit_type_fits(ctx, e, exp) // struct_lit.odin
+	case CONV_FILL, CONV_FORM_FILL:
+		return conv_fits(ctx, e, exp) // T(x), cast(T)x (expr.odin)
 	}
 	// Everything else is a type name (Type submenu): only a typeid/any slot takes a type.
 	return exp.cat == .Typeid || exp.cat == .Any || exp.cat == .Unknown

@@ -42,14 +42,12 @@ slots_of :: proc(n: Node, kind: string) -> []Field {
 // Open the fill menu on the nth `kind` slot of line ni.
 @(private = "file")
 open_fill :: proc(app: ^App, ni: int, kind: string, nth: int) {
-	focus_line(app, ni)
-	k, seen := 0, 0
-	for f in app.doc.nodes[ni].fields {
+	seen := 0
+	for f, i in app.doc.nodes[ni].fields {
 		if f.slot && f.kind == kind {
-			if seen == nth { app.editor_field = k; break }
+			if seen == nth { focus_field_index(app, ni, i); break }
 			seen += 1
 		}
-		if f.editable || f.slot do k += 1
 	}
 	update(app, Input{confirm = true})
 }

@@ -28,14 +28,12 @@ cleanup :: proc(app: ^App) {
 // Open the fill menu on the nth unfilled value dot of line ni.
 @(private = "file")
 open_value :: proc(app: ^App, ni, nth: int) {
-	focus_line(app, ni)
-	k, seen := 0, 0
-	for f in app.doc.nodes[ni].fields {
+	seen := 0
+	for f, i in app.doc.nodes[ni].fields {
 		if f.slot && f.kind == "value" {
-			if seen == nth { app.editor_field = k; break }
+			if seen == nth { focus_field_index(app, ni, i); break }
 			seen += 1
 		}
-		if f.editable || f.slot do k += 1
 	}
 	update(app, Input{confirm = true})
 }
@@ -121,7 +119,7 @@ test_messageboxw_with_or_of_constants :: proc(t: ^testing.T) {
 
 	open_value(&app, ni, 0); pick(t, &app, "nil")                                     // hWnd
 	open_value(&app, ni, 0); pick(t, &app, "String"); pick(t, &app, "\"...\"  string") // lpText
-	open_value(&app, ni, 0); pick(t, &app, "Call"); pick(t, &app, "Procedure from an import")
+	open_value(&app, ni, 0); pick(t, &app, "Call"); pick(t, &app, "From import")
 	pick(t, &app, "win"); pick_leaf(t, &app, "L", "__call_import_proc__")              // lpCaption
 	open_value(&app, ni, 0); pick(t, &app, "String"); pick(t, &app, "\"...\"  string") // L's value
 
@@ -159,7 +157,9 @@ test_constants_and_operators_are_grayed_by_type :: proc(t: ^testing.T) {
 
 	open_value(&app, ni, 1) // lpText: LPCWSTR
 	testing.expect(t, dimmed(t, &app, "MB_OK"), "a number isn't an LPCWSTR")
-	testing.expect(t, dimmed(t, &app, "Operator"), "no operator produces a cstring16")
+	testing.expect(t, dimmed(t, &app, "Bitwise"), "no bitwise operator produces a cstring16")
+	testing.expect(t, dimmed(t, &app, "Arithmetic"), "no arithmetic operator produces a cstring16")
+	testing.expect(t, !dimmed(t, &app, "Choose"), "`a if c else b` can be a cstring16") // expr.odin
 	close_menus(&app)
 
 	open_value(&app, ni, 0) // hWnd: HWND

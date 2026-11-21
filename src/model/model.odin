@@ -61,7 +61,7 @@ PAGE             :: 12  // Alpha-bucket page size
 FLAT_MAX         :: 60  // Show a group flat (scrollable) up to this size; only split beyond it
 MIN_PREFIX_SHARE :: 3   // Min procs sharing a prefix to form a group
 
-MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder"}
+MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder", "Key Layout"}
 
 // A menu entry. Exactly one behaviour applies:
 //   children non-empty -> submenu
@@ -77,11 +77,14 @@ Entry :: struct {
 	keyword:        string, // e.g. "package" -> node = keyword + editable identifier
 	ident_default:  string, // default identifier text for keyword leaves
 	proc_outline:   bool,   // inserts procedure outline (3 nodes, 1 editable + 3 slots)
-	type_construct: string, // "" = not a type; else "struct"/"enum"/"union"/"bit_set"/"distinct"/"alias"
+	type_construct: string, // "" = not a type; else "struct"/"poly_struct"/"enum"/"union"/"bit_set"/"bit_field"/"distinct"/"alias"
 	value_construct: string, // "" = not a value; else "const"/"typed_const"/"config"/"global_typed"/"global_init"
+	special:        string, // Compile-time / Modifiers leaves (ctrl.odin): SPECIAL_WHEN, SPECIAL_ATTR, ...
 	platform:       string, // "" = all; else comma list of ODIN_OS names
 	dim:            bool,
 	quit:           bool,
+	format:         bool,   // "Format file" (IDE menu)
+	key_layout:     bool,   // "Key layout" (IDE menu): the app opens the Key Layout page
 	alias:          bool,   // if true, navigating this group sets import_alias mode
 	fill:           string, // "" = none; type name = fill slot with type; "__var__" = instantiate variable
 	call_name:      string, // proc or package name for call statements
@@ -90,6 +93,7 @@ Entry :: struct {
 	ret_pkg:        string, // import-proc leaves: import path `ret` is written in
 	owned_label:    bool,   // if true, label was cloned and should be freed
 	pinned:         bool,   // listed first, in given order, even in long sorted lists (e.g. "used in this file")
+	heat_key:       string, // menu heatmap identity when the label isn't one (an import alias -> the import path; alpha buckets, alias-qualified pins, enum values, "Calls" -> "Call"). Owned when non-empty (heat.odin)
 	children:       []Entry,
 }
 
@@ -109,6 +113,9 @@ Node :: struct {
 }
 Doc :: struct {
 	nodes: [dynamic]Node,
+	// The opened file had no final newline: file_text (serialize.odin) keeps it
+	// that way. New documents are saved ending in a newline.
+	no_final_newline: bool,
 }
 
 node_text :: proc(n: Node, allocator := context.allocator) -> string {
@@ -123,6 +130,9 @@ MenuView :: struct {
 	rest:    []Entry,         // backing for bucket children (allocated, or nil)
 	labels:  [dynamic]string, // allocated bucket labels to free on pop
 	index:   int,
+	recent:  int,             // the first `recent` entries are the "recently used" section (menu_sections.odin)
+	heat:    []f32,           // wear shade 0..1 per display entry (heat.odin; nil = none), freed on pop
+	heat_root: string,        // root view only: heat segments above its entries, each + HEAT_SEP (heat_set_root); owned
 }
 
 App :: struct {
@@ -137,6 +147,7 @@ App :: struct {
 	editor_line:    int, // index into doc.nodes; == len(nodes) => green insertion dot focused
 	editor_field:   int, // selectable-field index within the current line (left/right)
 	editor_dot:     bool, // cursor is on the green insertion dot *before* node editor_line
+	editor_attr:    bool, // with editor_dot: on the purple attribute dot before node editor_line instead (attr_dots.odin)
 	import_alias:   bool, // set when navigating aliased import tree
 	insert_at:      int, // node index where new constructs are inserted (0=top, len=bottom)
 	replacing:      bool, // if true, menu selection replaces the current item instead of inserting
@@ -152,27 +163,102 @@ App :: struct {
 	name_counter: int, // deterministic name generation counter
 
 	hint_pool: [dynamic]string, // owned Field.hint strings read from document text (freed by doc_reset)
+
+	// RT tree navigation (selection.odin): the path from a construct down to the
+	// selected part, and the cursor it was built for (rebuilt when that changes).
+	tree_path:   [dynamic]Sel,
+	tree_line:   int,
+	tree_field:  int,
+	tree_dot:    bool,
+	tree_nodes:  int,
+	tree_sticky: bool, // keep highlighting the RT selection after RT is released (Y acts on it)
+
+	// Y on an argument (change.odin): its original fields while the fill menu is open.
+	refill_saved:  [dynamic]Field,
+	refill_active: bool,
+	refill_ni:     int,
+	refill_fi:     int,
+
+	// Y on a call's name (change.odin): the call being changed.
+	change_call: bool,
+	change_ni:   int,
+	change_fi:   int,
+
+	// A on a green dot inside a function (body_dots.odin): the temporary statement line.
+	body_insert_active: bool,
+	body_insert_ni:     int,
+	body_insert_reused: bool,   // it replaced a blank line in an empty block...
+	body_insert_blank:  string, // ...whose text is kept to put back on cancel
+
+	// "Reference" (ref_pick.odin): picking a name in the file for the dot at ref_ni/ref_fi,
+	// then (ref_pass_active) the "Pass as" menu for it.
+	ref_pick_active: bool,
+	ref_pass_active: bool,
+	ref_ni, ref_fi:  int,
+
+	// Y on a declaration's operator (change.odin): the "Declare as" menu for it.
+	decl_form_active: bool,
+
+	// A rename other uses could follow (rename.odin): the prompt is open.
+	rename_active:          bool,
+	rename_ni, rename_fi:   int,
+	rename_old, rename_new: string,
+	rename_hits:            [dynamic]Rename_Hit,
+	decl_ni, decl_fi: int,
+
+	// Capture dots (capture.odin): the document fingerprint they were synced for.
+	capture_fp: u64,
+
+	// Compile-time control and modifiers (ctrl.odin, modifiers.odin).
+	add_from:         int,       // where the Add menu started inserting (indented inside a file-scope when)
+	ctrl_menu:        Ctrl_Menu, // a compile-time / modifier options menu is open
+	ctrl_ni, ctrl_fi: int,       // the line / field it acts on
+	ctrl_from_pick:   bool,      // opened from a modifier pick: B goes back to picking
+	mod_pick_active:  bool,      // picking the declaration a modifier attaches to
+	mod_pick_kind:    string,    // SPECIAL_ATTR / SPECIAL_DIRECTIVE / SPECIAL_CALLCONV
+	mod_pick_line:    int,       // the highlighted declaration
+
+	// Procedures, types and imports in the package's other files (siblings.odin).
+	// Kept across doc_reset (a load replaces the document, not its folder);
+	// load_siblings replaces them (re-parsing only the files that changed since
+	// the last load: sibling_cache), free_siblings frees them all.
+	sibling_procs:   [dynamic]Sibling_Proc,
+	sibling_types:   [dynamic]Sibling_Type,
+	sibling_imports: [dynamic]Sibling_Import,
+	sibling_cache:   [dynamic]Sibling_File,
+
+	// The global menu heatmap (heat.odin). Owned by the app layer (loaded from /
+	// saved next to doodle.exe); nil in tests and temporary Apps = no heat.
+	heat: ^Heat,
+
+	// The button layout (keymap.odin). Owned by the app layer (doodle_keys.tsv
+	// next to doodle.exe); nil = KEYMAP_DEFAULT (tests, temporary Apps).
+	keymap:   ^Keymap,
+	requests: Actions, // keymap actions the app layer performs (disk, clipboard, overlays); it clears them
 }
 
 Input :: struct {
 	confirm, cancel:       bool,
 	up, down, left, right: bool,
 	lt_held, rt_held:      bool,
+	x, y:                  bool, // X / Y pressed (keymap actions; menus ignore them)
 }
 
 // ---- Menus (built lazily per App) ----
 
 ensure_menus :: proc(app: ^App) {
 	if app.add_menu != nil do return
-	// NOTE: build a SEPARATE core tree per branch. Sharing one slice would make
+	// NOTE: build a SEPARATE package tree per branch. Sharing one slice would make
 	// free_entries() free the same subtree twice (double free).
-	import_src := make_slice(grp("core", build_core_tree()))
+	// Import -> core / base / vendor / shared (collections.odin).
+	import_src := build_import_collections()
 	file_setup := make_slice(
 		kw_leaf("Package declaration", "package", "main"),
 		leaf("File tags", "#+build linux"),
-		leaf("Comments", "// comment"),
+		leaf("Comments", COMMENT_INSERT), // `// text`, editable (stmt_layout.odin)
+		leaf("Blank line", BLANK_INSERT),
 	)
-	aliased_import_src := make_slice(grp("core", build_core_tree()))
+	aliased_import_src := build_import_collections()
 	dependencies := make_slice(
 		grp("Import", import_src),
 		Entry{label = "Aliased import", alias = true, children = aliased_import_src},
@@ -184,9 +270,11 @@ ensure_menus :: proc(app: ^App) {
 	)
 	types := make_slice(
 		type_leaf("Struct", "struct"),
+		type_leaf("Polymorphic struct", "poly_struct"),
 		type_leaf("Enum", "enum"),
 		type_leaf("Union", "union"),
 		type_leaf("Bit set", "bit_set"),
+		type_leaf("Bit field", "bit_field"),
 		type_leaf("Distinct type", "distinct"),
 		type_leaf("Type alias", "alias"),
 	)
@@ -203,8 +291,14 @@ ensure_menus :: proc(app: ^App) {
 		grp("Procedures", procedures),
 		grp("Types", types),
 		grp("Values", values),
+		grp("Compile-time", compile_time_entries()), // ctrl.odin
+		grp("Modifiers", modifier_entries()),        // modifiers.odin
 	)
-	app.ide_menu = make_slice(Entry{label = "Exit", quit = true})
+	app.ide_menu = make_slice(
+		Entry{label = "Format file", format = true}, // indentation + blank lines (formatter.odin)
+		Entry{label = "Key layout", key_layout = true}, // the Key Layout page (app layer)
+		Entry{label = "Exit", quit = true},
+	)
 }
 
 leaf      :: proc(label, insert: string) -> Entry { return Entry{label = label, insert = insert} }
@@ -230,6 +324,7 @@ free_entries :: proc(entries: []Entry) {
 		if e.owned_label && len(e.label) > 0 do delete(e.label)
 		if len(e.call_name) > 0 do delete(e.call_name)
 		if len(e.call_pkg) > 0 do delete(e.call_pkg)
+		if len(e.heat_key) > 0 do delete(e.heat_key)
 		free_entries(e.children)
 	}
 	if entries != nil do delete(entries)
@@ -246,13 +341,16 @@ free_menus :: proc(app: ^App) {
 @(private = "file")
 TNode :: struct { e: Entry, kids: [dynamic]^TNode }
 
-build_core_tree :: proc() -> []Entry {
+build_core_tree :: proc() -> []Entry { return build_rows_tree(CORE_ROWS[:]) }
+
+// build_rows_tree: the menu tree for one collection's generated rows (core_tree.odin).
+build_rows_tree :: proc(rows: []CoreRow) -> []Entry {
 	roots: [dynamic]^TNode
 	defer delete(roots)
 	stack: [dynamic]^TNode
 	defer delete(stack)
 
-	for row in CORE_ROWS {
+	for row in rows {
 		n := new(TNode)
 		n.e = Entry{label = row.label, import_path = row.path, platform = row.platform, dim = row.dim}
 		if row.depth == 0 {
@@ -360,20 +458,34 @@ append_aliased_import_node :: proc(app: ^App, path: string) {
 
 // Extract the default alias from an import path (the last segment).
 alias_default :: proc(path: string) -> string {
-	// Find the last '/' or the ':' if no '/'.
-	last_slash := -1
+	if name, ok := import_name_for(path); ok do return name // vendor:lua/5.4 -> lua
+	// The last segment: after the last '/', else after the ':'.
+	start := 0
 	for i := len(path) - 1; i >= 0; i -= 1 {
-		if path[i] == '/' {
-			last_slash = i
+		if path[i] == '/' || path[i] == ':' {
+			start = i + 1
 			break
 		}
 	}
-	if last_slash >= 0 do return path[last_slash + 1:]
-	// No '/', so look for ':'
-	for i := len(path) - 1; i >= 0; i -= 1 {
-		if path[i] == ':' do return path[i + 1:]
+	seg := path[start:]
+	if is_ident(seg) do return seg
+	// Not an identifier (a runtime-listed shared:my-lib): make one, the way
+	// IMPORT_NAMES does for core/vendor. A version folder takes its parent's
+	// name (shared:foo/1.0 -> foo); other characters become '_' (my-lib -> my_lib).
+	if seg != "" && strings.trim_left(seg, "0123456789.") == "" && start > 0 && path[start - 1] == '/' {
+		p := start - 1
+		ps := p
+		for ps > 0 && path[ps - 1] != '/' && path[ps - 1] != ':' do ps -= 1
+		if ps < p do seg = path[ps:p]
+		if is_ident(seg) do return seg
 	}
-	return path
+	b := strings.builder_make(context.temp_allocator)
+	if seg == "" || (seg[0] >= '0' && seg[0] <= '9') do strings.write_byte(&b, '_')
+	for c in transmute([]u8)seg {
+		ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+		strings.write_byte(&b, ok ? c : '_')
+	}
+	return strings.to_string(b)
 }
 
 // Append a procedure outline (3 nodes: signature, body indent, closing brace).
@@ -427,6 +539,9 @@ append_type_node :: proc(app: ^App, kind: string) {
 	type_name := generate_type(app)
 	defer delete(type_name)
 	switch kind {
+	case "poly_struct", "bit_field":
+		append_data_header(app, kind, type_name) // data_types.odin
+
 	case "struct":
 		// Line 1: <type_name> :: struct {
 		n1: Node
@@ -540,13 +655,16 @@ append_value_node :: proc(app: ^App, kind: string) {
 		doc_insert(app, n)
 
 	case "global_typed":
-		// Single line: <var_name>: •
+		// Single line: <var_name>: • = •  (LT+B on the value dot leaves `name: T`;
+		// Y on `:` changes the declaration form, as for statements)
 		var_name := generate_ident(app)
 		defer delete(var_name)
 		n: Node
 		append(&n.fields, Field{strings.clone(var_name), true, false, "", "", ""})     // editable name
-		append(&n.fields, Field{strings.clone(": "), false, false, "", "", ""})        // fixed
+		append(&n.fields, Field{strings.clone(": "), false, false, "decl", "", ""})    // decl operator
 		append(&n.fields, Field{"", false, true, "type", "", ""})                      // type slot
+		append(&n.fields, Field{strings.clone(" = "), false, false, "", "", ""})       // fixed
+		append(&n.fields, Field{"", false, true, "value", "", ""})                     // value slot
 		doc_insert(app, n)
 
 	case "global_init":
@@ -555,37 +673,13 @@ append_value_node :: proc(app: ^App, kind: string) {
 		defer delete(var_name)
 		n: Node
 		append(&n.fields, Field{strings.clone(var_name), true, false, "", "", ""})     // editable name
-		append(&n.fields, Field{strings.clone(" := "), false, false, "", "", ""})      // fixed
+		append(&n.fields, Field{strings.clone(" := "), false, false, "decl", "", ""})  // decl operator
 		append(&n.fields, Field{"", false, true, "value", "", ""})                     // value slot
 		doc_insert(app, n)
 	}
 }
 
 // ---- Slot filling ----
-
-// Collect user-defined type names from the document (PascalCase identifiers).
-collect_user_types :: proc(app: ^App) -> []string {
-	result: [dynamic]string
-	for n in app.doc.nodes {
-		for f in n.fields {
-			if f.editable && len(f.text) > 0 {
-				// Check if first character is uppercase (A-Z)
-				if f.text[0] >= 'A' && f.text[0] <= 'Z' {
-					// Add if not already in list
-					already_added := false
-					for s in result {
-						if s == f.text {
-							already_added = true
-							break
-						}
-					}
-					if !already_added do append(&result, f.text)
-				}
-			}
-		}
-	}
-	return result[:]
-}
 
 // Collect procedure names from the document (scan for " :: proc(").
 collect_proc_names :: proc(app: ^App) -> []string {
@@ -609,6 +703,12 @@ collect_proc_names :: proc(app: ^App) -> []string {
 				}
 			}
 		}
+	}
+	// The package's other files (siblings.odin): callable without an import.
+	for p in app.sibling_procs {
+		already_added := false
+		for s in result do if s == p.name { already_added = true; break }
+		if !already_added do append(&result, p.name)
 	}
 	return result[:]
 }
@@ -880,6 +980,10 @@ get_body_indent :: proc(app: ^App, ni: int, allocator := context.allocator) -> s
 
 // Insert a multi-line branching statement at (ni, fi).
 make_branch_statement :: proc(app: ^App, ni, fi: int, kind: string) {
+	if kind != "__br_when__" {
+		branch_make(app, ni, fi, kind) // if / switch forms (branch.odin)
+		return
+	}
 	indent := get_body_indent(app, ni)
 	defer delete(indent)
 	inner_indent := strings.concatenate({indent, "    "})
@@ -890,89 +994,14 @@ make_branch_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	ordered_remove(fields, fi)
 	
 	switch kind {
-	case "__br_if__": // if • {
-		// Header: if • {
-		f1 := Field{strings.clone("if "), false, false, "", "", ""}
-		f2 := Field{"", false, true, "value", "", ""} // condition slot
-		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
-		inject_at(fields, fi, f3)
-		inject_at(fields, fi, f2)
-		inject_at(fields, fi, f1)
-		
-		// Inner body line: <inner_indent><body slot>
-		n_body: Node
-		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
-		append(&n_body.fields, Field{"", false, true, "body", "", ""})
-		inject_at(&app.doc.nodes, ni + 1, n_body)
-		
-		// Closing brace: <indent>}
-		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
-		inject_at(&app.doc.nodes, ni + 2, n_close)
-		
-	case "__br_ifelse__": // if • { / body / } else { / body2 / }
-		// Header: if • {
-		f1 := Field{strings.clone("if "), false, false, "", "", ""}
-		f2 := Field{"", false, true, "value", "", ""} // condition slot
-		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
-		inject_at(fields, fi, f3)
-		inject_at(fields, fi, f2)
-		inject_at(fields, fi, f1)
-		
-		// Inner body line 1: <inner_indent><body slot>
-		n_body1: Node
-		append(&n_body1.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
-		append(&n_body1.fields, Field{"", false, true, "body", "", ""})
-		inject_at(&app.doc.nodes, ni + 1, n_body1)
-		
-		// Else line: <indent>} else {
-		n_else: Node
-		append(&n_else.fields, Field{strings.clone(indent), false, false, "", "", ""})
-		append(&n_else.fields, Field{strings.clone("} else {"), false, false, "", "", ""})
-		inject_at(&app.doc.nodes, ni + 2, n_else)
-		
-		// Inner body line 2: <inner_indent><body slot>
-		n_body2: Node
-		append(&n_body2.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
-		append(&n_body2.fields, Field{"", false, true, "body", "", ""})
-		inject_at(&app.doc.nodes, ni + 3, n_body2)
-		
-		// Closing brace: <indent>}
-		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
-		inject_at(&app.doc.nodes, ni + 4, n_close)
-		
-	case "__br_switch__": // switch • {
-		// Header: switch • {
-		f1 := Field{strings.clone("switch "), false, false, "", "", ""}
-		f2 := Field{"", false, true, "value", "", ""} // expr slot
-		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
-		inject_at(fields, fi, f3)
-		inject_at(fields, fi, f2)
-		inject_at(fields, fi, f1)
-		
-		// Inner body line: <inner_indent><body slot>
-		n_body: Node
-		append(&n_body.fields, Field{strings.clone(inner_indent), false, false, "", "", ""})
-		append(&n_body.fields, Field{"", false, true, "body", "", ""})
-		inject_at(&app.doc.nodes, ni + 1, n_body)
-		
-		// Closing brace: <indent>}
-		n_close: Node
-		append(&n_close.fields, Field{strings.clone(indent), false, false, "", "", ""})
-		append(&n_close.fields, Field{strings.clone("}"), false, false, "", "", ""})
-		inject_at(&app.doc.nodes, ni + 2, n_close)
-		
 	case "__br_when__": // when • {
-		// Header: when • {
-		f1 := Field{strings.clone("when "), false, false, "", "", ""}
-		f2 := Field{"", false, true, "value", "", ""} // compile-time condition slot
-		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
-		inject_at(fields, fi, f3)
-		inject_at(fields, fi, f2)
-		inject_at(fields, fi, f1)
+		// Header: when • {  (`when` is a keyword field: Y adds else / else when, ctrl.odin)
+		inject_at(fields, fi,
+			Field{strings.clone("when"), false, false, KW, "", ""},
+			Field{strings.clone(" "), false, false, "", "", ""},
+			Field{"", false, true, "value", "bool", ""}, // compile-time condition slot
+			Field{strings.clone(" {"), false, false, "", "", ""},
+		)
 		
 		// Inner body line: <inner_indent><body slot>
 		n_body: Node
@@ -991,12 +1020,7 @@ make_branch_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	new_body: Node
 	append(&new_body.fields, Field{strings.clone(indent), false, false, "", "", ""})
 	append(&new_body.fields, Field{"", false, true, "body", "", ""})
-	// For if/else with 4 inner nodes, insert after ni+4; else after ni+2
-	if kind == "__br_ifelse__" {
-		inject_at(&app.doc.nodes, ni + 5, new_body)
-	} else {
-		inject_at(&app.doc.nodes, ni + 3, new_body)
-	}
+	inject_at(&app.doc.nodes, ni + 3, new_body)
 }
 
 // Insert a multi-line loop statement at (ni, fi).
@@ -1014,7 +1038,7 @@ make_loop_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 	case "__loop_for__": // for • {
 		// Header: for • {
 		f1 := Field{strings.clone("for "), false, false, "", "", ""}
-		f2 := Field{"", false, true, "value", "", ""} // condition slot
+		f2 := Field{"", false, true, "value", "bool", ""} // condition slot (expects a bool)
 		f3 := Field{strings.clone(" {"), false, false, "", "", ""}
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
@@ -1092,7 +1116,7 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		var_name := generate_ident(app)
 		defer delete(var_name)
 		f1 := Field{strings.clone(var_name), true, false, "", "", ""} // editable name
-		f2 := Field{strings.clone(" := "), false, false, "", "", ""} // fixed
+		f2 := Field{strings.clone(" := "), false, false, "decl", "", ""} // fixed
 		f3 := Field{"", false, true, "value", "", ""}                 // value slot
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
@@ -1102,7 +1126,7 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		var_name := generate_ident(app)
 		defer delete(var_name)
 		f1 := Field{strings.clone(var_name), true, false, "", "", ""} // editable name
-		f2 := Field{strings.clone(": "), false, false, "", "", ""}   // fixed
+		f2 := Field{strings.clone(": "), false, false, "decl", "", ""}   // fixed
 		f3 := Field{"", false, true, "type", "", ""}                  // type slot
 		f4 := Field{strings.clone(" = "), false, false, "", "", ""}  // fixed
 		f5 := Field{"", false, true, "value", "", ""}                 // value slot
@@ -1116,7 +1140,7 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		var_name := generate_ident(app)
 		defer delete(var_name)
 		f1 := Field{strings.clone(var_name), true, false, "", "", ""} // editable name
-		f2 := Field{strings.clone(" = "), false, false, "", "", ""}  // fixed
+		f2 := Field{strings.clone(" = "), false, false, ASSIGN_OP_KIND, "", ""}  // Y: += -= ... (loops.odin)
 		f3 := Field{"", false, true, "value", "", ""}                 // value slot
 		inject_at(fields, fi, f3)
 		inject_at(fields, fi, f2)
@@ -1416,7 +1440,7 @@ make_scope_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		// Header line: label: {
 		label_name := generate_ident(app)
 		defer delete(label_name)
-		f1 := Field{strings.clone(label_name), true, false, "", "", ""} // editable label
+		f1 := Field{strings.clone(label_name), true, false, LABEL_KIND, "", ""} // editable label
 		f2 := Field{strings.clone(": {"), false, false, "", "", ""}    // fixed
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
@@ -1479,15 +1503,9 @@ build_import_proc_menu :: proc(app: ^App, ref: string, path: string) -> []Entry 
 		})
 	}
 	
-	// Filter out used procs from grouping
-	grouped_procs: [dynamic]CoreProc
-	defer delete(grouped_procs)
-	for p in all_procs {
-		if p.name not_in used_set do append(&grouped_procs, p)
-	}
-	
-	// Build grouped hierarchy
-	grouped_children := build_proc_hierarchy(ref, grouped_procs[:])
+	// Build grouped hierarchy from ALL the procs (the same groups in every project),
+	// then leave out the used ones (listed above)
+	grouped_children := remove_named_leaves(build_proc_hierarchy(ref, all_procs), used_set)
 	defer delete(grouped_children) // Just delete the slice; Entry internals are copied to result
 	
 	// Combine: used first, then grouped
@@ -1501,6 +1519,40 @@ build_import_proc_menu :: proc(app: ^App, ref: string, path: string) -> []Entry 
 	final := make([]Entry, len(result))
 	copy(final, result[:])
 	return final
+}
+
+// remove_named_leaves drops (and frees) the leaves whose call_name is in `names`
+// from a grouping built by build_proc_hierarchy, and the groups left empty.
+// The import menus group a package's FULL name list and then take out the
+// names used in this file (pinned at the top instead), so group labels and
+// shapes - the menu trails, and their heat (heat.odin) - don't depend on what a
+// file already uses. Takes ownership of `entries`; returns the kept ones.
+remove_named_leaves :: proc(entries: []Entry, names: map[string]bool) -> []Entry {
+	if len(names) == 0 || len(entries) == 0 do return entries
+	kept := make([dynamic]Entry, 0, len(entries), context.temp_allocator)
+	for e in entries {
+		e := e
+		drop := false
+		if len(e.children) > 0 {
+			e.children = remove_named_leaves(e.children, names)
+			drop = len(e.children) == 0
+		} else {
+			drop = e.call_name != "" && e.call_name in names
+		}
+		if !drop {
+			append(&kept, e)
+			continue
+		}
+		if e.owned_label && len(e.label) > 0 do delete(e.label)
+		if len(e.call_name) > 0 do delete(e.call_name)
+		if len(e.call_pkg) > 0 do delete(e.call_pkg)
+		if len(e.heat_key) > 0 do delete(e.heat_key)
+	}
+	delete(entries)
+	if len(kept) == 0 do return nil
+	out := make([]Entry, len(kept))
+	copy(out, kept[:])
+	return out
 }
 
 // Build hierarchical grouping for a list of procedures.
@@ -1738,6 +1790,9 @@ build_alpha_buckets :: proc(ref: string, procs: []CoreProc) -> []Entry {
 		append(&buckets, Entry{
 			label = label,
 			owned_label = true,
+			// Inside a prefix group every bucket can have the same label ("w" for
+			// WM_...): its first..last names tell them apart (heat.odin).
+			heat_key = strings.concatenate({bucket_procs[0].name, "..", bucket_procs[len(bucket_procs) - 1].name}),
 			children = bucket_children,
 		})
 	}
@@ -1845,13 +1900,13 @@ extract_prefix :: proc(name: string) -> string {
 	return ""
 }
 
-// Build call menu children: Procedure in this package, Procedure from an import, Built-in.
+// Build call menu children: Internal procedure, From import, Built-in.
 // Returns a slice that the caller owns (and should pass to free_entries).
 build_call_children :: proc(app: ^App) -> []Entry {
 	call_entries: [dynamic]Entry
 	defer delete(call_entries)
 	
-	// Subcategory 1: Procedure in this package
+	// Subcategory 1: Internal procedure
 	proc_names := collect_proc_names(app)
 	defer delete(proc_names)
 	this_pkg_calls: [dynamic]Entry
@@ -1869,9 +1924,9 @@ build_call_children :: proc(app: ^App) -> []Entry {
 	}
 	this_pkg_children := make([]Entry, len(this_pkg_calls))
 	copy(this_pkg_children, this_pkg_calls[:])
-	append(&call_entries, grp("Procedure in this package", this_pkg_children))
+	append(&call_entries, grp("Internal procedure", this_pkg_children))
 	
-	// Subcategory 2: Procedure from an import
+	// Subcategory 2: From import
 	imports := collect_imports(app)
 	defer delete(imports)
 	import_calls: [dynamic]Entry
@@ -1896,24 +1951,20 @@ build_call_children :: proc(app: ^App) -> []Entry {
 			append(&import_calls, Entry{
 				label = strings.clone(imp.ref), // imp.ref points into per-frame temp text
 				owned_label = true,
+				heat_key = strings.clone(imp.path), // heat is shared across aliases (heat.odin)
 				children = pkg_children,
 			})
 		}
 	}
 	import_children := make([]Entry, len(import_calls))
 	copy(import_children, import_calls[:])
-	append(&call_entries, grp("Procedure from an import", import_children))
+	append(&call_entries, grp("From import", import_children))
 	
 	// Subcategory 3: Built-in procedures
-	builtins := [?]string{
-		"len", "cap", "make", "new", "append", "delete", "free",
-		"size_of", "align_of", "offset_of", "type_of", "type_info_of",
-		"assert", "panic", "clear", "resize", "reserve",
-		"raw_data", "swizzle", "min", "max", "abs", "clamp",
-	}
 	builtin_calls: [dynamic]Entry
 	defer delete(builtin_calls)
-	for name in builtins {
+	for b in BUILTIN_PROCS { // builtin_procs.odin
+		name := b.name
 		append(&builtin_calls, Entry{
 			label = strings.clone(name),
 			fill = "__call_this_pkg__",
@@ -1938,6 +1989,7 @@ open_slot_menu :: proc(app: ^App) {
 	// Record which slot we're filling
 	app.slot_ni = ni
 	app.slot_fi = fi
+	branch_prepare_slot(app, ni, fi) // a case value dot expects the switched value's type (branch.odin)
 	
 	// Free any previous slot menu
 	if app.slot_menu != nil {
@@ -1947,8 +1999,22 @@ open_slot_menu :: proc(app: ^App) {
 	
 	// Branch on slot kind
 	slot_kind := app.doc.nodes[ni].fields[fi].kind
+
+	// A capture dot needs no menu: capture the call's result in a new variable.
+	if slot_kind == CAPTURE_KIND {
+		capture_call_result(app, ni, fi)
+		return
+	}
 	
-	if slot_kind == "params" {
+	if slot_kind == FIELDS_KIND {
+		// A struct literal's fields dot: the fields not set yet (struct_lit.odin).
+		app.slot_menu = build_lit_field_menu(app, ni, fi)
+	} else if menu, ok := types_slot_menu(app, ni, fi); ok {
+		// Dots of type declarations: members of a data body, $T params, bit_set / bit_field types.
+		app.slot_menu = menu
+	} else if menu, ok := branch_slot_menu(app, ni, fi); ok {
+		app.slot_menu = menu // an if / switch setup, a type switch's case (branch.odin)
+	} else if slot_kind == "params" {
 		// Build param-specific menu
 		app.slot_menu = make_slice(
 			Entry{label = "Add parameter", fill = "__param__"},
@@ -1960,28 +2026,18 @@ open_slot_menu :: proc(app: ^App) {
 		decls := make_slice(
 			Entry{label = "Variable (:=)", fill = "__stmt_decl__"},
 			Entry{label = "Variable (typed)", fill = "__stmt_typed__"},
+			Entry{label = "Variable (no value)", fill = ZERO_DECL_FILL}, // name: T (struct_lit.odin)
 			Entry{label = "Multiple (:=)", fill = "__stmt_multi__"},
 		)
 		
 		// Assignment category
-		assignments := make_slice(
-			Entry{label = "Assignment", fill = "__stmt_assign__"},
-		)
+		assignments := assign_menu_entries() // = += -= ... (loops.odin)
 		
 		// Calls category
 		calls_children := build_call_children(app)
 		
-		branching := make_slice(
-			Entry{label = "If", fill = "__br_if__"},
-			Entry{label = "If / Else", fill = "__br_ifelse__"},
-			Entry{label = "Switch", fill = "__br_switch__"},
-			Entry{label = "When", fill = "__br_when__"},
-		)
-		loops := make_slice(
-			Entry{label = "For (condition)", fill = "__loop_for__"},
-			Entry{label = "For ... in", fill = "__loop_forin__"},
-			Entry{label = "For (infinite)", fill = "__loop_forinf__"},
-		)
+		branching := branching_entries() // if / switch forms, when (branch.odin)
+		loops := loop_menu_entries() // loops.odin
 		jumps := make_slice(
 			Entry{label = "Return", fill = "__jmp_return__"},
 			Entry{label = "Break", fill = "__jmp_break__"},
@@ -2003,13 +2059,17 @@ open_slot_menu :: proc(app: ^App) {
 		app.slot_menu = make_slice(
 			grp("Declarations", decls),
 			grp("Assignment", assignments),
-			grp("Calls", calls_children),
+			Entry{label = "Calls", heat_key = strings.clone("Call"), children = calls_children}, // shares heat with the value menu's "Call"
 			grp("Branching", branching),
 			grp("Loops", loops),
 			grp("Jumps and cleanup", jumps),
 			grp("Error handling", errors),
 			grp("Scope and blocks", scopes),
 		)
+		ctrl_extend_body_menu(app) // "Compile-time": #assert, when (ctrl.odin)
+		branch_extend_body_menu(app, ni) // Else if / Else, Case / Default case, Fallthrough (branch.odin)
+		loop_extend_body_menu(app, ni) // break / continue: where they fit, with labels (loops.odin)
+		layout_extend_body_menu(app) // Comment, Blank line (stmt_layout.odin)
 	} else if slot_kind == "value" || slot_kind == "args" {
 		// Build value literal menu for value slots (and optional "args" dots)
 		// The Type submenu (for rare cases like x := int) - imports, user, basic types.
@@ -2030,10 +2090,14 @@ open_slot_menu :: proc(app: ^App) {
 			Entry{label = "nil", fill = "__lit_nil__"},
 			Entry{label = "Reference", fill = "__lit_ref__"},
 			Entry{label = strings.clone("Call"), owned_label = true, children = build_call_children(app)},
+			Entry{label = "Struct literal", children = build_struct_lit_entries(app, app.doc.nodes[ni].fields[fi])}, // T{...} (struct_lit.odin)
 			Entry{label = "Constant", children = build_const_entries(app)}, // win.MB_OK, ...
-			Entry{label = "Operator", children = build_operator_entries()},  // ● | ●, ● == ●, ...
+			Entry{label = "Operator", children = build_operator_entries()},  // ● | ●, ● == ●, ● if ● else ●, ...
+			Entry{label = "Convert", children = build_convert_entries(app, app.doc.nodes[ni].fields[fi].hint, app.doc.nodes[ni].fields[fi].hint_pkg)}, // T(●), cast(T)● (expr.odin)
 			Entry{label = "Type", children = type_children},
 		)
+		ctrl_extend_value_menu(app, ni, fi) // "Built-in constants", "Enum value" (ctrl.odin)
+		loop_extend_value_menu(app, ni, fi) // a loop's iterable: "Range", non-iterables grayed (loops.odin)
 	} else {
 		// Generic Type/Variable menu for other slots (kind=="type", kind=="")
 		// Type submenu: types from imports, then user types, then basic types.
@@ -2056,6 +2120,13 @@ open_slot_menu :: proc(app: ^App) {
 			apply_fit_dims(&ctx, app.slot_menu, exp)
 		}
 	}
+	// "Reference" needs a name in the file to pick (after the type pass, which resets dims).
+	if len(ref_candidates(app)) == 0 {
+		for &e in app.slot_menu do if e.fill == "__lit_ref__" do e.dim = true
+	}
+	branch_adjust_menu(app, ni, fi) // case values: "Range", values other cases use grayed (branch.odin)
+	when_extend_value_menu(app, ni, fi) // a `when` condition: calls grayed (when_const.odin)
+	arg_row_extend_menu(app, ni, fi) // Y on an argument of a wrapped call: "Join with previous row" (stmt_layout.odin)
 	push_menu(app, "Fill slot", app.slot_menu)
 }
 
@@ -2068,10 +2139,10 @@ num_editable :: proc(app: ^App) -> int {
 
 // Resolve the current editor selection to a selectable field location (editable or slot).
 // Count selectable (editable or slot) fields on one line.
+// The parts of a line D-pad Left/Right can highlight (selection.odin: names,
+// dots, and - on call lines - the call's name and each argument).
 selectable_in_node :: proc(app: ^App, ni: int) -> int {
-	c := 0
-	for f in app.doc.nodes[ni].fields do if f.editable || f.slot do c += 1
-	return c
+	return len(line_leaves(app.doc.nodes[ni]))
 }
 
 // Focus the green insertion dot (past the last line).
@@ -2079,6 +2150,7 @@ focus_dot :: proc(app: ^App) {
 	app.editor_line = len(app.doc.nodes)
 	app.editor_field = 0
 	app.editor_dot = true
+	app.editor_attr = false
 }
 
 // Focus the green insertion dot before node `at` (an insertion boundary, 0..=len).
@@ -2086,12 +2158,14 @@ focus_dot_at :: proc(app: ^App, at: int) {
 	app.editor_line = clamp(at, 0, len(app.doc.nodes))
 	app.editor_field = 0
 	app.editor_dot = true
+	app.editor_attr = false
 }
 
 // Focus line `ni` itself (not the insertion dot before it).
 focus_line :: proc(app: ^App, ni: int) {
 	app.editor_line = ni
 	app.editor_dot = false
+	app.editor_attr = false
 	clamp_field(app)
 }
 
@@ -2103,38 +2177,58 @@ on_dot :: proc(app: ^App) -> bool {
 // Green insertion dots: pts[i] (i in 0..=len(nodes)) is true when a dot sits before
 // node i, i.e. between top-level constructs. pts[0] and pts[len] are always true.
 // One pass over brace depth (equivalent to checking construct_range ends).
+// A file-scope `when` block holds declarations: its braces don't count, so its
+// declarations get dots too (block_infos, ctrl.odin).
 insertion_points :: proc(app: ^App, allocator := context.temp_allocator) -> []bool {
 	n := len(app.doc.nodes)
 	pts := make([]bool, n + 1, allocator)
-	depth := 0
-	for i in 0 ..< n {
-		pts[i] = depth <= 0
-		depth += brace_delta(app, i)
-		if depth < 0 do depth = 0
-	}
+	infos := block_infos(app)
+	for i in 0 ..< n do pts[i] = infos[i].decl_depth <= 0
 	pts[n] = true
 	return pts
 }
 
-// A cursor stop: either the green dot before node `line`, or line `line` itself.
+// dot_points: the file-scope green dots actually shown and stepped through -
+// insertion_points with one dot per gap. A blank line between declarations
+// (package / blank / import) would otherwise put a dot on each side of it; the
+// one right after the declaration above stays (format_doc redoes the blank
+// lines on save). insertion_points itself still marks every file-scope line.
+dot_points :: proc(app: ^App, allocator := context.temp_allocator) -> []bool {
+	pts := insertion_points(app, allocator)
+	for i := len(app.doc.nodes); i >= 1; i -= 1 {
+		if pts[i] && pts[i - 1] && is_blank_line(app.doc.nodes[i - 1]) do pts[i] = false
+	}
+	return pts
+}
+
+// A cursor stop: the green dot before node `line`, the purple attribute dot
+// before it (dot and attr: attr_dots.odin), or line `line` itself.
 Cursor_Stop :: struct {
 	line: int,
 	dot:  bool,
+	attr: bool,
 }
 
-// Visual ordering key: the dot before node i comes before line i.
+// Visual ordering key: the green dot before node i, then the attribute dot
+// before it, then line i.
 @(private)
-stop_key :: proc(line: int, dot: bool) -> int { return line * 2 + (dot ? 0 : 1) }
+stop_key :: proc(line: int, dot: bool, attr := false) -> int { return line * 3 + (dot ? (attr ? 1 : 0) : 2) }
+
+// The stop_key of where the cursor is now.
+cursor_stop_key :: proc(app: ^App) -> int { return stop_key(app.editor_line, on_dot(app), on_attr_dot(app)) }
 
 // All cursor stops in top-to-bottom order: every green insertion dot plus every
 // line with at least one selectable field (editable identifier or slot).
 editor_stops :: proc(app: ^App, allocator := context.temp_allocator) -> [dynamic]Cursor_Stop {
 	n := len(app.doc.nodes)
-	pts := insertion_points(app, context.temp_allocator)
+	pts := dot_points(app, context.temp_allocator)
+	bp := body_points(app, context.temp_allocator) // the dots inside functions
+	ap := attr_points(app, context.temp_allocator) // the attribute dots above procedures
 	stops := make([dynamic]Cursor_Stop, 0, n + 2, allocator)
 	for i in 0 ..= n {
-		if pts[i] do append(&stops, Cursor_Stop{i, true})
-		if i < n && selectable_in_node(app, i) > 0 do append(&stops, Cursor_Stop{i, false})
+		if pts[i] || bp[i] do append(&stops, Cursor_Stop{i, true, false})
+		if ap[i] do append(&stops, Cursor_Stop{i, true, true})
+		if i < n && selectable_in_node(app, i) > 0 do append(&stops, Cursor_Stop{i, false, false})
 	}
 	return stops
 }
@@ -2145,8 +2239,10 @@ normalize_cursor :: proc(app: ^App) {
 	if app.editor_line < 0 do app.editor_line = 0
 	if app.editor_line >= n { focus_dot(app); return }
 	if !app.editor_dot && selectable_in_node(app, app.editor_line) > 0 { clamp_field(app); return }
-	pts := insertion_points(app, context.temp_allocator)
-	if pts[app.editor_line] { focus_dot_at(app, app.editor_line); return }
+	if on_attr_dot(app) { app.editor_field = 0; return } // (on_attr_dot checks the dot is still there)
+	pts := dot_points(app, context.temp_allocator)
+	bp := body_points(app, context.temp_allocator)
+	if pts[app.editor_line] || bp[app.editor_line] { focus_dot_at(app, app.editor_line); return }
 	app.editor_dot = false
 	editor_move_line(app, +1)
 }
@@ -2164,42 +2260,36 @@ clamp_field :: proc(app: ^App) {
 // insertion dot (top, between top-level constructs, and bottom).
 editor_move_line :: proc(app: ^App, dir: int) {
 	stops := editor_stops(app, context.temp_allocator)
-	cur := stop_key(app.editor_line, on_dot(app))
+	cur := cursor_stop_key(app)
 	target := -1
 	if dir < 0 {
 		for i := len(stops) - 1; i >= 0; i -= 1 {
-			if stop_key(stops[i].line, stops[i].dot) < cur { target = i; break }
+			if stop_key(stops[i].line, stops[i].dot, stops[i].attr) < cur { target = i; break }
 		}
 	} else {
 		for s, i in stops {
-			if stop_key(s.line, s.dot) > cur { target = i; break }
+			if stop_key(s.line, s.dot, s.attr) > cur { target = i; break }
 		}
 	}
 	if target < 0 do return // nothing further in that direction: stay put
 	app.editor_line = stops[target].line
 	app.editor_dot = stops[target].dot
+	app.editor_attr = stops[target].attr
 	clamp_field(app)
 }
 
 // The currently highlighted field: line `editor_line`, the `editor_field`-th
 // selectable field on it. ok=false means the green insertion dot is focused.
+// The field the highlighted part acts through (its dot, its editable name or
+// string text, else its first field).
 editor_target :: proc(app: ^App) -> (ni: int, fi: int, ok: bool) {
-	if app.editor_dot do return 0, 0, false
-	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return 0, 0, false
-	cnt := selectable_in_node(app, app.editor_line)
-	if cnt == 0 do return 0, 0, false
-	k := clamp(app.editor_field, 0, cnt - 1)
-	idx := 0
-	for f, f_i in app.doc.nodes[app.editor_line].fields {
-		if f.editable || f.slot {
-			if idx == k do return app.editor_line, f_i, true
-			idx += 1
-		}
-	}
-	return 0, 0, false
+	lni, u, has := editor_leaf(app)
+	if !has do return 0, 0, false
+	return lni, leaf_primary_field(app.doc.nodes[lni], u), true
 }
 
 set_field_text :: proc(app: ^App, ni, fi: int, text: string) {
+	label_rename_jumps(app, ni, fi, app.doc.nodes[ni].fields[fi].text, text) // a label: its break / continue follow (label_refs.odin)
 	delete(app.doc.nodes[ni].fields[fi].text)
 	app.doc.nodes[ni].fields[fi].text = strings.clone(text)
 }
@@ -2213,6 +2303,7 @@ set_field_text :: proc(app: ^App, ni, fi: int, text: string) {
 brace_delta :: proc(app: ^App, i: int) -> int {
 	d := 0
 	t := node_text(app.doc.nodes[i], context.temp_allocator)
+	if strings.has_prefix(strings.trim_left_space(t), "//") do return 0 // a comment's braces are text
 	for r in t {
 		if r == '{' do d += 1
 		if r == '}' do d -= 1
@@ -2305,15 +2396,41 @@ delete_construct :: proc(app: ^App, start, end_param: int) {
 // top-level single-node statement, delete that node; if on a body-statement line, delete
 // just that line; if the line is a block header (contains '{'), delete the whole block.
 delete_selected :: proc(app: ^App) {
+	if layout_delete(app) do return // a comment line; a blank line next to the dot (stmt_layout.odin)
 	if on_dot(app) do return
 	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return
-	
-	// If the line contains '{', it's a block header -> delete the whole block
+
+	// else if / else branches, case clauses and values, setups, #partial (branch.odin).
+	if branch_delete(app) do return
+	// Attributes, struct directives, calling conventions, when branches, ... (ctrl.odin).
+	if ctrl_delete(app) do return
+	// Parts of a loop header: label, #reverse, 2nd variable, a C-style part, ... (loops.odin).
+	if loop_delete(app) do return
+	// A part of an operator / ternary / conversion -> a dot; a conversion's type -> unwrap (expr.odin).
+	if expr_delete(app) do return
+
+	// The name a call's result is captured in: delete just the name (capture.odin).
+	if ni, fi, ok := editor_target(app); ok && uncapture(app, ni, fi) do return
+	// A $T parameter, or a member of a one-line `enum { A, B }`: just that (data_types.odin).
+	if ni, fi, ok := editor_target(app); ok && delete_type_part(app, ni, fi) do return
+
+	// A struct literal's field, or the `= ●` of a typed declaration (struct_lit.odin).
+	if lit_fields_dot_delete(app) do return
+	if lit_delete_selected(app) do return
+
+	// A declaration with attribute lines above it, or inside a file-scope when
+	// (after the finer-grained deletes above, ctrl.odin).
+	if ctrl_delete_declaration(app) do return
+
+	// A line holding braces: the block it opens / closes, or just the line when
+	// it's balanced (`q := T{a = 1}`) - never the whole enclosing procedure
+	// (block_delete.odin).
 	txt := node_text(app.doc.nodes[app.editor_line], context.temp_allocator)
-	if strings.contains(txt, "{") {
-		s, e := construct_range(app, app.editor_line)
-		delete_construct(app, s, e)
-		return
+	if strings.contains(txt, "{") || strings.contains(txt, "}") {
+		if s, e, ok := block_delete_range(app, app.editor_line); ok {
+			delete_construct(app, s, e)
+			return
+		}
 	}
 	
 	// Otherwise delete just this single node
@@ -2349,6 +2466,9 @@ edit_selected :: proc(app: ^App) {
 		return
 	}
 	
+	// A number literal: the keypad (0x00FF0062 without a keyboard; expr.odin).
+	if number_keypad_open(app, ni, fi) do return
+
 	// Case 2: Import node -> reopen Dependencies > Import menu
 	txt := node_text(app.doc.nodes[ni], context.temp_allocator)
 	if strings.has_prefix(txt, "import ") {
@@ -2374,7 +2494,9 @@ edit_selected :: proc(app: ^App) {
 		return
 	}
 	
-	// Case 3: Editable identifier -> no-op (dictation handles it)
+	// Case 3: a name, a string's or a comment's text -> text tools (Case,
+	// Escape, Word case, Backticks; text_tools.odin). Dictation fills it.
+	if open_text_tools(app, ni, fi) do return
 }
 
 // Open the type menu for editing a type field
@@ -2386,7 +2508,11 @@ open_type_menu_for_edit :: proc(app: ^App) {
 	// Build type menu: types from imports, then user types, then basic types.
 	type_children := build_type_entries(app)
 	
-	app.slot_menu = make_slice(Entry{label = "Type", children = type_children})
+	if unwrap, ok := unwrap_entry(app, app.slot_ni, app.slot_fi); ok {
+		app.slot_menu = make_slice(Entry{label = "Type", children = type_children}, unwrap) // "Drop [8]" (data_types.odin)
+	} else {
+		app.slot_menu = make_slice(Entry{label = "Type", children = type_children})
+	}
 	push_menu(app, "Edit Type", app.slot_menu)
 }
 
@@ -2403,7 +2529,7 @@ COMMON_WORDS := [?]string{
 collect_vocab :: proc(app: ^App) -> []string {
 	out: [dynamic]string
 	for w in COMMON_WORDS do append(&out, w)
-	for n in app.doc.nodes do for f in n.fields do if f.editable do append(&out, f.text)
+	for n in app.doc.nodes do for f in n.fields do if f.editable && f.kind != COMMENT_KIND do append(&out, f.text)
 	return out[:]
 }
 
@@ -2416,9 +2542,27 @@ doc_reset :: proc(app: ^App) {
 		delete(n.fields)
 	}
 	clear(&app.doc.nodes)
+	app.doc.no_final_newline = false
 	for h in app.hint_pool do delete(h)
 	delete(app.hint_pool)
 	app.hint_pool = nil
+	delete(app.tree_path)
+	app.tree_path = nil
+	app.tree_sticky = false
+	refill_discard(app)
+	delete(app.refill_saved)
+	app.refill_saved = nil
+	app.change_call = false
+	app.body_insert_active = false
+	if app.body_insert_blank != "" do delete(app.body_insert_blank)
+	app.body_insert_blank = ""
+	app.body_insert_reused = false
+	app.ref_pick_active = false
+	app.ref_pass_active = false
+	app.decl_form_active = false
+	rename_clear(app)
+	app.ctrl_menu = .None
+	app.mod_pick_active = false
 	app.editor_line = 0
 	app.editor_field = 0
 	app.editor_dot = false
@@ -2477,6 +2621,7 @@ make_view :: proc(app: ^App, title: string, raw: []Entry) -> MenuView {
 	}
 	// 3. Pinned entries (e.g. procs/types already used in this file), original order.
 	for e in filtered do if e.pinned do append(&display, e)
+	recent := len(display) // 1-3 are the "recently used" section
 	// 4. Everything else (groups + remaining leaves), original order.
 	other: [dynamic]Entry
 	defer delete(other)
@@ -2495,19 +2640,30 @@ make_view :: proc(app: ^App, title: string, raw: []Entry) -> MenuView {
 
 	v.entries = make([]Entry, len(display))
 	copy(v.entries, display[:])
+	if len(other) > 0 do v.recent = recent // a separate section only when there's more below it
 	return v
 }
 
 // ---- Navigation ----
 
 push_menu :: proc(app: ^App, title: string, raw: []Entry) {
-	append(&app.nav, make_view(app, title, raw))
+	push_view(app, make_view(app, title, raw))
+}
+
+// push_view: every view goes on the stack through here, so its heat shades
+// (heat.odin) are computed for the path that led to it.
+push_view :: proc(app: ^App, v: MenuView) {
+	v := v
+	if v.heat == nil do v.heat = heat_view_shades(app, app.nav[:], v.entries)
+	append(&app.nav, v)
 }
 
 pop_menu :: proc(app: ^App) {
 	if len(app.nav) == 0 do return
 	v := pop(&app.nav)
 	delete(v.entries)
+	delete(v.heat)
+	delete(v.heat_root)
 	if v.rest != nil do delete(v.rest)
 	for s in v.labels do delete(s)
 	delete(v.labels)
@@ -2532,7 +2688,9 @@ open_add_menu :: proc(app: ^App) {
 	}
 	app.return_state = .Editor
 	app.state = .Radial
+	app.add_from = app.insert_at
 	push_menu(app, "Add  (insertion point)", app.add_menu)
+	ctrl_add_menu_opened(app) // inside a file-scope when: no imports (ctrl.odin)
 }
 
 open_ide_menu :: proc(app: ^App) {
@@ -2552,6 +2710,31 @@ menu_select :: proc(app: ^App) {
 	v := current_view(app)
 	if v == nil || len(v.entries) == 0 do return
 	e := v.entries[v.index]
+	heat_record_select(app, e) // a real action: wear the menus that led here (heat.odin)
+	if e.fill == CONV_FORM_FILL {
+		conv_expand(app, e) // Convert > T(x): its types (expr.odin)
+		return
+	}
+	if e.fill == NUM_KEY_FILL {
+		number_key(app, e) // LT+A on a number: the keypad (expr.odin)
+		return
+	}
+	if e.fill == TXT_FILL {
+		text_tool(app, e) // LT+A on a name / string / comment: text tools (text_tools.odin)
+		return
+	}
+	if e.format {
+		clear_nav(app)
+		app.state = app.return_state
+		format_doc(app)
+		return
+	}
+	if e.key_layout {
+		clear_nav(app)
+		app.state = app.return_state
+		app.requests += {.Key_Layout}
+		return
+	}
 	if e.quit {
 		app.want_quit = true
 		return
@@ -2565,7 +2748,7 @@ menu_select :: proc(app: ^App) {
 			v_direct.title = e.label
 			v_direct.entries = make([]Entry, len(e.children))
 			copy(v_direct.entries, e.children)
-			append(&app.nav, v_direct)
+			push_view(app, v_direct)
 		} else {
 			push_menu(app, e.label, e.children)
 		}
@@ -2579,6 +2762,9 @@ menu_select :: proc(app: ^App) {
 		append_type_node(app, e.type_construct)
 	} else if e.value_construct != "" {
 		append_value_node(app, e.value_construct)
+	} else if e.special != "" {
+		ctrl_add_select(app, e) // Compile-time / Modifiers (ctrl.odin)
+		return
 	} else if e.import_path != "" {
 		// Handle replacement mode (from edit_selected)
 		if app.replacing && app.replace_fi < 0 {
@@ -2591,7 +2777,7 @@ menu_select :: proc(app: ^App) {
 			delete(app.doc.nodes[ni].fields)
 			// Build the new import node
 			n: Node
-			if app.import_alias {
+			if app.import_alias || needs_import_alias(e.import_path) {
 				append(&n.fields, Field{strings.clone("import "), false, false, "", "", ""})
 				append(&n.fields, Field{strings.clone(alias_default(e.import_path)), true, false, "", "", ""})
 				append(&n.fields, Field{strings.concatenate({" \"", e.import_path, "\""}), false, false, "", "", ""})
@@ -2607,7 +2793,7 @@ menu_select :: proc(app: ^App) {
 			app.state = app.return_state
 			return
 		}
-		if app.import_alias {
+		if app.import_alias || needs_import_alias(e.import_path) {
 			append_aliased_import_node(app, e.import_path)
 		} else {
 			node := import_text(e.import_path, context.temp_allocator)
@@ -2616,17 +2802,82 @@ menu_select :: proc(app: ^App) {
 		record_recent(app, e.import_path)
 		app.import_alias = false
 	} else if e.insert != "" {
-		append_text_node(app, e.insert)
+		if !layout_add_insert(app, e.insert) do append_text_node(app, e.insert) // comment / blank line (stmt_layout.odin)
 	} else if e.fill != "" {
+		// Compile-time / modifier options (ctrl.odin).
+		if app.ctrl_menu != .None {
+			ctrl_menu_choose(app, e)
+			return
+		}
+		// Loop / assignment-operator / break options (loops.odin).
+		if e.fill == LOOP_OPT_FILL {
+			loop_option_choose(app, e)
+			return
+		}
+		// "Rename all uses?" after renaming a declaration (rename.odin).
+		if app.rename_active {
+			rename_choose(app, e.fill == RENAME_FILL ? e.call_name : "one")
+			return
+		}
+		// "Declare as" for a declaration (change.odin).
+		if app.decl_form_active {
+			form := strings.clone(e.call_name, context.temp_allocator)
+			app.decl_form_active = false
+			clear_nav(app)
+			app.state = .Editor
+			if app.slot_menu != nil {
+				free_entries(app.slot_menu)
+				app.slot_menu = nil
+			}
+			if e.fill == DECL_FORM_FILL {
+				type_fi := apply_decl_form(app, app.decl_ni, app.decl_fi, form)
+				if type_fi >= 0 {
+					// `name: ● = value`: straight into choosing the type.
+					focus_field_index(app, app.decl_ni, type_fi)
+					open_slot_menu(app)
+				}
+			}
+			return
+		}
+		// "Pass as" for a picked reference (ref_pick.odin).
+		if app.ref_pass_active {
+			if e.fill == REF_AS_FILL do ref_pass_choose(app, e.call_name)
+			if e.fill == INDEX_FILL do ref_pass_index(app, e) // items[●] (index_fill.odin)
+			app.ref_pass_active = false
+			clear_nav(app)
+			app.state = .Editor
+			if app.slot_menu != nil {
+				free_entries(app.slot_menu)
+				app.slot_menu = nil
+			}
+			return
+		}
+		// Y on a call's name: rename the call and fit its arguments.
+		if app.change_call {
+			if e.fill == "__call_import_proc__" || e.fill == "__call_this_pkg__" do apply_change_call(app, e.call_name)
+			app.change_call = false
+			clear_nav(app)
+			app.state = app.return_state
+			if app.slot_menu != nil {
+				free_entries(app.slot_menu)
+				app.slot_menu = nil
+			}
+			return
+		}
 		// Handle replacement mode (from edit_selected)
 		if app.replacing {
-			if app.replace_fi >= 0 {
+			if app.replace_fi >= 0 && e.fill == CONV_FILL {
+				conv_retype(app, app.replace_ni, app.replace_fi, e) // Y on T of T(x) / cast(T) (expr.odin)
+			} else if app.replace_fi >= 0 && is_types_fill(e.fill) {
+				apply_types_fill(app, app.replace_ni, app.replace_fi, e.fill) // e.g. int -> [●]● (data_types.odin)
+			} else if app.replace_fi >= 0 {
 				// Replace a field (e.g. a type)
 				if len(app.doc.nodes[app.replace_ni].fields[app.replace_fi].text) > 0 {
 					delete(app.doc.nodes[app.replace_ni].fields[app.replace_fi].text)
 				}
 				app.doc.nodes[app.replace_ni].fields[app.replace_fi] = Field{strings.clone(fill_type_text(e)), true, false, "type", "", ""}
 			}
+			sync_typed_decl_value_hint(app, app.replace_ni) // `x: T = ●` expects the new T (field_access.odin)
 			app.replacing = false
 			clear_nav(app)
 			clamp_field(app)
@@ -2641,6 +2892,13 @@ menu_select :: proc(app: ^App) {
 		// (An "args" dot = optional extra call argument; remember it to re-offer one.)
 		was_args, len_before := false, 0
 		args_hint, args_hint_pkg := "", ""
+		sel_k := 0 // the dot's index among the line's names/dots: the cursor returns there after the fill
+		if app.slot_ni >= 0 && app.slot_ni < len(app.doc.nodes) {
+			for f, i in app.doc.nodes[app.slot_ni].fields {
+				if i >= app.slot_fi do break
+				if f.editable || f.slot do sel_k += 1
+			}
+		}
 		if app.slot_ni >= 0 && app.slot_ni < len(app.doc.nodes) {
 			fs := app.doc.nodes[app.slot_ni].fields
 			if app.slot_fi >= 0 && app.slot_fi < len(fs) {
@@ -2648,6 +2906,18 @@ menu_select :: proc(app: ^App) {
 				len_before = len(fs)
 				args_hint, args_hint_pkg = fs[app.slot_fi].hint, fs[app.slot_fi].hint_pkg
 			}
+		}
+		if layout_fill(app, e) do return // Comment, Blank line, argument rows (stmt_layout.odin)
+		if branch_fill(app, e) do return // if / switch / else / case, setups, Y options (branch.odin)
+		if e.fill == "__lit_ref__" {
+			// "Reference": back to the file to pick the name (ref_pick.odin).
+			clear_nav(app)
+			if app.slot_menu != nil {
+				free_entries(app.slot_menu)
+				app.slot_menu = nil
+			}
+			start_ref_pick(app, app.slot_ni, app.slot_fi)
+			return
 		}
 		if e.fill == "__var__" {
 			make_slot_variable(app, app.slot_ni, app.slot_fi)
@@ -2665,10 +2935,12 @@ menu_select :: proc(app: ^App) {
 			make_call_import(app, app.slot_ni, app.slot_fi, e.call_pkg)
 		} else if e.fill == "__call_import_proc__" {
 			make_import_proc_call(app, app.slot_ni, app.slot_fi, e.call_pkg, e.call_name)
-		} else if e.fill == "__br_if__" || e.fill == "__br_ifelse__" || e.fill == "__br_switch__" || e.fill == "__br_when__" {
+		} else if e.fill == "__br_when__" {
 			make_branch_statement(app, app.slot_ni, app.slot_fi, e.fill)
-		} else if e.fill == "__loop_for__" || e.fill == "__loop_forin__" || e.fill == "__loop_forinf__" {
-			make_loop_statement(app, app.slot_ni, app.slot_fi, e.fill)
+		} else if e.fill == RANGE_FILL {
+			make_slot_range(app, app.slot_ni, app.slot_fi, e.call_name == "incl") // ● ..< ● (range_fill.odin)
+		} else if is_loop_fill(e.fill) {
+			loop_fill(app, e) // loops, break / continue, x += ●, ranges (loops.odin)
 		} else if e.fill == "__jmp_return__" || e.fill == "__jmp_break__" || e.fill == "__jmp_continue__" || e.fill == "__jmp_fallthrough__" || e.fill == "__jmp_defer__" {
 			make_jump_statement(app, app.slot_ni, app.slot_fi, e.fill)
 		} else if e.fill == "__err_orreturn__" || e.fill == "__err_orelse__" || e.fill == "__err_iferr__" {
@@ -2681,16 +2953,31 @@ menu_select :: proc(app: ^App) {
 			set_slot_text(app, app.slot_ni, app.slot_fi, fmt.tprintf("%s.%s", e.call_pkg, e.call_name)) // e.g. win.MB_OK
 		} else if e.fill == OP_FILL {
 			make_slot_operator(app, app.slot_ni, app.slot_fi, e.call_name) // ● | ●
+		} else if e.fill == CONV_FILL {
+			make_slot_conversion(app, app.slot_ni, app.slot_fi, e) // T(●), cast(T)● (expr.odin)
+		} else if is_types_fill(e.fill) {
+			apply_types_fill(app, app.slot_ni, app.slot_fi, e.fill) // members, [N]T, map[K]V, $T, ... (data_types.odin)
+		} else if e.fill == CT_ASSERT_FILL || e.fill == BUILTIN_CONST_FILL || e.fill == ENUM_VALUE_FILL {
+			ctrl_fill(app, e) // #assert, ODIN_OS, .Windows (ctrl.odin)
+		} else if e.fill == LIT_TYPE_FILL {
+			make_struct_literal(app, app.slot_ni, app.slot_fi, lit_fill_type_text(e)) // T{●}
+		} else if e.fill == LIT_FIELD_FILL {
+			lit_add_field(app, app.slot_ni, app.slot_fi, e.call_name, e.ret, e.ret_pkg) // name = ●
+		} else if e.fill == ZERO_DECL_FILL {
+			make_zero_decl(app, app.slot_ni, app.slot_fi) // name: ●
 		} else {
 			set_slot_type(app, app.slot_ni, app.slot_fi, e.fill)
 		}
+		sync_typed_decl_value_hint(app, app.slot_ni) // `x: T = ●`: the value dot expects T (field_access.odin)
 		if was_args {
 			// The green "add argument" dot was used: offer another one after it.
 			fs := &app.doc.nodes[app.slot_ni].fields
 			append_more_args_slot(fs, app.slot_fi, len(fs) - len_before + 1, args_hint, args_hint_pkg)
 		}
+		if app.refill_active do refill_discard(app) // Y-refill done: drop the original
+		body_insert_done(app)                        // inserted at a dot inside a function
 		clear_nav(app)
-		clamp_field(app)
+		focus_kth_selectable(app, app.slot_ni, sel_k)
 		app.state = app.return_state
 		// Free the slot menu
 		if app.slot_menu != nil {
@@ -2701,6 +2988,7 @@ menu_select :: proc(app: ^App) {
 	} else {
 		return // placeholder, no-op
 	}
+	ctrl_indent_inserted(app) // inserted inside a file-scope when: indent it (ctrl.odin)
 	clear_nav(app)
 	focus_dot_at(app, app.insert_at) // keep the green dot just after the insertion focused
 	app.state = app.return_state
@@ -2708,8 +2996,27 @@ menu_select :: proc(app: ^App) {
 
 menu_cancel :: proc(app: ^App) {
 	pop_menu(app)
+	if len(app.nav) == 0 && app.ctrl_menu != .None {
+		ctrl_menu_cancel(app) // compile-time / modifier options: back (to picking) (ctrl.odin)
+		return
+	}
+	if len(app.nav) == 0 && app.ref_pass_active {
+		// B in "Pass as": back to picking the name.
+		ref_pass_cancel(app)
+		if app.slot_menu != nil {
+			free_entries(app.slot_menu)
+			app.slot_menu = nil
+		}
+		return
+	}
 	if len(app.nav) == 0 {
 		app.state = app.return_state
+		app.decl_form_active = false
+		if app.rename_active do rename_clear(app) // B on "Rename ... ?": only this one changes
+		app.replacing = false    // LT+A (edit), then B: nothing is being replaced any more
+		refill_restore(app)      // Y on an argument, then B: put it back
+		app.change_call = false
+		body_insert_cancel(app)  // A on a dot inside a function, then B: nothing inserted
 		// Free slot menu if we're canceling out of it
 		if app.slot_menu != nil {
 			free_entries(app.slot_menu)
@@ -2721,10 +3028,19 @@ menu_cancel :: proc(app: ^App) {
 // ---- Top-level update ----
 
 update :: proc(app: ^App, inp: Input) {
-	// Global binding: LT (left bank) + D-pad Left opens the IDE menu.
-	if app.state != .Radial && inp.lt_held && inp.left {
-		open_ide_menu(app)
-		return
+	defer sync_capture_dots(app) // pink "capture the result" dots (capture.odin)
+	defer ctrl_sync(app)         // #assert keeps at most one message dot (ctrl.odin)
+	defer branch_sync(app)       // empty case dots expect the switched value's type (branch.odin)
+
+	// The button layout (keymap.odin) turns presses into actions. Menus (.Radial)
+	// only know plain A / B / d-pad, so they skip it.
+	keys: Resolved
+	if app.state != .Radial {
+		keys = keymap_resolve(app.keymap, inp)
+		if .IDE_Menu in keys.fired { // global: the main menu too
+			open_ide_menu(app)
+			return
+		}
 	}
 
 	switch app.state {
@@ -2738,29 +3054,42 @@ update :: proc(app: ^App, inp: Input) {
 			}
 		}
 	case .Editor:
+		if ref_pick_update(app, inp) do return // picking a name for "Reference"
+		if mod_pick_update(app, inp) do return // picking a declaration for a modifier (modifiers.odin)
+		keymap_run(app, keys.fired)
+		if app.state != .Editor do return // an action opened a menu
+		nav := keys.rest // navigation: plain d-pad / A / B (bound combos are gone)
 		nlines := len(app.doc.nodes)
 		if app.editor_line > nlines do app.editor_line = nlines
-		if inp.rt_held {
-			// RT + D-pad: move by whole statements (construct granularity).
-			if inp.up   || inp.left  do editor_move_construct(app, -1)
-			if inp.down || inp.right do editor_move_construct(app, +1)
-		} else {
-			// Left/Right move between dots on the current line.
-			if !on_dot(app) {
-				cnt := selectable_in_node(app, app.editor_line)
-				if cnt > 0 {
-					if inp.left  do app.editor_field = max(0, app.editor_field - 1)
-					if inp.right do app.editor_field = min(cnt - 1, app.editor_field + 1)
-				}
+		// Left/Right move between dots on the current line.
+		if !on_dot(app) {
+			cnt := selectable_in_node(app, app.editor_line)
+			if cnt > 0 {
+				if nav.left  do row_left(app) // from a row's start: the dot at its end (row_nav.odin)
+				if nav.right do app.editor_field = min(cnt - 1, app.editor_field + 1)
 			}
-			// Up/Down move between lines (green insertion dot is the bottom stop).
-			if inp.up   do editor_move_line(app, -1)
-			if inp.down do editor_move_line(app, +1)
 		}
-		if inp.cancel do app.state = .Menu
-		if inp.confirm {
-			if on_dot(app) {
-				open_add_menu(app) // A on a green dot = Add menu
+		// Up/Down: between the rows of a broken line first (row_nav.odin), then
+		// between lines (green insertion dot is the bottom stop).
+		for dir in ([2]int{-1, +1}) {
+			if (dir < 0 ? !nav.up : !nav.down) || row_move(app, dir) do continue
+			before_line, before_dot := app.editor_line, app.editor_dot
+			editor_move_line(app, dir)
+			if app.editor_line != before_line || app.editor_dot != before_dot do row_enter(app, dir)
+		}
+		if nav.cancel do app.state = .Menu
+		if nav.confirm {
+			if on_attr_dot(app) {
+				open_attr_dot_menu(app) // A on a purple dot: the procedure's attributes (attr_dots.odin)
+			} else if on_dot(app) {
+				// A on a green dot: inside a function -> a statement there;
+				// otherwise -> the Add menu (top-level constructs).
+				line := min(app.editor_line, len(app.doc.nodes))
+				if !insertion_points(app, context.temp_allocator)[line] && body_points(app, context.temp_allocator)[line] {
+					open_body_insert(app, line)
+				} else {
+					open_add_menu(app)
+				}
 			} else {
 				// Check if we're on a slot field
 				ni, fi, ok := editor_target(app)
@@ -2771,8 +3100,31 @@ update :: proc(app: ^App, inp: Input) {
 		}
 	case .Radial:
 		v := current_view(app)
-		v.index = grid_nav(v.index, len(v.entries), inp)
+		v.index = menu_nav(v, inp) // grid nav, with the recently-used section on its own rows
 		if inp.cancel  do menu_cancel(app)
 		if inp.confirm do menu_select(app)
+	}
+}
+
+// keymap_run performs this frame's keymap actions (in enum order, stopping once
+// one leaves the editor). The ones that need disk, the clipboard or an overlay
+// go to the app layer in app.requests.
+keymap_run :: proc(app: ^App, fired: Actions) {
+	for a in Action {
+		if a not_in fired do continue
+		#partial switch a {
+		case .Edit:        edit_selected(app)
+		case .Delete:      delete_selected(app)
+		case .Change:      change_selected(app)
+		// The code tree walk (selection.odin): previous / next sibling, into it, back out.
+		case .Walk_Prev:   tree_move(app, 0, -1)
+		case .Walk_Next:   tree_move(app, 0, +1)
+		case .Walk_In:     tree_move(app, +1, 0)
+		case .Walk_Out:    tree_move(app, -1, 0)
+		case .Format_File: format_doc(app)
+		case .Docs, .Copy, .Save_As, .Run_List, .Files, .Run_Favorite, .Run_Tests, .Prev_File, .Key_Layout:
+			app.requests += {a}
+		}
+		if app.state != .Editor do return
 	}
 }

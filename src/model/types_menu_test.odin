@@ -27,14 +27,12 @@ cleanup_types :: proc(app: ^App) {
 
 @(private = "file")
 focus_slot :: proc(app: ^App, ni: int, kind: string, nth := 0) {
-	focus_line(app, ni)
-	k, seen := 0, 0
-	for f in app.doc.nodes[ni].fields {
+	seen := 0
+	for f, i in app.doc.nodes[ni].fields {
 		if f.slot && f.kind == kind {
-			if seen == nth { app.editor_field = k; return }
+			if seen == nth { focus_field_index(app, ni, i); return }
 			seen += 1
 		}
-		if f.editable || f.slot do k += 1
 	}
 }
 
@@ -149,11 +147,11 @@ test_messageboxw_second_arg_win_L_string :: proc(t: ^testing.T) {
 	ni := setup_win_doc(&app, body)
 	make_import_proc_call(&app, ni, 1, "win", "MessageBoxW")
 
-	// 2nd argument dot -> Call -> Procedure from an import -> win -> ... -> L
+	// 2nd argument dot -> Call -> From import -> win -> ... -> L
 	focus_slot(&app, ni, "value", 1)
 	update(&app, Input{confirm = true})
 	testing.expect(t, pick(&app, "Call"))
-	testing.expect(t, pick(&app, "Procedure from an import"))
+	testing.expect(t, pick(&app, "From import"))
 	testing.expect(t, pick(&app, "win"))
 	path := navigate_to_leaf(t, &app, "L", "__call_import_proc__")
 	testing.expect(t, len(path) <= 2, "L should be at most two steps below win (util -> L)")
@@ -172,7 +170,7 @@ test_messageboxw_second_arg_win_L_string :: proc(t: ^testing.T) {
 	focus_slot(&app, ni, "value", 1) // 3rd parameter is now the 2nd unfilled value dot
 	update(&app, Input{confirm = true})
 	pick(&app, "Call")
-	pick(&app, "Procedure from an import")
+	pick(&app, "From import")
 	pick(&app, "win")
 	v := current_view(&app)
 	found_first := false

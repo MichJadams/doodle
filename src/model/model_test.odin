@@ -102,8 +102,20 @@ test_ide_menu_exit :: proc(t: ^testing.T) {
 	app.state = .Editor
 	update(&app, Input{left = true, lt_held = true})
 	testing.expect_value(t, app.state, State.Radial)
-	confirm(&app) // Exit
+	select_label(&app, "Exit")
 	testing.expect(t, app.want_quit, "selecting Exit should quit")
+}
+
+@(test)
+test_ide_menu_format_file :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	doc_from_source(&app, "package main\nmain :: proc() {\nx := 1\n}")
+	update(&app, Input{left = true, lt_held = true})
+	select_label(&app, "Format file")
+	testing.expect_value(t, app.state, State.Editor)
+	testing.expect_value(t, doc_to_source(&app, context.temp_allocator), "package main\n\nmain :: proc() {\n\tx := 1\n}")
 }
 
 @(test)
@@ -156,8 +168,8 @@ test_file_setup_no_import :: proc(t: ^testing.T) {
 	for e in v.entries {
 		testing.expect(t, e.label != "Import", "File Setup should not contain Import")
 	}
-	// File Setup should have exactly 3 entries: Package declaration, File tags, Comments
-	testing.expect_value(t, len(v.entries), 3)
+	// File Setup should have exactly 4 entries: Package declaration, File tags, Comments, Blank line
+	testing.expect_value(t, len(v.entries), 4)
 }
 
 @(test)
@@ -935,8 +947,8 @@ test_global_typed_has_name_and_type_slot :: proc(t: ^testing.T) {
 	testing.expect(t, len(var_name) > 0, "global typed should have a name")
 	testing.expect(t, strings.contains(var_name, "_"), "var name should be snake_case")
 	testing.expect(t, strings.contains(txt, ":"), "global typed should contain :")
-	// 1 editable name + 1 type slot = 2 selectable
-	testing.expect_value(t, num_editable(&app), 2)
+	// 1 editable name + 1 type slot + 1 value slot (`name: ● = ●`) = 3 selectable
+	testing.expect_value(t, num_editable(&app), 3)
 }
 
 @(test)
@@ -1030,12 +1042,11 @@ test_slot_fill_variable_then_type :: proc(t: ^testing.T) {
 	update(&app, Input{up = true})
 	update(&app, Input{up = true}) // to struct name line
 	update(&app, Input{down = true}) // back to body line
-	// Confirm to open fill menu (now shows statement menu for body slots)
+	// Confirm to open fill menu (inside a struct body: the member menu)
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
-	// Navigate to Declarations -> Variable (typed) which creates name: type = value pattern
-	select_label(&app, "Declarations")
-	select_label(&app, "Variable (typed)")
+	// Field creates the `name: <type>,` pattern
+	select_label(&app, "Field")
 	// Should be back in Editor
 	testing.expect_value(t, app.state, State.Editor)
 	// Check that the body line now contains a generated var name and ":"
@@ -1063,7 +1074,7 @@ test_slot_fill_variable_then_type :: proc(t: ^testing.T) {
 	testing.expect(t, found_separator, "should have ': ' separator")
 	testing.expect(t, found_slot, "should have new type slot")
 	// Now navigate right to the new type slot and fill it with "bool"
-	update(&app, Input{right = true}) // to type slot (next selectable field)
+	update(&app, Input{right = true}) // to type slot
 	// Confirm to open fill menu again
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
@@ -1091,12 +1102,11 @@ test_user_defined_type_in_menu :: proc(t: ^testing.T) {
 	update(&app, Input{up = true})
 	update(&app, Input{up = true})
 	update(&app, Input{down = true})
-	// Open fill menu (now shows statement menu)
+	// Open fill menu (inside a struct body: the member menu)
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
-	// Navigate to Declarations -> Variable (typed) to add a typed member
-	select_label(&app, "Declarations")
-	select_label(&app, "Variable (typed)")
+	// Field adds a typed member `name: <type>,`
+	select_label(&app, "Field")
 	testing.expect_value(t, app.state, State.Editor)
 	// Navigate to the type slot
 	update(&app, Input{right = true}) // to type slot
@@ -1527,17 +1537,17 @@ test_body_slot_struct_body :: proc(t: ^testing.T) {
 	testing.expect(t, ok, "should be on body slot")
 	testing.expect(t, app.doc.nodes[ni].fields[fi].slot, "should be a slot")
 	testing.expect_value(t, app.doc.nodes[ni].fields[fi].kind, "body")
-	// Open menu - should get statement menu (since it's a body slot)
+	// Open menu - inside a struct body: the member menu (not statements)
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
 	v := current_view(&app)
-	// Check for category entries (new structure)
 	labels: [dynamic]string
 	defer delete(labels)
 	for e in v.entries {
 		append(&labels, e.label)
 	}
-	testing.expect(t, slice.contains(labels[:], "Declarations"), "struct body should offer statement menu with categories")
+	testing.expect(t, slice.contains(labels[:], "Field"), "struct body should offer struct members")
+	testing.expect(t, !slice.contains(labels[:], "Declarations"), "struct body should not offer statements")
 }
 
 // ---- Name generator tests ----
@@ -1792,8 +1802,8 @@ test_body_calls_category_this_package :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true})
 	// Navigate to Calls category
 	select_label(&app, "Calls")
-	// Navigate to "Procedure in this package"
-	select_label(&app, "Procedure in this package")
+	// Navigate to "Internal procedure"
+	select_label(&app, "Internal procedure")
 	// Check that "my_proc" is in the list
 	v := current_view(&app)
 	labels: [dynamic]string
@@ -1841,8 +1851,8 @@ test_body_calls_category_import :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true})
 	// Navigate to Calls category
 	select_label(&app, "Calls")
-	// Navigate to "Procedure from an import"
-	select_label(&app, "Procedure from an import")
+	// Navigate to "From import"
+	select_label(&app, "From import")
 	// Check that "fmt" is in the list
 	v := current_view(&app)
 	labels: [dynamic]string
@@ -2096,14 +2106,16 @@ test_loops_forin_inserts_block :: proc(t: ^testing.T) {
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
 	testing.expect(t, strings.contains(txt, "for "), "header should contain 'for '")
 	testing.expect(t, strings.contains(txt, " in "), "header should contain ' in '")
-	// Verify there are value slots (iter-var and range)
-	value_slot_count := 0
+	// The loop variable is an editable name; the iterable is a value dot (loops.odin).
+	value_slot_count, names := 0, 0
 	for f in app.doc.nodes[1].fields {
 		if f.slot && f.kind == "value" {
 			value_slot_count += 1
 		}
+		if f.editable do names += 1
 	}
-	testing.expect(t, value_slot_count >= 2, "header should have at least 2 value slots")
+	testing.expect(t, value_slot_count == 1, "header should have the iterable's value dot")
+	testing.expect(t, names == 1, "header should have the loop variable's name")
 }
 
 @(test)
@@ -2296,14 +2308,24 @@ test_jump_fallthrough_inserts_fallthrough :: proc(t: ^testing.T) {
 	app: App
 	defer cleanup(&app)
 	app.state = .Editor
-	add_proc(&app)
-	update(&app, Input{up = true})
+	// Fallthrough is only offered in a case clause that isn't the last (branch.odin).
+	doc_from_source(&app, "package main\n\nmain :: proc() {\n\tx := 1\n\tswitch x {\n\tcase 1:\n\t\tx = 2\n\tcase:\n\t}\n}")
+	ni := -1
+	for n, i in app.doc.nodes do if strings.contains(node_text(n, context.temp_allocator), "x = 2") do ni = i
+	focus_dot_at(&app, ni + 1) // the dot after `x = 2` (end of `case 1:`)
 	confirm(&app)
 	select_label(&app, "Jumps and cleanup")
 	select_label(&app, "Fallthrough")
 	testing.expect_value(t, app.state, State.Editor)
-	txt := node_text(app.doc.nodes[1], context.temp_allocator)
+	txt := node_text(app.doc.nodes[ni + 1], context.temp_allocator)
 	testing.expect(t, strings.contains(txt, "fallthrough"), "should contain 'fallthrough'")
+	// Not in a plain body.
+	focus_dot_at(&app, 3) // before `x := 1`... (the dot after `main :: proc() {`)
+	confirm(&app)
+	select_label(&app, "Jumps and cleanup")
+	labels := make([dynamic]string, context.temp_allocator)
+	if v := current_view(&app); v != nil do for e in v.entries do append(&labels, e.label)
+	testing.expect(t, !strings.contains(strings.join(labels[:], "|", context.temp_allocator), "Fallthrough"), "no fallthrough outside a case")
 }
 
 @(test)
@@ -2528,9 +2550,9 @@ test_import_proc_menu_lists_packages :: proc(t: ^testing.T) {
 	// Navigate to body slot
 	update(&app, Input{up = true})
 	confirm(&app) // Open slot menu
-	// Navigate to Calls -> Procedure from an import
+	// Navigate to Calls -> From import
 	select_label(&app, "Calls")
-	select_label(&app, "Procedure from an import")
+	select_label(&app, "From import")
 	// Should list "fmt" as a package group
 	v := current_view(&app)
 	testing.expect(t, v != nil, "should have a view")
@@ -2555,9 +2577,9 @@ test_import_proc_menu_drills_to_proc :: proc(t: ^testing.T) {
 	// Navigate to body slot
 	update(&app, Input{up = true})
 	confirm(&app) // Open slot menu
-	// Navigate to Calls -> Procedure from an import -> fmt
+	// Navigate to Calls -> From import -> fmt
 	select_label(&app, "Calls")
-	select_label(&app, "Procedure from an import")
+	select_label(&app, "From import")
 	select_label(&app, "fmt")
 	// Should have entries (bucketed because fmt has 80+ procs)
 	v := current_view(&app)
@@ -2594,9 +2616,9 @@ test_no_imports_shows_placeholder :: proc(t: ^testing.T) {
 	// Navigate to body slot (no imports in doc)
 	update(&app, Input{up = true})
 	confirm(&app) // Open slot menu
-	// Navigate to Calls -> Procedure from an import
+	// Navigate to Calls -> From import
 	select_label(&app, "Calls")
-	select_label(&app, "Procedure from an import")
+	select_label(&app, "From import")
 	// Should show dim placeholder
 	v := current_view(&app)
 	testing.expect(t, v != nil, "should have a view")
@@ -2662,9 +2684,9 @@ test_import_menu_hierarchical :: proc(t: ^testing.T) {
 	// Open menu
 	update(&app, Input{confirm = true})
 	testing.expect_value(t, app.state, State.Radial)
-	// Navigate to Calls -> Procedure from an import
+	// Navigate to Calls -> From import
 	select_label(&app, "Calls")
-	select_label(&app, "Procedure from an import")
+	select_label(&app, "From import")
 	v := current_view(&app)
 	// Should show import groups
 	testing.expect(t, len(v.entries) > 0, "should have import entries")
@@ -2745,7 +2767,7 @@ test_small_package_flat :: proc(t: ^testing.T) {
 		update(&app, Input{up = true})
 		update(&app, Input{confirm = true})
 		select_label(&app, "Calls")
-		select_label(&app, "Procedure from an import")
+		select_label(&app, "From import")
 		select_label(&app, "libc")
 		v := current_view(&app)
 		// Should show procs as flat leaves, not groups
@@ -2775,6 +2797,7 @@ test_value_slot_opens_literal_menu :: proc(t: ^testing.T) {
 	select_label(&app, "Variable (:=)")
 	testing.expect_value(t, app.state, State.Editor)
 	// Now navigate to the value slot
+	update(&app, Input{right = true}) // over the declaration operator (`:=` / `:`)
 	update(&app, Input{right = true}) // move to value slot
 	ni, fi, ok := editor_target(&app)
 	testing.expect(t, ok, "should have a valid target")
@@ -2820,6 +2843,7 @@ test_value_literal_number :: proc(t: ^testing.T) {
 	confirm(&app)
 	select_label(&app, "Declarations")
 	select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true}) // over the declaration operator (`:=` / `:`)
 	update(&app, Input{right = true}) // move to value slot
 	confirm(&app) // open literal menu
 	select_label(&app, "Number")
@@ -2844,6 +2868,7 @@ test_value_literal_string :: proc(t: ^testing.T) {
 	confirm(&app)
 	select_label(&app, "Declarations")
 	select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true}) // over the declaration operator (`:=` / `:`)
 	update(&app, Input{right = true})
 	confirm(&app)
 	select_label(&app, "String")               // now a submenu of variants
@@ -2874,6 +2899,7 @@ test_value_literal_nil :: proc(t: ^testing.T) {
 	confirm(&app)
 	select_label(&app, "Declarations")
 	select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true}) // over the declaration operator (`:=` / `:`)
 	update(&app, Input{right = true})
 	confirm(&app)
 	select_label(&app, "nil")
@@ -3025,6 +3051,7 @@ test_value_slot_call_via_import :: proc(t: ^testing.T) {
 	// Count nodes before filling the value slot
 	node_count_before := len(app.doc.nodes)
 	// Navigate to the value slot
+	update(&app, Input{right = true}) // over the declaration operator (`:=` / `:`)
 	update(&app, Input{right = true})
 	ni, fi, ok := editor_target(&app)
 	testing.expect(t, ok, "should have a valid target")
@@ -3042,9 +3069,9 @@ test_value_slot_call_via_import :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, has_call, "value menu should have 'Call' option")
-	// Select Call -> Procedure from an import -> fmt
+	// Select Call -> From import -> fmt
 	select_label(&app, "Call")
-	select_label(&app, "Procedure from an import")
+	select_label(&app, "From import")
 	select_label(&app, "fmt")
 	// Drill to first proc leaf
 	leaf := drill_to_first_leaf(&app)
@@ -3076,6 +3103,7 @@ test_value_slot_builtin_call :: proc(t: ^testing.T) {
 	select_label(&app, "Variable (:=)")
 	testing.expect_value(t, app.state, State.Editor)
 	// Navigate to the value slot
+	update(&app, Input{right = true}) // over the declaration operator (`:=` / `:`)
 	update(&app, Input{right = true})
 	// Open slot menu
 	confirm(&app)
@@ -3202,6 +3230,7 @@ test_value_literal_raw_and_rune :: proc(t: ^testing.T) {
 	add_proc(&app)
 	update(&app, Input{up = true}); confirm(&app)
 	select_label(&app, "Declarations"); select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true}) // over the declaration operator (`:=` / `:`)
 	update(&app, Input{right = true}); confirm(&app)   // on value slot
 	select_label(&app, "String"); select_label(&app, "`...`  raw")
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
@@ -3216,6 +3245,7 @@ test_value_literal_rune :: proc(t: ^testing.T) {
 	add_proc(&app)
 	update(&app, Input{up = true}); confirm(&app)
 	select_label(&app, "Declarations"); select_label(&app, "Variable (:=)")
+	update(&app, Input{right = true}) // over the declaration operator (`:=` / `:`)
 	update(&app, Input{right = true}); confirm(&app)
 	select_label(&app, "String"); select_label(&app, "'...'  rune")
 	txt := node_text(app.doc.nodes[1], context.temp_allocator)
@@ -3466,17 +3496,27 @@ test_parse_various_lines :: proc(t: ^testing.T) {
 	
 	testing.expect_value(t, len(app.doc.nodes), 4)
 	
-	// All should be single fixed fields
-	for node, i in app.doc.nodes {
-		testing.expect_value(t, len(node.fields), 1)
-		testing.expect_value(t, node.fields[0].editable, false)
+	// Non-call lines are single fixed fields (a comment's text is editable: stmt_layout.odin)
+	for i in ([]int{0, 3}) {
+		testing.expect_value(t, len(app.doc.nodes[i].fields), 1)
+		testing.expect_value(t, app.doc.nodes[i].fields[0].editable, false)
 	}
-	
+
 	// Verify exact text
 	testing.expect_value(t, app.doc.nodes[0].fields[0].text, "import \"core:fmt\"")
-	testing.expect_value(t, app.doc.nodes[1].fields[0].text, "// comment")
-	testing.expect_value(t, app.doc.nodes[2].fields[0].text, "\tfmt.println()")
+	testing.expect_value(t, app.doc.nodes[1].fields[0].text, "// ")
+	testing.expect_value(t, app.doc.nodes[1].fields[1].text, "comment")
+	testing.expect_value(t, app.doc.nodes[1].fields[1].editable, true)
 	testing.expect_value(t, app.doc.nodes[3].fields[0].text, "}")
+
+	// A call statement gets its argument list back: println is variadic, so it
+	// offers a green "add argument" dot - and still saves exactly as written.
+	call := app.doc.nodes[2]
+	testing.expect_value(t, call.fields[0].text, "\tfmt.")
+	testing.expect_value(t, call.fields[1].text, "println") // the name is its own field (Y changes it)
+	testing.expect_value(t, call.fields[2].text, "(")
+	testing.expect(t, call.fields[3].slot && call.fields[3].kind == "args")
+	testing.expect_value(t, node_source(call, context.temp_allocator), "\tfmt.println()")
 }
 
 @(test)
@@ -3605,8 +3645,11 @@ test_dots_reachable_between_constructs :: proc(t: ^testing.T) {
 	update(&app, Input{up = true}) // proc signature
 	testing.expect_value(t, app.editor_line, 1)
 	testing.expect(t, !on_dot(&app))
+	update(&app, Input{up = true}) // the purple attribute dot above the proc (attr_dots.odin)
+	testing.expect(t, on_attr_dot(&app), "the attribute dot above main")
+	testing.expect_value(t, app.editor_line, 1)
 	update(&app, Input{up = true}) // dot between package and proc
-	testing.expect(t, on_dot(&app), "middle green dot should be reachable")
+	testing.expect(t, on_dot(&app) && !on_attr_dot(&app), "middle green dot should be reachable")
 	testing.expect_value(t, app.editor_line, 1)
 	_, _, ok := editor_target(&app)
 	testing.expect(t, !ok, "a dot has no field target")
@@ -3622,7 +3665,8 @@ test_dots_reachable_between_constructs :: proc(t: ^testing.T) {
 
 	// And back down through every stop.
 	update(&app, Input{down = true}); testing.expect(t, !on_dot(&app) && app.editor_line == 0)
-	update(&app, Input{down = true}); testing.expect(t, on_dot(&app) && app.editor_line == 1)
+	update(&app, Input{down = true}); testing.expect(t, on_dot(&app) && !on_attr_dot(&app) && app.editor_line == 1)
+	update(&app, Input{down = true}); testing.expect(t, on_attr_dot(&app) && app.editor_line == 1)
 	update(&app, Input{down = true}); testing.expect(t, !on_dot(&app) && app.editor_line == 1)
 	update(&app, Input{down = true}); testing.expect(t, !on_dot(&app) && app.editor_line == 2)
 	update(&app, Input{down = true}); testing.expect(t, on_dot(&app) && app.editor_line == 4)

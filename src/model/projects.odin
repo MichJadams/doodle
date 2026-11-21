@@ -95,3 +95,28 @@ clean_filename :: proc(s: string, allocator := context.allocator) -> string {
 	strings.builder_destroy(&b)
 	return out
 }
+
+// clean_rename: the new name for a file or folder being renamed (file
+// navigation, LT+X), "" when nothing usable is left. Same characters as
+// clean_filename, but the extension follows the old name: a folder gets none,
+// a file keeps its own (`notes.md` -> `todo.md`, `main.odin` -> `game.odin`)
+// unless the new name has one.
+clean_rename :: proc(s, old_name: string, is_dir: bool, allocator := context.allocator) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	for c in transmute([]u8)strings.trim_space(s) {
+		switch c {
+		case 'a'..='z', 'A'..='Z', '0'..='9', '_', '-', '.':
+			strings.write_byte(&b, c)
+		case ' ', '\t':
+			strings.write_byte(&b, '_')
+		}
+	}
+	name := strings.trim(strings.to_string(b), "._")
+	if name == "" do return ""
+	if is_dir do return strings.clone(name, allocator)
+	ext := ""
+	if dot := strings.last_index_byte(old_name, '.'); dot > 0 do ext = old_name[dot:]
+	if ext == "" || strings.contains(name, ".") do return strings.clone(name, allocator)
+	if strings.equal_fold(name, ext[1:]) do return "" // just "odin"
+	return strings.concatenate({name, ext}, allocator)
+}

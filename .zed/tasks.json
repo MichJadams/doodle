@@ -1,0 +1,47 @@
+// Zed tasks for Doodle. Run with `task: spawn` (alt-shift-t) or rerun with `task: rerun`.
+// They call build.bat, so they work the same whatever shell Zed uses on Windows.
+[
+  {
+    "label": "Doodle: build & run",
+    "command": "$ZED_WORKTREE_ROOT\\build.bat",
+    "args": ["run"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "no_focus",
+    "save": "all"
+  },
+  {
+    "label": "Doodle: build & open current file",
+    "command": "$ZED_WORKTREE_ROOT\\build.bat",
+    "args": ["run", "$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "no_focus",
+    "save": "all"
+  },
+  {
+    "label": "Doodle: run (no build)",
+    "command": "$ZED_WORKTREE_ROOT\\bin\\doodle.exe",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "allow_concurrent_runs": false,
+    "reveal": "no_focus"
+  },
+  {
+    "label": "Doodle: build",
+    "command": "$ZED_WORKTREE_ROOT\\build.bat",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "no_focus",
+    "hide": "on_success",
+    "save": "all"
+  },
+  {
+    "label": "Doodle: test",
+    "command": "$ZED_WORKTREE_ROOT\\build.bat",
+    "args": ["test"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always",
+    "save": "all"
+  }
+]

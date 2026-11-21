@@ -76,7 +76,7 @@ new_project_setup :: proc() {
 	ensure_projects_dir()
 	
 	// Generate a random name and create the project directory.
-	set_project_dir(fmt.tprintf("%s/%s", g_projects_dir, gen_project_name()))
+	set_project_dir(fmt.tprintf("%s/%s", g_projects_dir, trace_str("project_name", gen_project_name()))) // TRACE hook (was: gen_project_name())
 
 	// A brand-new project has no file yet; the first save creates main.odin.
 	set_current_file("")
@@ -94,13 +94,32 @@ set_project_dir :: proc(dir: string) {
 	g_project_dir = strings.clone(dir)
 	g_project_name = strings.clone(filepath.base(dir))
 	g_run_loaded = false // run.txt is per project
+	// The siblings follow the project folder only for an unsaved document (else
+	// the open file's folder: set_current_file refreshes them).
+	if g_current_file == "" do refresh_siblings()
 }
 
 // set_current_file records the file the editor is showing ("" = none yet).
 set_current_file :: proc(path: string) {
+	defer refresh_siblings() // even for the same path (a save): its neighbours may have changed (only changed files are re-read)
 	if path == g_current_file do return
 	if g_current_file != "" do delete(g_current_file)
 	g_current_file = path == "" ? "" : strings.clone(path)
+}
+
+// refresh_siblings re-reads the procedures and types in the package's other files (the
+// .odin files next to the open one; next to main.odin in the project folder for
+// an unsaved document), so they can be used without an import. Cheap when
+// nothing changed: model.load_siblings re-parses only files whose size or
+// modification time differ from the last refresh.
+refresh_siblings :: proc() {
+	if g_app == nil do return
+	if g_current_file != "" {
+		model.load_siblings(g_app, filepath.dir(g_current_file), filepath.base(g_current_file))
+	} else {
+		model.load_siblings(g_app, g_project_dir, "main.odin")
+	}
+	g_app.capture_fp = 0 // capture dots depend on what the calls return
 }
 
 // editor_title is the header text: the open file, else the project, else untitled.
@@ -124,7 +143,9 @@ save_folder :: proc() -> string {
 // write_doc writes the document's source to `path` and makes it the current file.
 // Returns "" on success, else a short error message (temp-allocated).
 write_doc :: proc(m: ^model.App, path: string) -> string {
-	source := model.doc_to_source(m, context.temp_allocator)
+	// Formatted (formatter.odin), no editor-only "●" lines, final newline.
+	source := model.file_text(m, context.temp_allocator)
+	if !trace_write_ok(path) { set_current_file(path); return "" } // TRACE hook: a replay writes only inside its sandbox
 	if err := os.write_entire_file(path, transmute([]byte)source); err != nil {
 		fmt.eprintf("Failed to save to %s: %v\n", path, err)
 		return fmt.tprintf("could not save: %v", err)

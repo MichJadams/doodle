@@ -26,10 +26,15 @@ CODE_PX_MAX :: 28
 CODE_PX_MIN :: 13
 
 EDITOR_PAD :: f32(28)
-GUTTER     :: f32(34) // left of the code: insertion dots
+LINE_NUM_W :: f32(44) // left gutter: line numbers (as in the saved file)
+GUTTER     :: f32(22) // then the insertion dots
 DOT_W      :: f32(24) // a slot dot + padding
+CAPTURE_DX :: f32(34) // how far left of its call a capture dot's center sits
 
-editor_x0 :: proc() -> f32 { return EDITOR_PAD + GUTTER }
+editor_x0 :: proc() -> f32 { return EDITOR_PAD + LINE_NUM_W + GUTTER }
+
+// Where the top-level insertion dots sit (between the line numbers and the code).
+dot_x :: proc() -> f32 { return EDITOR_PAD + LINE_NUM_W + 8 }
 
 // ensure_code_font (re)bakes the code font so 80 columns fit in a window `w` wide.
 ensure_code_font :: proc(r: ^gpu.Renderer, w: int) {
@@ -67,14 +72,14 @@ ensure_code_font_once :: proc(r: ^gpu.Renderer, w: int) {
 
 HL_COLORS := [model.Hl]gpu.Color{
 	.Plain    = COL_TEXT,
-	.Keyword  = {0.78, 0.55, 0.95, 1},
-	.Type     = {0.35, 0.80, 0.80, 1},
-	.String   = {0.80, 0.86, 0.50, 1},
-	.Number   = {0.95, 0.70, 0.50, 1},
-	.Constant = {0.95, 0.82, 0.45, 1},
-	.Comment  = {0.48, 0.53, 0.60, 1},
-	.Func     = {0.45, 0.70, 1.00, 1},
-	.Package  = {0.92, 0.62, 0.70, 1},
+	.Keyword  = {0.55, 0.15, 0.60, 1}, // ink colors that read on paper
+	.Type     = {0.00, 0.43, 0.52, 1},
+	.String   = {0.33, 0.50, 0.08, 1},
+	.Number   = {0.78, 0.33, 0.08, 1},
+	.Constant = {0.62, 0.40, 0.00, 1},
+	.Comment  = {0.55, 0.52, 0.46, 1},
+	.Func     = {0.12, 0.33, 0.72, 1},
+	.Package  = {0.70, 0.22, 0.35, 1},
 }
 
 // ---- Layout ----
@@ -91,9 +96,10 @@ Item :: struct {
 }
 
 Node_Layout :: struct {
-	items: [dynamic]Item,
-	rows:  int,
-	y:     f32, // top of the first row (before scrolling)
+	items:    [dynamic]Item,
+	rows:     int,
+	y:        f32,            // top of the first row (before scrolling)
+	num_rows: [dynamic][2]int, // (visual row, saved-file line offset) for the line numbers
 }
 
 @(private = "file")
@@ -106,6 +112,7 @@ expand_tabs :: proc(s: string) -> string {
 // layout_node places a node's fields into rows between x0 and max_x.
 layout_node :: proc(n: model.Node, x0, max_x: f32, packages: []string) -> Node_Layout {
 	lay := Node_Layout{items = make([dynamic]Item, 0, len(n.fields) * 2, context.temp_allocator), rows = 1}
+	lay.num_rows = make([dynamic][2]int, 0, 4, context.temp_allocator)
 	font := g_code
 
 	// Syntax colors for every byte of the line, and each field's offset into it.
@@ -118,7 +125,9 @@ layout_node :: proc(n: model.Node, x0, max_x: f32, packages: []string) -> Node_L
 	natural := x0
 	for f in n.fields do natural += field_width(f)
 	rows, has_call := model.call_rows(n)
-	broken := has_call && (model.needs_break(n) || natural > max_x)
+	saved_broken := has_call && model.needs_break(n) // saved one argument per line
+	broken := has_call && (saved_broken || natural > max_x)
+	line_off := 0
 
 	spans := rows
 	if !broken {
@@ -150,8 +159,21 @@ layout_node :: proc(n: model.Node, x0, max_x: f32, packages: []string) -> Node_L
 			x = x0 + base_w + f32(span.extra_indent) * unit_w
 			row_start = x
 		}
+		// Line numbers: one per saved line (an unfilled optional "..any" dot isn't saved).
+		optional_only := span.is_arg
+		for fi in span.start ..< span.end do if !model.is_optional_dot(n.fields[fi]) { optional_only = false; break }
+		if si == 0 || (saved_broken && !optional_only) {
+			append(&lay.num_rows, [2]int{row, line_off})
+			line_off += 1
+		}
 		for fi in span.start ..< span.end {
 			f := n.fields[fi]
+			if f.slot && f.kind == model.CAPTURE_KIND {
+				// The capture dot sits in the indentation, left of the call (clear of
+				// the green between-line dots at the code's edge), so the code doesn't shift.
+				append(&lay.items, Item{fi = fi, dot = true, w = DOT_W, x = x - CAPTURE_DX - DOT_W / 2, row = row})
+				continue
+			}
 			if f.slot {
 				label := slot_hint_label(f)
 				w := DOT_W + (label != "" ? text.measure(g_ui, label).x + 6 : 0)
@@ -199,9 +221,79 @@ layout_node :: proc(n: model.Node, x0, max_x: f32, packages: []string) -> Node_L
 	return lay
 }
 
+// The purple attribute dot above a procedure (A: its attributes, attr_dots.odin).
+COL_ATTR_DOT :: gpu.Color{0.55, 0.22, 0.88, 1}
+ATTR_DOT_DX  :: f32(14) // right of the declaration's first column (clear of the green dot)
+
+@(private = "file")
+draw_attr_dot :: proc(r: ^gpu.Renderer, cx, cy: f32) {
+	gpu.draw_circle(r, cx, cy, 7, {COL_ATTR_DOT.r, COL_ATTR_DOT.g, COL_ATTR_DOT.b, 0.18})
+	gpu.draw_circle(r, cx, cy, 4.5, {COL_ATTR_DOT.r, COL_ATTR_DOT.g, COL_ATTR_DOT.b, 0.90})
+}
+
+@(private = "file")
+draw_attr_dot_highlighted :: proc(r: ^gpu.Renderer, cx, cy: f32) {
+	pulse := 0.5 + 0.5 * math.sin(f32(g_time) * 4.0)
+	gpu.draw_circle(r, cx, cy, 8.5 + 1.5 * pulse, {COL_ATTR_DOT.r, COL_ATTR_DOT.g, COL_ATTR_DOT.b, 0.20 + 0.18 * pulse})
+	gpu.draw_circle(r, cx, cy, 5, COL_ATTR_DOT)
+}
+
+// A smaller green dot for insertion points inside functions.
+@(private = "file")
+draw_body_dot :: proc(r: ^gpu.Renderer, cx, cy: f32) {
+	gpu.draw_circle(r, cx, cy, 5, {COL_DOT.r, COL_DOT.g, COL_DOT.b, 0.12})
+	gpu.draw_circle(r, cx, cy, 2.5, {COL_DOT.r, COL_DOT.g, COL_DOT.b, 0.70})
+}
+
+// A small green dot for the green slots (an empty statement "●", a "..any" argument).
+@(private = "file")
+draw_small_green_dot :: proc(r: ^gpu.Renderer, cx, cy: f32) {
+	gpu.draw_circle(r, cx, cy, 5.5, {COL_DOT.r, COL_DOT.g, COL_DOT.b, 0.16})
+	gpu.draw_circle(r, cx, cy, 3, COL_DOT)
+}
+
+// draw_error_panel: the compiler's messages for node ni, in a box at the right
+// edge of the screen, next to the line (kept inside the code area).
+@(private = "file")
+draw_error_panel :: proc(r: ^gpu.Renderer, w: int, diags: []model.Diag, starts: []int, ni: int, line_y, top, bottom: f32) {
+	pw := min(f32(500), f32(w) * 0.40)
+	px := f32(w) - EDITOR_PAD - pw
+	inner := pw - 24
+	lh := text.line_height(g_ui)
+
+	lines := make([dynamic]string, 0, 8, context.temp_allocator)
+	for d in diags {
+		if model.node_for_line(starts, d.line) != ni do continue
+		for l in wrap_text(g_ui, fmt.tprintf("line %d:%d  %s", d.line, d.col, d.msg), inner) do append(&lines, l)
+		append(&lines, "")
+	}
+	if len(lines) > 0 do pop(&lines)
+	ph := f32(len(lines)) * lh + 20
+	py := clamp(line_y, top + 4, max(top + 4, bottom - ph - 4))
+	gpu.draw_rect(r, {px, py, pw, ph}, {0.99, 0.91, 0.89, 0.98})
+	gpu.draw_rect_outline(r, {px, py, pw, ph}, 2, COL_ERR)
+	for l, i in lines do text.draw_line(r, g_ui, {px + 12, py + 10 + f32(i) * lh}, l, {0.45, 0.08, 0.08, 1})
+}
+
+// wrap_text splits s into lines no wider than maxw (at spaces where possible).
+wrap_text :: proc(font: ^text.Font, s: string, maxw: f32) -> []string {
+	out := make([dynamic]string, 0, 4, context.temp_allocator)
+	rest := s
+	for len(rest) > 0 {
+		if text.measure(font, rest).x <= maxw { append(&out, rest); break }
+		k := 1
+		for k < len(rest) && text.measure(font, rest[:k + 1]).x <= maxw do k += 1
+		if sp := strings.last_index_byte(rest[:k], ' '); sp > 0 do k = sp
+		append(&out, rest[:k])
+		rest = strings.trim_left_space(rest[k:])
+	}
+	return out[:]
+}
+
 // Width of a field on one row (for the "does it fit" decision).
 @(private = "file")
 field_width :: proc(f: model.Field) -> f32 {
+	if f.slot && f.kind == model.CAPTURE_KIND do return 0 // drawn in the indentation
 	if f.slot {
 		label := slot_hint_label(f)
 		return DOT_W + (label != "" ? text.measure(g_ui, label).x + 6 : 0)
@@ -212,7 +304,7 @@ field_width :: proc(f: model.Field) -> f32 {
 // Color of the byte at line offset `at` inside field f.
 @(private = "file")
 run_color :: proc(f: model.Field, hl: []model.Hl, at: int) -> gpu.Color {
-	if f.editable && f.kind != "string" do return COL_ACCENT // names you can rename/dictate
+	if f.editable && f.kind != "string" && f.kind != model.COMMENT_KIND do return COL_ACCENT // names you can rename/dictate (a comment's text keeps its color)
 	if f.kind == "string" do return HL_COLORS[.String]
 	if at < 0 || at >= len(hl) do return COL_TEXT
 	return HL_COLORS[hl[at]]
@@ -249,11 +341,18 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	}
 	content_end := y
 
-	// Where the cursor is, so the view can follow it.
-	tni, tfi, has_target := model.editor_target(m)
-	cursor_on_dot := model.on_dot(m)
+	// What's highlighted: the part under the cursor, or (RT held / just used)
+	// the RT tree selection - a part, a whole line, or a block of lines.
+	hl, has_hl := model.current_highlight(m, g_walk_held && m.state == .Editor)
+	cursor_on_attr := model.on_attr_dot(m) // the purple dot above a procedure (attr_dots.odin)
+	cursor_on_dot := model.on_dot(m) && !cursor_on_attr // a green one
+	in_hl :: proc(hl: model.Highlight, ni, fi: int) -> bool {
+		if ni < hl.ni || ni > hl.end_ni do return false
+		if hl.fb < 0 do return true // whole line(s)
+		return fi >= hl.fa && fi < hl.fb
+	}
 	cur_y := y_start - lh * 0.3
-	if cursor_on_dot {
+	if cursor_on_dot || cursor_on_attr {
 		if m.editor_line > 0 && m.editor_line <= n {
 			prev := lays[m.editor_line - 1]
 			cur_y = prev.y + f32(prev.rows) * lh + lh * 0.3
@@ -261,7 +360,7 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	} else if m.editor_line >= 0 && m.editor_line < n {
 		lay := lays[m.editor_line]
 		row := 0
-		for it in lay.items do if has_target && it.fi == tfi { row = it.row; break }
+		for it in lay.items do if has_hl && hl.fb >= 0 && it.fi >= hl.fa && it.fi < hl.fb { row = it.row; break }
 		cur_y = lay.y + f32(row) * lh
 	}
 	// Keep the cursor row inside [top, bottom] (with a line of margin).
@@ -271,38 +370,76 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	sy := -g_scroll
 	visible :: proc(y0, y1, top, bottom: f32) -> bool { return y1 > top && y0 < bottom }
 
-	// Statement highlight when RT held in editor.
-	if g_rt_held && m.state == .Editor && !cursor_on_dot && m.editor_line >= 0 && m.editor_line < n {
-		start, end := model.construct_range(m, m.editor_line)
-		y0 := lays[start].y + sy
-		y1 := lays[end].y + f32(lays[end].rows) * lh + sy
-		gpu.draw_rect(r, {pad, max(y0, top), f32(w) - pad * 2, min(y1, bottom) - max(y0, top)}, {0.22, 0.40, 0.70, 0.25})
+	// A whole line / block selected with RT: shade its rows.
+	if has_hl && hl.fb < 0 && hl.ni >= 0 && hl.end_ni < n {
+		y0 := lays[hl.ni].y + sy
+		y1 := lays[hl.end_ni].y + f32(lays[hl.end_ni].rows) * lh + sy
+		if y1 > top && y0 < bottom {
+			box := gpu.Rect{pad, max(y0, top), f32(w) - pad * 2, min(y1, bottom) - max(y0, top)}
+			gpu.draw_rect(r, box, {0.22, 0.40, 0.70, 0.25})
+			gpu.draw_rect_outline(r, box, 2, {COL_ACCENT.r, COL_ACCENT.g, COL_ACCENT.b, 0.6})
+		}
 	}
 
 	// Insertion dot before the first construct.
-	dots := model.insertion_points(m, context.temp_allocator)
+	dots := model.dot_points(m, context.temp_allocator) // one green dot per gap
+	dot_inds := model.insertion_indents(m, context.temp_allocator) // dots inside a file-scope when sit indented
 	top_dot_y := y_start - lh * 0.3 + sy
 	if visible(top_dot_y - 10, top_dot_y + 10, top, bottom) {
-		if cursor_on_dot && m.editor_line == 0 do draw_green_dot_highlighted(r, pad + 14, top_dot_y)
-		else do draw_green_dot(r, pad + 14, top_dot_y)
+		if cursor_on_dot && m.editor_line == 0 do draw_green_dot_highlighted(r, dot_x(), top_dot_y)
+		else do draw_green_dot(r, dot_x(), top_dot_y)
 	}
+
+	// Saved-file line numbers, and the compiler's problems (checker.odin) per node.
+	starts := model.node_line_starts(m, context.temp_allocator)
+	diags := current_diags(m)
+	node_bad := make([]bool, n, context.temp_allocator)
+	for d in diags do if k := model.node_for_line(starts, d.line); k >= 0 do node_bad[k] = true
 
 	for node, ni in m.doc.nodes {
 		lay := lays[ni]
 		ny := lay.y + sy
 		if visible(ny, ny + f32(lay.rows) * lh, top, bottom) {
+			if node_bad[ni] { // a problem odin check found: shade the line(s) red
+				gpu.draw_rect(r, {x0 - 6, ny, max_x - x0 + 12, f32(lay.rows) * lh}, {0.90, 0.25, 0.22, 0.14})
+				gpu.draw_rect(r, {x0 - 6, ny, 3, f32(lay.rows) * lh}, COL_ERR)
+			}
+			for nr in lay.num_rows {
+				ry := ny + f32(nr[0]) * lh
+				if ry + lh <= top || ry >= bottom do continue
+				num := starts[ni] + nr[1]
+				col := COL_DIM
+				for d in diags do if d.line == num { col = COL_ERR; break }
+				label := fmt.tprintf("%d", num)
+				lw := text.measure(g_ui, label).x
+				text.draw_line(r, g_ui, {pad + LINE_NUM_W - 10 - lw, ry + (lh - text.line_height(g_ui)) * 0.5}, label, col)
+			}
 			for it in lay.items {
 				iy := ny + f32(it.row) * lh
 				if iy + lh <= top || iy >= bottom do continue
-				selected := has_target && ni == tni && it.fi == tfi
+				// The highlighted part (one field, or several: a whole argument).
+				selected := has_hl && hl.fb >= 0 && it.fi >= 0 && in_hl(hl, ni, it.fi)
 				if selected {
-					gpu.draw_rect(r, {it.x - 3, iy, it.w + 6, lh}, {0.22, 0.40, 0.70, 0.55})
+					gpu.draw_rect(r, {it.x - 3, iy, it.w + 6, lh}, COL_SEL_BG)
 					gpu.draw_rect_outline(r, {it.x - 3, iy, it.w + 6, lh}, 2, COL_ACCENT)
 				}
 				if it.dot {
 					f := node.fields[it.fi]
 					outer, inner := slot_dot_color(f.kind)
-					draw_colored_dot(r, it.x + DOT_W / 2, iy + lh / 2, outer, inner)
+					if f.kind == "body" || f.kind == "args" || f.kind == model.FIELDS_KIND {
+						draw_small_green_dot(r, it.x + DOT_W / 2, iy + lh / 2)
+					} else if f.kind == model.CAPTURE_KIND {
+						// Steady and smaller than a fill-me dot: an option, not a hole.
+						gpu.draw_circle(r, it.x + DOT_W / 2, iy + lh / 2, 8, {outer.r, outer.g, outer.b, 0.20})
+						gpu.draw_circle(r, it.x + DOT_W / 2, iy + lh / 2, 4.5, inner)
+					} else {
+						draw_colored_dot(r, it.x + DOT_W / 2, iy + lh / 2, outer, inner)
+					}
+					if m.ref_pick_active && ni == m.ref_ni && it.fi == m.ref_fi {
+						// The dot a "Reference" pick will fill: a pulsing ring.
+						pulse := 0.5 + 0.5 * math.sin(f32(g_time) * 6.0)
+						gpu.draw_circle_outline(r, it.x + DOT_W / 2, iy + lh / 2, 11 + 2 * pulse, 2, {0.85, 0.58, 0.05, 0.9})
+					}
 					if it.label != "" {
 						text.draw_line(r, g_ui, {it.x + DOT_W + 2, iy + (lh - text.line_height(g_ui)) * 0.5}, it.label, HINT_COL)
 					}
@@ -314,10 +451,46 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 		// The insertion dot after each construct's last line.
 		if dots[ni + 1] {
 			dot_y := ny + f32(lay.rows) * lh + lh * 0.3
+			// Inside a file-scope when: indented like the declarations there.
+			ddx := dot_inds[ni + 1] != "" ? text.measure(g_code, expand_tabs(dot_inds[ni + 1])).x : 0
 			if visible(dot_y - 10, dot_y + 10, top, bottom) {
-				if cursor_on_dot && m.editor_line == ni + 1 do draw_green_dot_highlighted(r, pad + 14, dot_y)
-				else do draw_green_dot(r, pad + 14, dot_y)
+				if cursor_on_dot && m.editor_line == ni + 1 do draw_green_dot_highlighted(r, dot_x() + ddx, dot_y)
+				else do draw_green_dot(r, dot_x() + ddx, dot_y)
 			}
+		}
+	}
+
+	// The purple attribute dots above procedures (model.attr_points): over the
+	// procedure's name (above its attribute lines) - in the middle of the blank
+	// line above it if there is one, else on the boundary between the rows (clear
+	// of the text either way).
+	ap := model.attr_points(m, context.temp_allocator)
+	for i in 0 ..< n {
+		if !ap[i] do continue
+		dot_y := lays[i].y + sy
+		if i > 0 && model.is_blank_line(m.doc.nodes[i - 1]) do dot_y = lays[i - 1].y + lh * 0.55 + sy
+		if i == 0 do dot_y = y_start - lh * 0.3 + sy
+		if !visible(dot_y - 10, dot_y + 10, top, bottom) do continue
+		ind_w := text.measure(g_code, expand_tabs(model.line_indent(m.doc.nodes[i]))).x
+		ax := x0 + ind_w + ATTR_DOT_DX
+		if cursor_on_attr && m.editor_line == i do draw_attr_dot_highlighted(r, ax, dot_y)
+		else do draw_attr_dot(r, ax, dot_y)
+	}
+
+	// The insertion dots inside functions (model.body_points): in the indentation,
+	// on the boundary above line i.
+	bp := model.body_points(m, context.temp_allocator)
+	for i in 1 ..< n {
+		if !bp[i] do continue
+		dot_y := lays[i].y + sy
+		if !visible(dot_y - 10, dot_y + 10, top, bottom) do continue
+		ind_w := text.measure(g_code, expand_tabs(model.body_indent_at(m, i))).x
+		// In the indentation; for unindented code, just left of it (not on the text).
+		bdx := ind_w >= 20 ? x0 + ind_w - 12 : x0 - 10
+		if cursor_on_dot && m.editor_line == i {
+			draw_green_dot_highlighted(r, bdx, dot_y)
+		} else {
+			draw_body_dot(r, bdx, dot_y)
 		}
 	}
 
@@ -325,14 +498,44 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	if g_scroll > 0 do text.draw_centered(r, g_ui, {0, top - 4, f32(w), 18}, "^", COL_DIM)
 	if content_end - g_scroll > bottom do text.draw_centered(r, g_ui, {0, bottom - 14, f32(w), 18}, "v", COL_DIM)
 
+	// The problems on the line under the cursor, at the right of the screen.
+	if !cursor_on_dot && !cursor_on_attr && m.editor_line >= 0 && m.editor_line < n && node_bad[m.editor_line] {
+		// Just below the line, at the right, so the line itself stays readable.
+		below := lays[m.editor_line].y + sy + f32(lays[m.editor_line].rows) * lh + 4
+		draw_error_panel(r, w, diags, starts, m.editor_line, below, top, bottom)
+	}
+
 	// Title bar (drawn last so scrolled code never covers it).
 	gpu.draw_rect(r, {0, 0, f32(w), 50}, COL_BG)
-	text.draw_line(r, g_ui, {pad, 14}, editor_title(), COL_DIM)
-	gpu.draw_rect(r, {0, 50, f32(w), 1}, {0.2, 0.22, 0.27, 1})
+	title := editor_title()
+	text.draw_line(r, g_ui, {pad, 14}, title, COL_DIM)
+	if len(diags) > 0 {
+		label := fmt.tprintf("%d problem%s", len(diags), len(diags) == 1 ? "" : "s")
+		text.draw_line(r, g_ui, {pad + text.measure(g_ui, title).x + 24, 14}, label, COL_ERR)
+	}
+	gpu.draw_rect(r, {0, 50, f32(w), 1}, COL_RULE)
+
+	// "Reference": picking a name in the file.
+	if m.ref_pick_active {
+		bar := gpu.Rect{0, 51, f32(w), 30}
+		gpu.draw_rect(r, bar, {0.99, 0.90, 0.60, 0.97})
+		text.draw_centered(r, g_ui, bar, "Pick a name to reference   -   D-pad move   A use it   B cancel", {0.42, 0.28, 0.00, 1})
+	}
+	// Modifiers (attributes, struct directives, calling conventions): picking a declaration.
+	if m.mod_pick_active {
+		bar := gpu.Rect{0, 51, f32(w), 30}
+		gpu.draw_rect(r, bar, {0.99, 0.90, 0.60, 0.97})
+		text.draw_centered(r, g_ui, bar, model.mod_pick_banner(m), {0.42, 0.28, 0.00, 1})
+	}
+	// What Y / LT+B do on a highlighted keyword (when, #assert, attributes, ...).
+	if hint := model.rebind_hint(m.keymap, model.ctrl_hint(m)); hint != "" && !m.ref_pick_active {
+		hw := text.measure(g_ui, hint).x
+		text.draw_line(r, g_ui, {f32(w) - 340 - hw, 14}, hint, COL_ACCENT)
+	}
 
 	// STT push-to-talk indicator / last heard word.
 	if g_recording {
-		text.draw_line(r, g_ui, {f32(w) - 150, 14}, "[REC]", {0.90, 0.30, 0.30, 1})
+		text.draw_line(r, g_ui, {f32(w) - 150, 14}, "[REC]", COL_ERR)
 	} else if g_heard != "" {
 		text.draw_line(r, g_ui, {f32(w) - 320, 14}, fmt.tprintf("heard: %s", g_heard), COL_ACCENT)
 	}

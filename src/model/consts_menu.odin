@@ -28,16 +28,13 @@ build_import_const_menu :: proc(app: ^App, ref, path: string) -> []Entry {
 	if len(all) == 0 do return nil
 
 	used := collect_used_names(app, ref, all)
-	rest := make([dynamic]CoreProc, 0, len(all), context.temp_allocator)
+	used_set := make(map[string]bool, len(used), context.temp_allocator)
+	for u in used do used_set[u] = true
 	used_info := make([dynamic]CoreProc, 0, len(used), context.temp_allocator)
-	for c in all {
-		is_used := false
-		for u in used do if u == c.name { is_used = true; break }
-		if is_used do append(&used_info, c)
-		else do append(&rest, c)
-	}
+	for c in all do if c.name in used_set do append(&used_info, c)
 
-	grouped := build_proc_hierarchy(ref, rest[:])
+	// All the constants grouped (the same groups in every project), minus the used ones.
+	grouped := remove_named_leaves(build_proc_hierarchy(ref, all), used_set)
 	defer delete(grouped) // entries are moved into `result`
 	retarget_leaves(grouped, CONST_IMPORT_FILL)
 
@@ -62,7 +59,7 @@ build_const_entries :: proc(app: ^App) -> []Entry {
 	for imp in imports {
 		children := build_import_const_menu(app, imp.ref, imp.path)
 		if children == nil do continue
-		append(&out, Entry{label = fmt.aprintf("%s.", imp.ref), owned_label = true, children = children})
+		append(&out, Entry{label = fmt.aprintf("%s.", imp.ref), owned_label = true, heat_key = strings.clone(imp.path), children = children})
 	}
 	if len(out) == 0 do append(&out, grp_dim("(no imported constants)"))
 	result := make([]Entry, len(out))
@@ -72,7 +69,7 @@ build_const_entries :: proc(app: ^App) -> []Entry {
 
 // ---- Operators ----
 
-Op_Class :: enum { Bitwise, Shift, Arith, Modulo, Compare, Logic }
+Op_Class :: enum { Bitwise, Shift, Arith, Modulo, Compare, Logic, Choose }
 
 @(private = "file")
 Op_Info :: struct { label, op: string, class: Op_Class, unary: bool }
@@ -88,6 +85,8 @@ OPERATORS := [?]Op_Info{
 	{"a < b", "<", .Compare, false}, {"a <= b", "<=", .Compare, false},
 	{"a > b", ">", .Compare, false}, {"a >= b", ">=", .Compare, false},
 	{"a && b", "&&", .Logic, false}, {"a || b", "||", .Logic, false}, {"!a", "!", .Logic, true},
+	// Ternaries (expr.odin): `op` is the first keyword.
+	{"a if c else b", "if", .Choose, false}, {"c ? a : b", "?", .Choose, false}, {"a when c else b", "when", .Choose, false},
 }
 
 @(private = "file")
@@ -117,6 +116,7 @@ build_operator_entries :: proc() -> []Entry {
 		grp("Arithmetic", group({.Arith, .Modulo})),
 		grp("Compare", group({.Compare})),
 		grp("Logic", group({.Logic})),
+		grp("Choose", group({.Choose})), // a if c else b (expr.odin)
 	)
 }
 
@@ -126,6 +126,10 @@ build_operator_entries :: proc() -> []Entry {
 make_slot_operator :: proc(app: ^App, ni, fi: int, label: string) {
 	o, ok := op_info(label)
 	if !ok do return
+	if o.class == .Choose {
+		make_slot_ternary(app, ni, fi, o.op) // ● if ● else ● (expr.odin)
+		return
+	}
 	fields := &app.doc.nodes[ni].fields
 	slot := fields[fi]
 	hint, hint_pkg := slot.hint, slot.hint_pkg
@@ -182,6 +186,7 @@ op_fits :: proc(label: string, exp: Type_Cat) -> bool {
 	case .Arith:   return exp == .Integer || exp == .Float || exp == .Rune || (o.op == "-" && !o.unary && exp == .BitSet)
 	case .Modulo:  return exp == .Integer
 	case .Compare, .Logic: return exp == .Bool
+	case .Choose:          return true // both branches are the dot's type
 	}
 	return true
 }

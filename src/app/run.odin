@@ -94,6 +94,8 @@ save_run_cmds :: proc() {
 	path := run_cmds_path()
 	if path == "" do return
 	
+	if !trace_write_ok(path) do return // TRACE hook: a replay writes only inside its sandbox
+
 	// Ensure .doodle directory exists
 	dir := fmt.tprintf("%s/.doodle", g_project_dir)
 	os.make_directory(dir)
@@ -116,7 +118,8 @@ save_run_cmds :: proc() {
 // --- Running commands ---
 
 // run_command executes a command with cwd = g_project_dir in a visible console window.
-run_command :: proc(cmd: string) {
+// keep_open leaves the console up even on success (test results are worth reading).
+run_command :: proc(cmd: string, keep_open := false) {
 	if cmd == "" do return
 	
 	// Save first so the command runs the code that's on screen.
@@ -138,13 +141,15 @@ run_command :: proc(cmd: string) {
 	}
 
 	// Build command to open a new visible console that stays open:
-	// cmd /c start "Doodle Run" cmd /k "set "PATH=<odin>;%PATH%" && cd /d "<dir>" && <cmd>"
-	// /k keeps the console open after the command finishes
-	full_cmd := fmt.tprintf("cmd /c start \"Doodle Run\" cmd /k \"%scd /d \"%s\" && %s\"", path_prefix, win_dir, cmd)
+	// cmd /c start "Doodle Run" cmd /c "set "PATH=<odin>;%PATH%" && cd /d "<dir>" && <cmd> || pause"
+	// The console closes by itself when the program ends normally; if the build
+	// fails or the program exits with an error, `pause` keeps it open to read.
+	tail := keep_open ? "& pause" : "|| pause"
+	full_cmd := fmt.tprintf("cmd /c start \"Doodle Run\" cmd /c \"%scd /d \"%s\" && %s %s\"", path_prefix, win_dir, cmd, tail)
 
 	// Convert to C string and execute
 	cstr := strings.clone_to_cstring(full_cmd, context.temp_allocator)
-	libc.system(cstr)
+	if !trace_replaying() do libc.system(cstr) // TRACE hook (was: unconditional): a replay doesn't run programs
 
 	set_status(fmt.tprintf("ran: %s", cmd))
 }
@@ -189,6 +194,14 @@ run_favorite :: proc() {
 	
 	// No favorite found (shouldn't happen with ensure_default_run)
 	set_status("No favorite command set")
+}
+
+// TEST_CMD is what LB runs: the package's @(test) procedures.
+TEST_CMD :: "odin test ."
+
+// run_tests saves, then runs the project's tests (LB) in a visible console.
+run_tests :: proc() {
+	run_command(TEST_CMD, keep_open = true)
 }
 
 // toggle_favorite toggles the favorite flag on a command (only one favorite at a time).
@@ -314,7 +327,7 @@ draw_run_overlay :: proc(r: ^gpu.Renderer, w, h: int) {
 	fw, fh := f32(w), f32(h)
 	
 	// Semi-transparent background
-	gpu.draw_rect(r, {0, 0, fw, fh}, {0, 0, 0, 0.60})
+	gpu.draw_rect(r, {0, 0, fw, fh}, COL_VEIL)
 	
 	if g_run_submenu {
 		// Draw template submenu

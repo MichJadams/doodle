@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Doodle IDE build script (Linux / Steam Deck)
-# Usage: ./build.sh [run|test|release]
+# Usage: ./build.sh [run|replay [trace] [options]|test|release]
+# Debug builds record every run to bin/traces (docs/TRACE.md); release builds don't.
 set -euo pipefail
 
 SRC="src/app"
@@ -18,6 +19,11 @@ case "${1:-}" in
   run)
     odin build "$SRC" -out:"$OUT" -debug
     exec "$OUT"
+    ;;
+  replay)
+    odin build "$SRC" -out:"$OUT" -debug
+    shift
+    exec "$OUT" --replay "${1:-last}" "${@:2}"
     ;;
   *)
     odin build "$SRC" -out:"$OUT" -debug

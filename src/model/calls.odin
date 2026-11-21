@@ -14,23 +14,6 @@ import "core:strings"
 RET_NONE    :: ""
 RET_UNKNOWN :: "?"
 
-// Arity of built-in procedures (not in CORE_PROCS).
-@(private = "file")
-Builtin_Arity :: struct { name: string, req: int, variadic: bool, ret: string }
-@(private = "file")
-BUILTIN_ARITY := [?]Builtin_Arity{
-	{"len", 1, false, "int"}, {"cap", 1, false, "int"}, {"size_of", 1, false, "int"},
-	{"align_of", 1, false, "int"}, {"offset_of", 2, false, "uintptr"},
-	{"type_of", 1, false, "?"}, {"type_info_of", 1, false, "?"},
-	{"new", 1, false, "?"}, {"free", 1, false, "?"}, {"delete", 1, false, "?"}, {"clear", 1, false, ""},
-	{"raw_data", 1, false, "?"}, {"abs", 1, false, "?"}, {"panic", 1, false, ""},
-	{"resize", 2, false, "?"}, {"reserve", 2, false, "?"}, {"clamp", 3, false, "?"},
-	{"make", 1, true, "?"},    // make(T) / make(T, len) / make(T, len, cap)
-	{"append", 2, true, "?"},  // append(&arr, x, ...)
-	{"assert", 1, true, ""},   // assert(cond) / assert(cond, "message")
-	{"swizzle", 1, true, "?"}, {"min", 1, true, "?"}, {"max", 1, true, "?"},
-}
-
 // One parameter of a proc signature. Strings slice the signature text.
 Param :: struct {
 	name:     string,
@@ -154,6 +137,7 @@ Call_Sig :: struct {
 	params:   []Param, // parsed parameters ("" types when unknown); may be empty
 	ret:      string,  // return type text (RET_NONE "" = returns nothing, RET_UNKNOWN "?" = can't tell)
 	pkg:      string,  // import path the types are written in ("" = this document/builtin)
+	known:    bool,    // the proc was found (core table, built-in, or this document)
 }
 
 // call_signature looks up `name`: `pkg_ref` is the import reference (e.g. "fmt",
@@ -170,7 +154,7 @@ call_signature :: proc(app: ^App, pkg_ref, name: string) -> Call_Sig {
 		for p in CORE_PROCS {
 			if p.path != path || p.name != name do continue
 			if !found {
-				sig = Call_Sig{p.req, p.variadic, parse_params(p.params), p.ret, path}
+				sig = Call_Sig{p.req, p.variadic, parse_params(p.params), p.ret, path, true}
 				found = true
 			} else if p.req != sig.req || p.variadic != sig.variadic {
 				// Same name in several files (e.g. per-OS): be permissive.
@@ -182,24 +166,38 @@ call_signature :: proc(app: ^App, pkg_ref, name: string) -> Call_Sig {
 		}
 		return sig
 	}
-	for b in BUILTIN_ARITY do if b.name == name do return Call_Sig{req = b.req, variadic = b.variadic, ret = b.ret}
+	if b, ok := builtin_proc(name); ok do return Call_Sig{req = b.req, variadic = b.variadic, ret = b.ret, known = true} // builtin_procs.odin
 	// A procedure declared in this document: read its signature line.
 	for n in app.doc.nodes {
 		txt := node_text(n, context.temp_allocator)
 		at := strings.index(txt, " :: proc")
 		if at < 0 || strings.trim_space(txt[:at]) != name do continue
-		inner, after, ok := paren_span(txt, at)
+		sig, ok := sig_from_decl(txt, at)
 		if !ok do break
-		sig := Call_Sig{params = parse_params(inner)}
-		sig.req, sig.variadic = param_arity(inner)
-		if arrow := strings.index(txt[after:], "->"); arrow >= 0 {
-			ret := txt[after + arrow + 2:]
-			if brace := strings.index_byte(ret, '{'); brace >= 0 do ret = ret[:brace]
-			sig.ret = strings.trim_space(ret)
-		}
 		return sig
 	}
+	// ...or in one of the package's other files (siblings.odin).
+	if txt, found := sibling_sig_line(app, name); found {
+		if sig, ok := sig_from_decl(txt, strings.index(txt, " :: proc")); ok do return sig
+	}
 	return Call_Sig{variadic = true, ret = RET_UNKNOWN}
+}
+
+// sig_from_decl: the signature in a declaration line `name :: proc(...) -> T {`
+// (`at` = where " :: proc" starts).
+@(private = "file")
+sig_from_decl :: proc(txt: string, at: int) -> (Call_Sig, bool) {
+	if at < 0 do return {}, false
+	inner, after, ok := paren_span(txt, at)
+	if !ok do return {}, false
+	sig := Call_Sig{params = parse_params(inner), known = true}
+	sig.req, sig.variadic = param_arity(inner)
+	if arrow := strings.index(txt[after:], "->"); arrow >= 0 {
+		ret := txt[after + arrow + 2:]
+		if brace := strings.index_byte(ret, '{'); brace >= 0 do ret = ret[:brace]
+		sig.ret = strings.trim_space(ret)
+	}
+	return sig, true
 }
 
 // call_arity: just the dot counts of call_signature.
@@ -225,8 +223,9 @@ intern_hint :: proc(app: ^App, s: string) -> string {
 // Returns how many fields were inserted.
 inject_call_args :: proc(app: ^App, fields: ^[dynamic]Field, at: int, sig: Call_Sig) -> int {
 	if sig.req == 0 && !sig.variadic {
-		inject_at(fields, at, Field{strings.clone("()"), false, false, "", "", ""})
-		return 1
+		// "(" ")" (not "()") so the call's name stays selectable / changeable.
+		inject_at(fields, at, Field{strings.clone("("), false, false, "", "", ""}, Field{strings.clone(")"), false, false, "", "", ""})
+		return 2
 	}
 	// Expected types of the required params (in order) and of the variadic tail.
 	hints := make([dynamic]string, 0, sig.req, context.temp_allocator)
@@ -267,13 +266,22 @@ append_more_args_slot :: proc(fields: ^[dynamic]Field, fi: int, filled: int, hin
 
 // node_source is node_text for saving: unfilled "args" dots (and the ", " in
 // front of them) are left out, since they are optional extra arguments.
+// A menu-built procedure header is saved tidy: `name :: proc(a: T, b: U) -> R {`
+// (its fields read `proc( ` a: T, b: U, ● ` ) -> `).
 node_source :: proc(n: Node, allocator := context.allocator) -> string {
+	hopen, hdot, hclose, hdr := proc_header_parens(n)
+	tidy := hdr && hdot - 1 > hopen // parameters between the parens
 	b := strings.builder_make(allocator)
 	for f, i in n.fields {
-		if f.slot && f.kind == "args" do continue
+		if is_optional_dot(f) do continue // and a struct literal's "add a field" dot
 		if f.text == ", " && !f.slot && i + 1 < len(n.fields) {
 			next := n.fields[i + 1]
-			if next.slot && next.kind == "args" do continue
+			if is_optional_dot(next) do continue
+		}
+		if tidy {
+			if i == hdot - 1 && f.text == ", " do continue // before the trailing params dot
+			if i == hopen { strings.write_string(&b, strings.trim_suffix(f.text, " ")); continue }
+			if i == hclose { strings.write_string(&b, strings.trim_prefix(f.text, " ")); continue }
 		}
 		strings.write_string(&b, f.text)
 	}

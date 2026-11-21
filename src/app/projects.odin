@@ -66,13 +66,13 @@ handle_projects_input :: proc(raw: ^Raw) {
 
 draw_projects_overlay :: proc(r: ^gpu.Renderer, w, h: int) {
 	fw, fh := f32(w), f32(h)
-	gpu.draw_rect(r, {0, 0, fw, fh}, {0, 0, 0, 0.75})
+	gpu.draw_rect(r, {0, 0, fw, fh}, COL_VEIL)
 	text.draw_centered(r, g_ui, {0, fh * 0.07, fw, 36}, "RECENT PROJECTS", COL_ACCENT)
 
 	n := len(g_proj_list)
 	if n == 0 {
 		text.draw_centered(r, g_ui, {0, fh * 0.35, fw, 30},
-			fmt.tprintf("No saved projects in %s yet - save one with RT+Y", g_projects_dir), COL_DIM)
+			fmt.tprintf("No saved projects in %s yet - save one with %s", g_projects_dir, model.action_slot_name(&g_keymap, .Save_As)), COL_DIM)
 		text.draw_centered(r, g_ui, {0, f32(h) - 172, fw, 24}, "B back", COL_DIM)
 		return
 	}

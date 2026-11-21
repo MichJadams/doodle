@@ -143,3 +143,20 @@ test_highlight :: proc(t: ^testing.T) {
 	testing.expect_value(t, at(s2, hl2, "bool"), Hl.Type)
 	testing.expect_value(t, at(s2, hl2, "main"), Hl.Plain)
 }
+
+@(test)
+test_copy_selection_source :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	doc_from_source(&app, "package main\n\nimport \"core:fmt\"\n\nmain :: proc() {\n\tfmt.println(1)\n\tif true {\n\t\tfmt.println(2)\n\t}\n}")
+	focus_line(&app, 5) // a statement inside main: just that line
+	testing.expect_value(t, copy_selection_source(&app), "\tfmt.println(1)")
+	focus_line(&app, 6) // a line that opens a block: the whole block
+	testing.expect_value(t, copy_selection_source(&app), "\tif true {\n\t\tfmt.println(2)\n\t}")
+	focus_line(&app, 4) // the proc header: the whole proc
+	testing.expect(t, strings.has_prefix(copy_selection_source(&app), "main :: proc() {\n"))
+	testing.expect(t, strings.has_suffix(copy_selection_source(&app), "\t}\n}"))
+	focus_dot(&app)     // a green dot: the whole file
+	testing.expect_value(t, copy_selection_source(&app), doc_to_source(&app, context.temp_allocator))
+}

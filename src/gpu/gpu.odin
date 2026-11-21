@@ -235,6 +235,15 @@ texture_create :: proc(w, h: int, pixels: []u8, channels: int) -> Texture {
 	return t
 }
 
+// texture_create_mipmapped: an RGBA texture with a mip chain, for images (icons)
+// drawn well below their native size - plain LINEAR minification would alias.
+texture_create_mipmapped :: proc(w, h: int, pixels: []u8) -> Texture {
+	t := texture_create(w, h, pixels, 4)
+	gl.GenerateMipmap(gl.TEXTURE_2D)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
+	return t
+}
+
 texture_destroy :: proc(r: ^Renderer, t: ^Texture) {
 	if t.id == 0 do return
 	flush(r) // anything batched with this texture must be drawn first

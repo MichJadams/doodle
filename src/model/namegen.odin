@@ -28,7 +28,9 @@ pick_words :: proc(counter: int) -> (adj: string, animal: string) {
 	return ADJECTIVES[adj_idx], ANIMALS[animal_idx]
 }
 
-// Check if a name is already used in the document as an editable field.
+// Check if a name is already used in the document as an editable field, or
+// declared by another file of the package (a type or procedure there: the same
+// name here would be a redeclaration, siblings.odin).
 is_name_used :: proc(app: ^App, name: string) -> bool {
 	for &node in app.doc.nodes {
 		for &field in node.fields {
@@ -37,6 +39,8 @@ is_name_used :: proc(app: ^App, name: string) -> bool {
 			}
 		}
 	}
+	for t in app.sibling_types do if t.name == name do return true
+	for p in app.sibling_procs do if p.name == name do return true
 	return false
 }
 

@@ -79,3 +79,24 @@ test_clean_filename :: proc(t: ^testing.T) {
 	check(t, ".odin", "")
 	check(t, "***", "")
 }
+
+@(test)
+test_clean_rename :: proc(t: ^testing.T) {
+	Case :: struct { input, old: string, dir: bool, want: string }
+	cases := []Case{
+		{"game loop", "new_file.odin", false, "game_loop.odin"},
+		{"game_loop.odin", "new_file.odin", false, "game_loop.odin"},
+		{"todo", "notes.md", false, "todo.md"},
+		{"todo.txt", "notes.md", false, "todo.txt"},
+		{"build", "run", false, "build"},
+		{"assets", "stuff", true, "assets"},
+		{"my sprites.v2", "img", true, "my_sprites.v2"},
+		{"odin", "main.odin", false, ""},
+		{"  ", "main.odin", false, ""},
+		{"..", "main.odin", false, ""},
+	}
+	for c in cases {
+		got := clean_rename(c.input, c.old, c.dir, context.temp_allocator)
+		testing.expectf(t, got == c.want, "clean_rename(%q, %q, %v) = %q, want %q", c.input, c.old, c.dir, got, c.want)
+	}
+}

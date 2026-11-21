@@ -28,13 +28,7 @@ cleanup_calls :: proc(app: ^App) {
 // Put the cursor on fields[fi] of node ni (must be an editable field or slot).
 @(private = "file")
 focus_field :: proc(app: ^App, ni, fi: int) {
-	focus_line(app, ni)
-	k := 0
-	for f, i in app.doc.nodes[ni].fields {
-		if i == fi do break
-		if f.editable || f.slot do k += 1
-	}
-	app.editor_field = k
+	focus_field_index(app, ni, fi)
 }
 
 @(private = "file")
