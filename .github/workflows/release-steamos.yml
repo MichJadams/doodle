@@ -93,8 +93,32 @@ jobs:
           sdl="$(ldd bin/doodle | awk '/libSDL2/ {print $3}')"
           cp -L "$sdl" "$pkg/bin/"
           patchelf --set-rpath '$ORIGIN' "$pkg/bin/doodle"
+          # The runtime's libSDL2 is sdl2-compat, which dlopen()s libSDL3.so.0:
+          # bundle SDL3 too, and give the shim an $ORIGIN runpath so its
+          # dlopen finds the bundled copy first.
+          if grep -aq 'libSDL3.so.0' "$pkg/bin/libSDL2-2.0.so.0"; then
+            sdl3="$(ldconfig -p | awk '/libSDL3\.so\.0 / {print $NF; exit}')"
+            [ -n "$sdl3" ] || { echo "sdl2-compat needs libSDL3.so.0 but none found" >&2; exit 1; }
+            cp -L "$sdl3" "$pkg/bin/libSDL3.so.0"
+            patchelf --set-rpath '$ORIGIN' "$pkg/bin/libSDL2-2.0.so.0"
+          fi
           readelf -d "$pkg/bin/doodle" | grep -E 'RUNPATH|NEEDED'
-          echo "${{ steps.ver.outputs.version }} (${GITHUB_SHA::7}, Odin ${ODIN_TAG})" > "$pkg/VERSION"
+          ls -l "$pkg/bin"
+
+      - name: Check bundled libraries load
+        run: |
+          # Load the bundled SDL2 and confirm every SDL library resolves from dist/.
+          LD_DEBUG=libs python3 -c "import ctypes; ctypes.CDLL('dist/doodle/bin/libSDL2-2.0.so.0').SDL_GetVersion" 2> ld.log || true
+          grep -E 'calling init: .*libSDL' ld.log
+          if grep -E 'calling init: .*libSDL' ld.log | grep -v 'dist/doodle/bin/'; then
+            echo "an SDL library was loaded from outside the package" >&2; exit 1
+          fi
+          # And the binary itself resolves SDL2 from its own folder.
+          ldd dist/doodle/bin/doodle | grep SDL | tee /dev/stderr | grep -q 'dist/doodle/bin/'
+
+      - name: Archive
+        run: |
+          echo "${{ steps.ver.outputs.version }} (${GITHUB_SHA::7}, Odin ${ODIN_TAG})" > dist/doodle/VERSION
           tar -czf "doodle-steamos-${{ steps.ver.outputs.version }}.tar.gz" -C dist doodle
 
       - uses: actions/upload-artifact@v4
