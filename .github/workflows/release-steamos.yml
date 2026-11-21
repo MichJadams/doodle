@@ -116,6 +116,9 @@ jobs:
         run: |
           flags=""
           if [ "${{ inputs.prerelease }}" = "true" ]; then flags="--prerelease"; fi
-          gh release create "$TAG" doodle-steamos-*.tar.gz \
+          # Also attach a fixed-name copy so .../releases/latest/download/doodle-steamos.tar.gz works.
+          versioned="$(ls doodle-steamos-*.tar.gz)"
+          cp "$versioned" doodle-steamos.tar.gz
+          gh release create "$TAG" "$versioned" doodle-steamos.tar.gz \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Doodle $TAG (SteamOS)" --generate-notes $flags
