@@ -33,6 +33,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container: registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest
+    defaults:
+      run:
+        shell: bash # the container's default `sh` is dash (no ${VAR::n})
     outputs:
       tag: ${{ steps.ver.outputs.tag }}
     steps:
