@@ -1,0 +1,121 @@
+# SteamOS / Steam Deck release build.
+#
+# Trigger manually:   gh workflow run release-steamos.yml -f version=0.1.0
+# (or Actions tab -> "Release (SteamOS)" -> Run workflow)
+#
+# Builds inside Valve's Steam Linux Runtime 3.0 "sniper" SDK so the binary runs
+# on SteamOS, the Steam Linux runtime, and ordinary Linux desktops. Output is a
+# tarball (doodle/bin/doodle + bundled libSDL2 + assets) attached to a GitHub
+# Release tagged v<version>.
+
+name: Release (SteamOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (tag becomes v<version>). Blank = date + commit."
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark the GitHub Release as a pre-release"
+        type: boolean
+        default: false
+      run_tests:
+        description: "Run the model unit tests before building"
+        type: boolean
+        default: true
+
+env:
+  ODIN_TAG: dev-2026-11 # keep in step with the Odin you build with locally
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out version
+        id: ver
+        run: |
+          v="${{ inputs.version }}"
+          if [ -z "$v" ]; then v="$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v"    >> "$GITHUB_OUTPUT"
+
+      - name: Install tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq patchelf curl make
+          # Odin links through `clang`; the SDK may only ship versioned names.
+          if ! command -v clang >/dev/null; then
+            ln -s "$(ls /usr/bin/clang-[0-9]* | sort -V | tail -1)" /usr/local/bin/clang
+          fi
+          clang --version
+
+      - name: Install Odin ${{ env.ODIN_TAG }}
+        run: |
+          curl -fsSL -o /tmp/odin.tar.gz \
+            "https://github.com/odin-lang/Odin/releases/download/${ODIN_TAG}/odin-linux-amd64-${ODIN_TAG}.tar.gz"
+          mkdir -p /opt/odin
+          tar -xzf /tmp/odin.tar.gz -C /opt/odin --strip-components=1
+          echo "/opt/odin" >> "$GITHUB_PATH"
+          ldd /opt/odin/odin || true
+          /opt/odin/odin version
+          # vendor:stb needs its static libs built on Linux.
+          if ! ls /opt/odin/vendor/stb/lib/*.a >/dev/null 2>&1; then
+            make -C /opt/odin/vendor/stb/src
+          fi
+
+      - name: Test
+        if: ${{ inputs.run_tests }}
+        run: odin test src/model
+
+      - name: Build
+        run: |
+          mkdir -p bin
+          odin build src/app -out:bin/doodle -o:speed -no-bounds-check
+
+      - name: Package
+        run: |
+          set -eu
+          pkg=dist/doodle
+          mkdir -p "$pkg/bin"
+          cp bin/doodle "$pkg/bin/"
+          cp -r assets "$pkg/"
+          # Bundle SDL2 next to the binary and point the loader at it.
+          sdl="$(ldd bin/doodle | awk '/libSDL2/ {print $3}')"
+          cp -L "$sdl" "$pkg/bin/"
+          patchelf --set-rpath '$ORIGIN' "$pkg/bin/doodle"
+          readelf -d "$pkg/bin/doodle" | grep -E 'RUNPATH|NEEDED'
+          echo "${{ steps.ver.outputs.version }} (${GITHUB_SHA::7}, Odin ${ODIN_TAG})" > "$pkg/VERSION"
+          tar -czf "doodle-steamos-${{ steps.ver.outputs.version }}.tar.gz" -C dist doodle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doodle-steamos
+          path: doodle-steamos-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: doodle-steamos
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          flags=""
+          if [ "${{ inputs.prerelease }}" = "true" ]; then flags="--prerelease"; fi
+          gh release create "$TAG" doodle-steamos-*.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Doodle $TAG (SteamOS)" --generate-notes $flags
