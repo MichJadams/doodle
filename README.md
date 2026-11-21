@@ -4,11 +4,9 @@
 
 ![Doodle editing an Odin file](docs/screenshots/editor.png)
 
-Doodle is an Odin editor you drive with a controller from the couch. It's written in Odin, it runs on Windows and Steam Deck
+Doodle is an Odin editor you drive with a controller. It's written in Odin, it runs on Windows and Steam Deck
 
-- 🎮 **Gamepad first.** You move around by code structure, and a button HUD always shows what each button does
-- 🔀 **Rearrange the buttons** on the Key Layout page (main menu or IDE menu): d-pad + X/Y/A/B, with the triggers as modifiers
-- 🗣️ **Talk to it.** Hold a trigger and dictate through local Whisper (no cloud) for naming variables and screaming numbers at your computer
+ Hold a trigger and dictate through local Whisper (no cloud) for naming variables and screaming numbers at your computer
 
 
 ![Doodle home screen](docs/screenshots/home.png)
@@ -47,9 +45,11 @@ gh workflow run release-steamos.yml -f version=0.1.0   # add -f prerelease=true 
 gh run watch                                            # follow it
 ```
 
-On the Deck, `tools/deck_install.sh [tag]` downloads a release into `~/Applications/doodle` (needs `gh` logged in, since the repo is private).
+On the Deck, `tools/deck_install.sh [tag]` downloads a release into `~/Applications/doodle`. Without a checkout:
 
-![Doodle's hand-drawn icons](assets/icons/preview.png)
+```sh
+curl -fsSL https://raw.githubusercontent.com/MichJadams/doodle/master/tools/deck_install.sh | bash
+```
 
 ## Credits
 
