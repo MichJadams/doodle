@@ -7,6 +7,7 @@ import "../model"
 import "../gpu"
 import "../text"
 import "core:fmt"
+import "core:path/filepath"
 import "core:strings"
 import "core:time"
 
@@ -14,11 +15,12 @@ g_proj_open:  bool            // project picker overlay is active
 g_proj_index: int             // selected row
 g_proj_list:  []model.Project // scanned on open, newest first
 
-// projects_open rescans the projects folder and shows the picker.
+// projects_open rescans the projects folders (the default one and the ones
+// added in New Project) and shows the picker.
 projects_open :: proc() {
 	ensure_projects_dir()
 	if g_proj_list != nil do model.free_projects(g_proj_list)
-	g_proj_list = model.list_projects(g_projects_dir)
+	g_proj_list = model.list_projects_in(all_roots())
 	g_proj_index = 0
 	g_proj_open = true
 }
@@ -99,7 +101,10 @@ draw_projects_overlay :: proc(r: ^gpu.Renderer, w, h: int) {
 
 		age := model.age_label(p.mtime, now)
 		age_w := text.measure(g_ui, age).x
-		text.draw_line(r, g_ui, {box.x + 16, y + 12}, fit_label(g_ui, p.name, cellw - age_w - 56), COL_TEXT)
+		label := p.name
+		// A project in an added folder says which one.
+		if root := filepath.dir(p.dir); !model.fgrid_same(root, g_projects_dir) do label = fmt.tprintf("%s   (in %s)", p.name, model.fgrid_title(root))
+		text.draw_line(r, g_ui, {box.x + 16, y + 12}, fit_label(g_ui, label, cellw - age_w - 56), COL_TEXT)
 		text.draw_line(r, g_ui, {box.x + cellw - age_w - 16, y + 12}, age, COL_DIM)
 	}
 

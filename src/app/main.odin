@@ -151,8 +151,11 @@ main :: proc() {
 	events: [dynamic]platform.Event
 	defer delete(events)
 
-	// Initialize project directories on startup.
+	// Initialize project directories on startup, and the extra folders New
+	// Project can use (roots_store.odin). Before trace_start, so a replay can pin them.
 	ensure_projects_dir()
+	roots_store_init()
+	defer roots_store_shutdown()
 
 	// Record this run / set up a replay (trace.odin; debug builds only).
 	trace_start(win, &m) // TRACE hook
@@ -200,15 +203,21 @@ main :: proc() {
 		}
 
 		// Main menu actions handled here (they need disk I/O): A on "Recent Projects"
-		// opens the project picker; A on "New Project" sets up a fresh project folder.
+		// opens the project picker; A on "New Project" asks which folder it goes in
+		// (new_project.odin), which then sets up a fresh project folder there.
 		new_project := false
-		if m.state == .Menu && !g_proj_open && !g_keys_open && raw.e_confirm {
+		if m.state == .Menu && !g_proj_open && !g_np_open && !g_keys_open && raw.e_confirm {
 			switch model.MENU_ITEMS[m.menu_index] {
 			case "Recent Projects":
 				projects_open()
 				raw.e_confirm = false; raw.e_a = false
 			case "New Project":
-				new_project = true // model.update resets the doc + enters the editor
+				if g_roots_legacy {
+					new_project = true // replaying an old recording: model.update resets the doc + enters the editor
+				} else {
+					new_project_open()
+					raw.e_confirm = false; raw.e_a = false
+				}
 			case "Key Layout":
 				keys_page_open(inp)
 				raw.e_confirm = false; raw.e_a = false
@@ -229,6 +238,9 @@ main :: proc() {
 		} else if g_proj_open {
 			// The project picker owns all input while it's open.
 			handle_projects_input(&raw)
+		} else if g_np_open {
+			// New Project's "where?" list (and its folder browser) owns all input while it's open.
+			handle_new_project_input(&m, &raw)
 		} else if g_doc_open {
 			// The documentation panel (LT+Y) owns all input while it's open.
 			handle_doc_input(&raw)
@@ -332,6 +344,7 @@ main :: proc() {
 		case .Menu:
 			draw_menu(r, font, &m, w, h)
 			if g_proj_open do draw_projects_overlay(r, w, h)
+			if g_np_open do draw_new_project_overlay(r, w, h)
 		case .Editor:
 			draw_editor(r, font, &m, w, h)
 			// FILE NAVIGATION MODE: draw overlay after editor.
@@ -881,7 +894,7 @@ draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
 
 // overlay_open: something owns the input instead of the editor / main menu.
 overlay_open :: proc() -> bool {
-	return g_filenav || g_save_open || g_doc_open || g_run_open || g_proj_open || g_keys_open
+	return g_filenav || g_save_open || g_doc_open || g_run_open || g_proj_open || g_np_open || g_keys_open
 }
 
 draw_hud :: proc(r: ^gpu.Renderer, m: ^model.App, inp: model.Input, w, h: int) {

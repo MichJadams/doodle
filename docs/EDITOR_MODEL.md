@@ -336,8 +336,17 @@ scroll (Left/Right a page); B, A or Y closes.
 1. **Launch -> main menu**: `New Project`, `Recent Projects`, `Open Folder`,
    `Key Layout` (§5).
    - v1 wires **New Project** only.
-2. **New Project -> new file view**: empty document with a single glowing
-   **green dot** at the top and the triple button-bank HUD at the bottom.
+2. **New Project -> where?** A short list: **In default folder** (the
+   `DoodleProjects` folder, path shown underneath), one row per folder you added,
+   and **+ Add another folder...**, which opens a folder browser (D-pad Up/Down
+   move, A / Right open a folder, Left up a level, A on "Use this folder" adds
+   it, B cancels; on Windows the drives are above a drive root). Added folders
+   are saved in `doodle_roots.txt` next to `doodle.exe`, one per line, and show
+   up every time; X twice on one removes it from the list (the folder stays on
+   disk). Recent Projects lists the projects of every folder.
+   A on a folder -> **new file view**: empty document with a single glowing
+   **green dot** at the top and the triple button-bank HUD at the bottom. The
+   project gets a random name and is saved under the chosen folder.
 3. **A on the dot -> radial menu** (File Setup / Dependencies / Procedures /
    Types / Values).
 4. **First implemented construct: File Setup -> Package declaration**, which

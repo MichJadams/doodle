@@ -11,9 +11,9 @@ import "core:path/filepath"
 
 // --- Project directory globals (exposed for use by other features) ---
 
-// Root directory for all Doodle projects.
-// Default: USERPROFILE/DoodleProjects on Windows, or ./DoodleProjects as fallback.
-// TODO: Make this configurable via main-menu settings.
+// The default folder for Doodle projects.
+// USERPROFILE/DoodleProjects on Windows, or ./DoodleProjects as fallback.
+// New Project can also use folders the user added (g_roots, roots_store.odin).
 g_projects_dir: string
 
 // Current project's directory (full path), or "" if unsaved/unnamed.
@@ -42,6 +42,16 @@ ensure_projects_dir :: proc() {
 	
 	// Create the directory if it doesn't exist (ignore errors if it already exists).
 	os.make_directory(g_projects_dir)
+
+	// The fallback is relative; make it absolute (after creating it: on Linux
+	// get_absolute_path opens the path), so comparing it with the absolute paths
+	// folder listings give (New Project's folders, Recent Projects) works.
+	if home == "" {
+		if abs, err := os.get_absolute_path(g_projects_dir, context.allocator); err == nil {
+			delete(g_projects_dir)
+			g_projects_dir = abs
+		}
+	}
 }
 
 // --- Random project name generation ---
@@ -70,19 +80,21 @@ gen_project_name :: proc() -> string {
 
 // --- Project setup ---
 
-// new_project_setup generates a random name, creates the project folder,
-// and updates the global project state. Called when starting a new project.
-new_project_setup :: proc() {
+// new_project_setup generates a random name, creates the project folder in
+// `root` ("" = the default projects folder), and updates the global project
+// state. Called when starting a new project.
+new_project_setup :: proc(root := "") {
 	ensure_projects_dir()
-	
+	parent := root != "" ? root : g_projects_dir
+
 	// Generate a random name and create the project directory.
-	set_project_dir(fmt.tprintf("%s/%s", g_projects_dir, trace_str("project_name", gen_project_name()))) // TRACE hook (was: gen_project_name())
+	set_project_dir(fmt.tprintf("%s/%s", parent, trace_str("project_name", gen_project_name()))) // TRACE hook (was: gen_project_name())
 
 	// A brand-new project has no file yet; the first save creates main.odin.
 	set_current_file("")
 
 	// Create the project directory (ignore errors if it already exists).
-	os.make_directory(g_project_dir)
+	if trace_write_ok(g_project_dir) do os.make_directory(g_project_dir) // TRACE hook: a replay writes only inside its sandbox (was: os.make_directory(g_project_dir))
 }
 
 // set_project_dir points the project (save target + run cwd) at `dir`.

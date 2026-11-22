@@ -350,6 +350,16 @@ record_begin :: proc(m: ^model.App) {
 		pv := prev != "" ? fmt.tprintf("%s/snapshot/projects", prev) : ""
 		if !copy_tree(g_projects_dir, fmt.tprintf("%s/snapshot/projects", dir), pv, &opts, 0, 16) do snap_ok = false
 	}
+	// The extra project folders (roots_store.odin): just what Recent Projects
+	// reads - each project's .odin files - as snapshot/roots/<i>.
+	for root, i in g_roots {
+		if !os.is_dir(root) do continue
+		ro := opts
+		ro.root_scan = true
+		pv := prev != "" ? fmt.tprintf("%s/snapshot/roots/%d", prev, i) : ""
+		if !copy_tree(root, fmt.tprintf("%s/snapshot/roots/%d", dir, i), pv, &ro, 0, 1) do snap_ok = false
+		opts.budget, opts.files = ro.budget, ro.files
+	}
 	start := cli_file()
 	start_abs := abs_path(start)
 	start_rel := ""
@@ -378,6 +388,7 @@ record_begin :: proc(m: ^model.App) {
 	add_meta(fmt.tprintf("meta stt %d", g_stt_e != nil ? 1 : 0))
 	add_meta(fmt.tprintf("meta snapshot_ok %d", snap_ok ? 1 : 0))
 	add_meta(fmt.tprintf("meta keymap %s", esc(keys_store_text(context.temp_allocator)))) // the button layout in use
+	add_meta(fmt.tprintf("meta roots %s", esc(strings.join(g_roots[:], "\t", context.temp_allocator)))) // extra project folders (tab-separated)
 	for a in os.args[1:] do add_meta(fmt.tprintf("meta arg %s", esc(a)))
 	if !open_files() do return
 	write_header(meta_json(stamp, snap_ok, snap_ms, "", 0))
@@ -777,6 +788,7 @@ screen_ctx :: proc(m: ^model.App) -> Trace_Ctx {
 	if g_save_open && g_save_overwrite != "" do append(&modes, "overwrite_prompt")
 	if g_keys_open && g_keys.picking do append(&modes, "picker")
 	if g_keys_open && g_keys.asking_reset do append(&modes, "reset_prompt")
+	if g_np_open && !g_np_browsing && g_np_remove > 0 do append(&modes, "remove_prompt")
 	c.mode = strings.join(modes[:], ",", context.temp_allocator)
 
 	pick :: proc(c: ^Trace_Ctx, labels: []string, idx: int) {
@@ -805,6 +817,11 @@ screen_ctx :: proc(m: ^model.App) -> Trace_Ctx {
 		c.scr = "projects"
 		items, _ := screen_items(m)
 		pick(&c, items, g_proj_index)
+	case g_np_open:
+		c.scr = g_np_browsing ? "new_project_folder" : "new_project"
+		if g_np_browsing do c.title = model.fgrid_title(g_np_dir)
+		items, _ := screen_items(m)
+		pick(&c, items, g_np_browsing ? g_np_bindex : g_np_index)
 	case g_doc_open:
 		c.scr = "docs"
 		c.title = g_doc.title
@@ -856,6 +873,14 @@ screen_items :: proc(m: ^model.App) -> (items: []string, recent: int) {
 		}
 	case g_proj_open:
 		for p in g_proj_list do append(&out, p.name)
+	case g_np_open:
+		if g_np_browsing {
+			for row in g_np_rows do append(&out, row.use ? "Use this folder" : fmt.tprintf("%s/", row.label))
+		} else {
+			append(&out, "In default folder")
+			for root in g_roots do append(&out, fmt.tprintf("In %s", model.fgrid_title(root)))
+			append(&out, "+ Add another folder")
+		}
 	case g_run_open:
 		if g_run_submenu {
 			for t in TEMPLATES do append(&out, t)
@@ -975,6 +1000,18 @@ fingerprint :: proc(m: ^model.App) -> u64 {
 	h = fnv_int(h, int(g_keys.asking_reset))
 	for bank in 0 ..< model.BANKS {
 		for b in model.Pad_Button do h = fnv_int(h, int(g_keymap.slots[bank][b]))
+	}
+	// New Project's "where?" list and folder browser. Only mixed in once used,
+	// so recordings made before it existed keep their fingerprints.
+	if g_np_open || len(g_roots) > 0 {
+		h = fnv_int(h, int(g_np_open))
+		h = fnv_int(h, g_np_index)
+		h = fnv_int(h, g_np_remove)
+		h = fnv_int(h, int(g_np_browsing))
+		h = fnv_int(h, g_np_bindex)
+		h = fnv_int(h, len(g_np_rows))
+		h = fnv(h, model.fgrid_title(g_np_dir))
+		h = fnv_int(h, len(g_roots))
 	}
 	return h
 }
@@ -1105,6 +1142,23 @@ replay_begin :: proc(arg: string, m: ^model.App) -> bool {
 	// The button layout the run was recorded with ("" = the defaults, which is
 	// what recordings made before layouts existed used). Also stops saving it.
 	keys_store_override(rp_meta("keymap"))
+	// The extra project folders become sandbox stand-ins (snapshot/roots/<i>).
+	// Recordings made before New Project asked where have no "roots": New
+	// Project goes straight to the editor, as it did then.
+	if rp_has_meta("roots") {
+		stand := make([dynamic]string, context.temp_allocator)
+		recorded := rp_meta("roots")
+		if recorded != "" {
+			for _, i in strings.split(recorded, "\t", context.temp_allocator) {
+				// Exists only if it was snapshotted (it existed when recorded): a
+				// folder that was missing stays missing ("not found").
+				append(&stand, fmt.tprintf("%s/roots/%d", g_tr.rp.sandbox, i))
+			}
+		}
+		roots_store_override(stand[:], false)
+	} else {
+		roots_store_override(nil, true)
+	}
 
 	if rp_meta("stt") == "1" && g_stt_e == nil {
 		fmt.eprintln("trace: the recording used speech-to-text, which isn't available now; the replay may differ")
@@ -1126,6 +1180,15 @@ replay_begin :: proc(arg: string, m: ^model.App) -> bool {
 	fmt.eprintf("trace: replaying %s (%d recorded frames%s)\n", src, len(g_tr.rp.frames),
 		g_tr.rp.until < max(int) ? fmt.tprintf(", until frame %d", g_tr.rp.until) : "")
 	return true
+}
+
+@(private = "file")
+rp_has_meta :: proc(key: string) -> bool {
+	for l in g_tr.rp.meta {
+		p := strings.split_n(l, " ", 3, context.temp_allocator)
+		if len(p) >= 2 && p[1] == key do return true
+	}
+	return false
 }
 
 @(private = "file")
@@ -1467,6 +1530,7 @@ Copy_Opts :: struct {
 	files:     int,  // files left to copy / link
 	link:      bool, // hard-link unchanged files from prev (never for a sandbox)
 	only_odin: bool, // copy only .odin files (others become placeholders)
+	root_scan: bool, // an extra projects folder: like only_odin, but folders past max_depth stay empty and links are skipped, neither making the snapshot incomplete
 }
 
 @(private = "file")
@@ -1485,14 +1549,14 @@ copy_tree :: proc(src, dst, prev: string, o: ^Copy_Opts, depth, max_depth: int) 
 				os.make_directory_all(d) // the name only
 			} else if depth >= max_depth {
 				os.make_directory_all(d)
-				if max_depth > 0 do ok = false
+				if max_depth > 0 && !o.root_scan do ok = false
 			} else if !copy_tree(fi.fullpath, d, pv, o, depth + 1, max_depth) {
 				ok = false
 			}
 		case .Regular:
 			ext := strings.to_lower(filepath.ext(fi.name), context.temp_allocator)
 			binary := ext == ".exe" || ext == ".dll" || ext == ".pdb" || ext == ".obj" || ext == ".lib" || ext == ".ilk"
-			wanted := !binary && (!o.only_odin || ext == ".odin")
+			wanted := !binary && (!(o.only_odin || o.root_scan) || ext == ".odin")
 			if !wanted || fi.size > TRACE_FILE_MAX || fi.size > o.budget || o.files <= 0 {
 				_ = os.write_entire_file(d, []byte{})
 				if wanted do ok = false
@@ -1514,7 +1578,7 @@ copy_tree :: proc(src, dst, prev: string, o: ^Copy_Opts, depth, max_depth: int) 
 			}
 			os.change_times(d, fi.access_time, fi.modification_time)
 		case:
-			ok = false // symlink / junction / device: left out
+			if !o.root_scan do ok = false // symlink / junction / device: left out
 		}
 	}
 	return ok

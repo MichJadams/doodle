@@ -33,7 +33,7 @@ The folder is git-ignored and only the newest 40 recordings are kept.
 |---|---|
 | `input.log` | The exact input stream, frame by frame, plus anything a replay can't recompute (speech-to-text text, the random project name) and a state fingerprint. `--replay` reads this. |
 | `events.jsonl` | One JSON record per action: buttons pressed, plus the screen, menu and selection before and after. `tools/trace.py` reads this. |
-| `snapshot/` | A copy of `DoodleProjects` as it was at startup, so a replay sees the same files. If you opened a file from the command line, its folder's `.odin` files are copied too. Build output, `.git`, binaries and files over 4 MB become empty placeholders, which keeps folder listings identical. Files that haven't changed since the previous recording are hard links to it, so a snapshot usually takes a few milliseconds and almost no disk. Limits: 32 MB copied and 4000 files; past those, the snapshot is marked incomplete. |
+| `snapshot/` | A copy of `DoodleProjects` as it was at startup, so a replay sees the same files. If you opened a file from the command line, its folder's `.odin` files are copied too. For each folder added in New Project, its projects' own `.odin` files are copied (`snapshot/roots/<i>`). Build output, `.git`, binaries and files over 4 MB become empty placeholders, which keeps folder listings identical. Files that haven't changed since the previous recording are hard links to it, so a snapshot usually takes a few milliseconds and almost no disk. Limits: 32 MB copied and 4000 files; past those, the snapshot is marked incomplete. |
 
 A small red dot in the top-left corner means the run is being recorded.
 
@@ -75,6 +75,7 @@ Several things are always skipped during a replay:
 - any write outside the sandbox;
 - heatmap updates;
 - reading or writing your `doodle_keys.tsv`. A replay uses the button layout the run was recorded with (`meta keymap`; recordings made before the Key Layout page existed use the defaults).
+- reading or writing your `doodle_roots.txt` (New Project's extra folders). A replay uses empty stand-ins in the sandbox (`roots/<i>`) for the folders the run was recorded with (`meta roots`), holding the snapshot of their projects' `.odin` files. Recordings made before New Project asked where skip the question, as they did then.
 
 **Taking over.** Held buttons from the recording are released, and the session
 continues live. Programs, the clipboard and sounds work again. Files are still only
@@ -105,6 +106,10 @@ Things that can make a replay diverge:
 - An incomplete snapshot (warned at record time).
 - Browsing outside the projects folder in file navigation. Those reads hit the
   real disk, and writes there are skipped.
+- Browsing for a folder to add in New Project ("+ Add another folder"). It reads
+  the real disk, starting next to the projects folder (the sandbox, in a replay).
+- Opening a file inside a project in an added folder, below the project's top
+  level: only each project's own `.odin` files are snapshotted (`snapshot/roots/<i>`).
 - Doodle's own code changed since the recording. That's what `verify` is for.
 
 ## Analysis tool
@@ -203,6 +208,7 @@ A text file with one record per line. Line 1 is `doodle-trace 1`. Then come
 
 - `start_unix`, `cwd`, `projects`, `start_file`, `start_rel`, `stt`, `snapshot_ok`
 - `keymap`: the button layout in use, in the `doodle_keys.tsv` format (newlines escaped)
+- `roots`: New Project's extra folders, tab-separated (empty: none; missing: a recording from before New Project asked where)
 - `arg` (repeated)
 - `derived_from`, `derived_until` (if a key appears twice, the last one wins)
 
@@ -243,6 +249,7 @@ Code inside the false `when` branch isn't even type-checked. Force it either way
 |---|---|---|
 | `main.odin` | `trace_start(win, &m)` / `defer trace_stop()` | delete |
 | `keys_store.odin` | `if !trace_write_ok(g_keys_path) do return` in `keys_store_save` | delete (and `keys_store_override` / `g_keys_pinned` if you like) |
+| `roots_store.odin` | `if !trace_write_ok(g_roots_path) do return` in `roots_store_save` | delete (and `roots_store_override` / `g_roots_legacy` with its branch in `main.odin` if you like) |
 | `filenav.odin` | `if !trace_write_ok(path) do return` in `filenav_create_new` | delete |
 | `run.odin` | `if !trace_write_ok(path) do return` in `save_run_cmds` | delete |
 | `main.odin` | `if f := trace_startup_file(); f != ""` | `if len(os.args) > 1 && os.exists(os.args[1])` with `filenav_load(os.args[1])` |
@@ -253,6 +260,7 @@ Code inside the false `when` branch isn't even type-checked. Force it either way
 | `filenav.odin` | `!(trace_replaying() ? ... : move_to_trash(path))` | `!move_to_trash(path)` |
 | `save_dialog.odin` | `if !trace_write_ok(path) do return` | delete |
 | `save.odin` | `trace_str("project_name", gen_project_name())` | `gen_project_name()` |
+| `save.odin` | `if trace_write_ok(g_project_dir) do os.make_directory(g_project_dir)` in `new_project_setup` | `os.make_directory(g_project_dir)` |
 | `save.odin` | `if !trace_write_ok(path) { ... }` in `write_doc` | delete |
 | `run.odin` | `if !trace_replaying() do libc.system(cstr)` | `libc.system(cstr)` |
 | `sound.odin` | `if trace_replaying() do return` in `play_slice` | delete |

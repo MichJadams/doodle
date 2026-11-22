@@ -3032,6 +3032,12 @@ menu_cancel :: proc(app: ^App) {
 
 // ---- Top-level update ----
 
+// new_project: an empty document in the editor (main menu -> New Project).
+new_project :: proc(app: ^App) {
+	doc_reset(app)
+	app.state = .Editor
+}
+
 update :: proc(app: ^App, inp: Input) {
 	defer sync_capture_dots(app) // pink "capture the result" dots (capture.odin)
 	defer ctrl_sync(app)         // #assert keeps at most one message dot (ctrl.odin)
@@ -3054,10 +3060,7 @@ update :: proc(app: ^App, inp: Input) {
 		app.menu_index = grid_nav(app.menu_index, len(MENU_ITEMS), inp)
 		if inp.cancel do app.want_quit = true
 		if inp.confirm {
-			if app.menu_index == 0 { // New Project
-				doc_reset(app)
-				app.state = .Editor
-			}
+			if app.menu_index == 0 do new_project(app) // New Project (Doodle asks where first: app/new_project.odin)
 		}
 	case .Editor:
 		if ref_pick_update(app, inp) do return // picking a name for "Reference"

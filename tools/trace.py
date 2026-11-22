@@ -83,6 +83,9 @@ BINDINGS = {
     "filenav_search": {"A": "open", "B": "end search", "Dpad": "move"},
     "filenav_delete": {"A": "confirm delete", "B": "cancel delete"},
     "projects": {"A": "open project", "B": "back", "Dpad": "move"},
+    "new_project": {"A": "create here / add a folder", "B": "back", "X": "remove folder (asks)", "Dpad": "move"},
+    "new_project_folder": {"A": "open folder / use it", "B": "cancel", "Left": "up a level", "Right": "open folder",
+                           "Up": "move", "Down": "move"},
     "run": {"A": "run command", "B": "close", "Y": "toggle favorite", "Dpad": "move"},
     "run_templates": {"A": "pick template", "B": "back", "Dpad": "move"},
     "docs": {"Up": "scroll", "Down": "scroll", "Left": "page up", "Right": "page down",
@@ -1007,7 +1010,7 @@ def cmd_script(args):
              "meta projects " + os.path.abspath(args.projects or projects).replace(" ", "\\s"),
              "meta start_file " + (os.path.join(projects, args.open).replace(" ", "\\s") if args.open else ""),
              "meta start_rel " + (args.open.replace("\\", "/").replace(" ", "\\s") if args.open else ""),
-             "meta stt 0", "meta snapshot_ok 1", "0 t 0", "0 size %d %d" % tuple(args.size)]
+             "meta stt 0", "meta snapshot_ok 1", "meta roots", "0 t 0", "0 size %d %d" % tuple(args.size)]
     lines += script_lines(tokens)
     with open(os.path.join(d, "input.log"), "w", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")

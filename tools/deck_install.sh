@@ -17,6 +17,13 @@ curl -fL --progress-bar -o "$tmp/doodle.tar.gz" "$url"
 tar -xzf "$tmp/doodle.tar.gz" -C "$tmp"
 [ -x "$tmp/doodle/bin/doodle" ] || { echo "bad package" >&2; exit 1; }
 mkdir -p "$(dirname "$DEST")"
+# Keep the settings Doodle saves next to its binary (button layout, menu
+# heatmap, New Project's extra folders) across the reinstall.
+mkdir -p "$tmp/keep"
+for f in doodle_keys.tsv doodle_heat.tsv doodle_roots.txt; do
+  [ -f "$DEST/bin/$f" ] && cp -p "$DEST/bin/$f" "$tmp/keep/"
+done
 rm -rf "$DEST"
 mv "$tmp/doodle" "$DEST"
+cp -p "$tmp/keep/"* "$DEST/bin/" 2>/dev/null || true
 echo "Installed $(cat "$DEST/VERSION") -> $DEST/bin/doodle"

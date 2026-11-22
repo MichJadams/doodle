@@ -221,13 +221,13 @@ fn_descend :: proc() {
 // --- Lifecycle ---
 
 // filenav_init: the root is the current file's project folder (the first folder
-// under the projects folder - g_project_dir is only the file's own folder, which
+// under a projects folder - g_project_dir is only the file's own folder, which
 // would hide its sister folders); the view shows the current file in its
 // folder's column, highlighted.
 filenav_init :: proc() {
 	if g_fn_dir == "" {
 		root := g_project_dir != "" ? g_project_dir : (g_projects_dir != "" ? g_projects_dir : ".")
-		if proj, ok := model.fgrid_project_root(g_current_file, g_projects_dir); ok do root = proj
+		if proj, ok := project_root_of(g_current_file); ok do root = proj // under any projects folder (roots_store.odin)
 		g_fn_dir = strings.clone(root)
 	}
 	g_fn_grid.descents = 0
