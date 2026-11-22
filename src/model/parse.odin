@@ -54,6 +54,8 @@ doc_from_source :: proc(app: ^App, src: string) {
 			append(&app.doc.nodes, bnode) // if / else / switch / case (branch_parse.odin)
 		} else if lpnode, lpok := parse_loop_line(lines[i], in_data); lpok {
 			append(&app.doc.nodes, lpnode) // loops, break / continue, labeled blocks (loop_parse.odin)
+		} else if rnode, rok := parse_return_statement(lines[i], multi_only = true); rok {
+			append(&app.doc.nodes, rnode) // `return a, b`: before the call parser, which keeps `, b` as text (result_list.odin)
 		} else if node, callee, used, ok := parse_call_statement(lines[i:]); ok {
 			append(&app.doc.nodes, node)
 			append(&calls, Parsed_Call{len(app.doc.nodes) - 1, callee})
@@ -63,6 +65,8 @@ doc_from_source :: proc(app: ^App, src: string) {
 		} else if lnode, lused, lok := parse_lit_statement(lines[i:]); lok {
 			append(&app.doc.nodes, lnode) // `x := T{name = value, ...}` (struct_lit.odin)
 			consumed = lused
+		} else if rnode, rok := parse_return_statement(lines[i]); rok {
+			append(&app.doc.nodes, rnode) // `return`, `return a / b` (result_list.odin)
 		} else if anode, aok := parse_assign_statement(lines[i], in_data); aok {
 			append(&app.doc.nodes, anode) // `a.b = value`, `x = value` (field_access.odin)
 		} else {
@@ -82,6 +86,43 @@ doc_from_source :: proc(app: ^App, src: string) {
 	for c in calls do attach_call_signature(app, c.ni, c.callee)
 	attach_lit_hints(app) // struct literals' dots (struct_lit.odin)
 	attach_nested_call_hints(app) // dots of calls inside other expressions (expr.odin)
+	// Results `-> (int, int)` as type fields, then every result list and return
+	// gets its extra dot and expected types (result_list.odin).
+	for &n in app.doc.nodes do structure_results(&n)
+	result_list_sync(app, force = true)
+}
+
+// parse_return_statement: `return`, `return x`, `return a / b, a % b` with each
+// value structured (emit_expr), separated by ", ". A bare `return` gets the
+// orange "another return value" dot (result_list.odin; the sync adds it after
+// the last value otherwise). multi_only: only two values or more (a single
+// call is left to parse_call_statement, which types its arguments).
+@(private = "file")
+parse_return_statement :: proc(line: string, multi_only := false) -> (node: Node, ok: bool) {
+	ind := 0
+	for ind < len(line) && (line[ind] == ' ' || line[ind] == '\t') do ind += 1
+	s := strings.trim_right_space(line[ind:])
+	if s != "return" && !strings.has_prefix(s, "return ") do return
+	if strings.contains(s, "//") do return
+	rest := strings.trim_space(s[len("return"):])
+	parts: []string
+	if rest != "" {
+		parts = split_args_keep_empty(rest)
+		for p in parts do if strings.trim_space(p) == "" do return
+	}
+	if multi_only && len(parts) < 2 do return
+	node.fields = make([dynamic]Field)
+	if ind > 0 do append(&node.fields, Field{strings.clone(line[:ind]), false, false, "", "", ""})
+	append(&node.fields, Field{strings.clone("return "), false, false, "", "", ""})
+	if len(parts) == 0 {
+		append(&node.fields, Field{"", false, true, RET_MORE_KIND, "", ""})
+		return node, true
+	}
+	for p, i in parts {
+		if i > 0 do append(&node.fields, Field{strings.clone(", "), false, false, "", "", ""})
+		emit_expr(&node.fields, p)
+	}
+	return node, true
 }
 
 // The placeholder value for open_value_line (an identifier no one writes).
@@ -262,7 +303,13 @@ parse_call_statement :: proc(lines: []string) -> (node: Node, callee: string, co
 	// be highlighted and changed (Y).
 	name_at := ind + pos
 	if dot := strings.last_index_byte(callee, '.'); dot >= 0 do name_at = ind + pos + dot + 1
-	if name_at > 0 do emit_names_prefix(&node.fields, first[:name_at]) // `\tx := windows.`: x is a name
+	if s[:pos] == "return " {
+		// `return pkg.f(...)`: the keyword is its own field, as a menu-built return
+		// (result_list.odin finds the return values after it).
+		if ind > 0 do append(&node.fields, Field{strings.clone(first[:ind]), false, false, "", "", ""})
+		append(&node.fields, Field{strings.clone("return "), false, false, "", "", ""})
+		if name_at > ind + pos do append(&node.fields, Field{strings.clone(first[ind + pos:name_at]), false, false, "", "", ""})
+	} else if name_at > 0 do emit_names_prefix(&node.fields, first[:name_at]) // `\tx := windows.`: x is a name
 	append(&node.fields, Field{strings.clone(first[name_at:ind + j]), false, false, "", "", ""})
 	append(&node.fields, Field{strings.clone("("), false, false, "", "", ""})
 	emit_args(&node.fields, parts)

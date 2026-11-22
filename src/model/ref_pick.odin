@@ -191,11 +191,14 @@ ref_pick_finish_text :: proc(app: ^App, text: string) {
 		return
 	}
 	was_args := f.kind == "args"
+	was_more := is_more_dot(f) // another result / return value (result_list.odin)
 	hint, hint_pkg := f.hint, f.hint_pkg
 	set_slot_text(app, ni, fi, name)
 	if was_args do append_more_args_slot(&app.doc.nodes[ni].fields, fi, 1, hint, hint_pkg) // offer the next one
+	at := fi
+	if was_more do at += more_dot_filled(app, ni, fi) // its ", "
 	if app.refill_active do refill_discard(app) // Y on an argument: the new name replaces it
-	focus_field_index(app, ni, fi)
+	focus_field_index(app, ni, at)
 }
 
 // Cancel: back to the dot (or, for Y on a filled argument, its original text).

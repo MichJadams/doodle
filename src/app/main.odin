@@ -687,9 +687,9 @@ slot_hint_label :: proc(f: model.Field) -> string {
 // Return colors for a slot dot based on field kind.
 slot_dot_color :: proc(kind: string) -> (outer_col, inner_col: gpu.Color) {
 	switch kind {
-	case "value":
+	case "value", model.RET_MORE_KIND: // another return value: a value dot (result_list.odin)
 		return {1.00, 0.60, 0.15, 1.0}, {1.00, 0.65, 0.20, 1.0}
-	case "type", model.VARIANT_KIND:
+	case "type", model.VARIANT_KIND, model.RES_MORE_KIND: // another result: a type dot
 		return {0.35, 0.70, 1.00, 1.0}, {0.40, 0.75, 1.00, 1.0}
 	case "body":
 		return {0.35, 0.85, 0.45, 1.0}, {0.40, 0.90, 0.50, 1.0}

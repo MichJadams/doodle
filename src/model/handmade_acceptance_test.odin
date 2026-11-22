@@ -461,11 +461,12 @@ test_handmade_accept_build_program :: proc(t: ^testing.T) {
 	cc := false
 	for f in app.doc.nodes[hdr].fields do if f.kind == KW && f.text == "\"system\"" do cc = true
 	testing.expect(t, cc, "\"system\" is a keyword field (Y / LT+B reach it)")
-	// D-pad: the header's stops are the name, the convention, each parameter's name and type, the result type.
+	// D-pad: the header's stops are the name, the convention, each parameter's name and type, the params dot,
+	// the result type, then the dot for another result (result_list.odin).
 	stops := make([dynamic]string, context.temp_allocator)
 	for u in line_leaves(app.doc.nodes[hdr]) do append(&stops, strings.trim_space(app.doc.nodes[hdr].fields[leaf_primary_field(app.doc.nodes[hdr], u)].text))
 	testing.expect_value(t, strings.join(stops[:], " ", context.temp_allocator),
-		"main_window_callback \"system\" window win32.HWND message win32.UINT w_param win32.WPARAM l_param win32.LPARAM  win32.LRESULT")
+		"main_window_callback \"system\" window win32.HWND message win32.UINT w_param win32.WPARAM l_param win32.LPARAM  win32.LRESULT ")
 
 	// result: win32.LRESULT = 0
 	ni := add_stmt(t, &app, body_line(&app, hdr), "Declarations", "Variable (typed)")

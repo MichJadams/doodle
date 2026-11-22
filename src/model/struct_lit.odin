@@ -38,7 +38,7 @@ is_lit_close :: proc(f: Field) -> bool { return !f.slot && f.kind == LIT_KIND &&
 
 // Dots that are optional and left out of the saved source: a call's green
 // "add argument" dot and a literal's "add a field" dot.
-is_optional_dot :: proc(f: Field) -> bool { return f.slot && (f.kind == "args" || f.kind == FIELDS_KIND) }
+is_optional_dot :: proc(f: Field) -> bool { return f.slot && (f.kind == "args" || f.kind == FIELDS_KIND || f.kind == RES_MORE_KIND || f.kind == RET_MORE_KIND) } // + another result / return value (result_list.odin)
 
 @(private = "file")
 opens :: proc(f: Field) -> bool { return !f.slot && (f.text == "(" || f.text == "( " || is_lit_open(f)) }

@@ -32,7 +32,7 @@ dictation_target :: proc(app: ^App) -> (ni, fi: int, mode: Dictation_Mode) {
 	switch {
 	case is_number_literal_field(f):
 		return tni, tfi, .Number
-	case f.slot && f.kind == "value" && dot_takes_number(app, f):
+	case f.slot && (f.kind == "value" || f.kind == RET_MORE_KIND) && dot_takes_number(app, f):
 		return tni, tfi, .Number
 	case f.editable && (f.kind == "string" || f.kind == COMMENT_KIND):
 		return tni, tfi, .Free_Text
@@ -94,9 +94,15 @@ dictate_number :: proc(app: ^App, ni, fi: int, value: string) -> bool {
 	if !is_number_text(value) do return false
 	f := &app.doc.nodes[ni].fields[fi]
 	switch {
-	case f.slot && f.kind == "value":
+	case f.slot && (f.kind == "value" || f.kind == RET_MORE_KIND):
+		was_more := f.kind == RET_MORE_KIND
 		set_slot_literal(app, ni, fi, "__lit_num__") // an editable "0" in its place
 		set_field_text(app, ni, fi, value)
+		if was_more {
+			fi := fi + more_dot_filled(app, ni, fi) // another return value: its ", " (result_list.odin)
+			focus_field_index(app, ni, fi)
+			return true
+		}
 	case is_number_literal_field(f^):
 		f.editable = true
 		set_field_text(app, ni, fi, value)

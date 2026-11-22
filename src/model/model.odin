@@ -2070,8 +2070,8 @@ open_slot_menu :: proc(app: ^App) {
 		branch_extend_body_menu(app, ni) // Else if / Else, Case / Default case, Fallthrough (branch.odin)
 		loop_extend_body_menu(app, ni) // break / continue: where they fit, with labels (loops.odin)
 		layout_extend_body_menu(app) // Comment, Blank line (stmt_layout.odin)
-	} else if slot_kind == "value" || slot_kind == "args" {
-		// Build value literal menu for value slots (and optional "args" dots)
+	} else if slot_kind == "value" || slot_kind == "args" || slot_kind == RET_MORE_KIND {
+		// Build value literal menu for value slots (and optional "args" / another-return-value dots)
 		// The Type submenu (for rare cases like x := int) - imports, user, basic types.
 		type_children := build_type_entries(app)
 
@@ -2400,6 +2400,8 @@ delete_selected :: proc(app: ^App) {
 	if on_dot(app) do return
 	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return
 
+	// A result of a procedure, or a value of a return (result_list.odin).
+	if result_list_delete(app) do return
 	// else if / else branches, case clauses and values, setups, #partial (branch.odin).
 	if branch_delete(app) do return
 	// Attributes, struct directives, calling conventions, when branches, ... (ctrl.odin).
@@ -2891,6 +2893,7 @@ menu_select :: proc(app: ^App) {
 		// Handle slot filling
 		// (An "args" dot = optional extra call argument; remember it to re-offer one.)
 		was_args, len_before := false, 0
+		was_more := false // another result / return value (result_list.odin): it gets its ", "
 		args_hint, args_hint_pkg := "", ""
 		sel_k := 0 // the dot's index among the line's names/dots: the cursor returns there after the fill
 		if app.slot_ni >= 0 && app.slot_ni < len(app.doc.nodes) {
@@ -2903,6 +2906,7 @@ menu_select :: proc(app: ^App) {
 			fs := app.doc.nodes[app.slot_ni].fields
 			if app.slot_fi >= 0 && app.slot_fi < len(fs) {
 				was_args = fs[app.slot_fi].kind == "args"
+				was_more = is_more_dot(fs[app.slot_fi])
 				len_before = len(fs)
 				args_hint, args_hint_pkg = fs[app.slot_fi].hint, fs[app.slot_fi].hint_pkg
 			}
@@ -2974,6 +2978,7 @@ menu_select :: proc(app: ^App) {
 			fs := &app.doc.nodes[app.slot_ni].fields
 			append_more_args_slot(fs, app.slot_fi, len(fs) - len_before + 1, args_hint, args_hint_pkg)
 		}
+		if was_more do more_dot_filled(app, app.slot_ni, app.slot_fi)
 		if app.refill_active do refill_discard(app) // Y-refill done: drop the original
 		body_insert_done(app)                        // inserted at a dot inside a function
 		clear_nav(app)
@@ -3031,6 +3036,7 @@ update :: proc(app: ^App, inp: Input) {
 	defer sync_capture_dots(app) // pink "capture the result" dots (capture.odin)
 	defer ctrl_sync(app)         // #assert keeps at most one message dot (ctrl.odin)
 	defer branch_sync(app)       // empty case dots expect the switched value's type (branch.odin)
+	defer result_list_sync(app)  // result lists / return values: the extra dot, parentheses (result_list.odin)
 
 	// The button layout (keymap.odin) turns presses into actions. Menus (.Radial)
 	// only know plain A / B / d-pad, so they skip it.
