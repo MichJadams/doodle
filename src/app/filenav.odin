@@ -7,7 +7,8 @@ package main
 //   D-pad     move (Left at the first column = up a level)
 //   A         open a file / drop into a folder (it and its sister folders become the columns)
 //   B         up a level (after dropping in), else back to the editor
-//   X         new file     LT+X  rename
+//   X         new file     LT+X  rename (on the top-left tab: the folder you're in,
+//             e.g. a project's generated name; not a projects folder or a drive)
 //   LT+B      delete the highlighted file/folder (asks first; goes to the Recycle Bin)
 //   Y         search all files under the root (hold X to say the name)
 //   RT+B      switch to the previous file
@@ -300,7 +301,7 @@ handle_filenav :: proc(m: ^model.App, raw: ^Raw, inp: model.Input) {
 		return
 	}
 	if raw.e_x && inp.lt_held {
-		if e, ok := selected_entry(); ok do filenav_rename(e)
+		if e, ok := rename_target(); ok do filenav_rename(e)
 		raw.e_x = false
 		return
 	}
@@ -409,13 +410,61 @@ filenav_rename :: proc(entry: Fn_Entry) {
 	rename_dialog_open(entry.path, entry.name, entry.is_dir)
 }
 
+// rename_target (LT+X): the highlighted file / folder - or, on the "here" tab,
+// the folder you're in, so a project's own folder can lose its generated name
+// (brave-otter-5848 -> my-game). Not a projects folder (DoodleProjects or one
+// added in New Project) and not a drive root: those hold everything else.
+@(private = "file")
+rename_target :: proc() -> (Fn_Entry, bool) {
+	it, _, is_here, ok := model.fgrid_selected(&g_fn_grid)
+	if !ok do return {}, false
+	if !is_here do return Fn_Entry{it.name, it.path, it.is_dir, 0}, true
+	path := it.path // the "here" tab's path is the view
+	for r in all_roots() do if same_path(r, path) {
+		set_status(fmt.tprintf("%s holds your projects - Doodle doesn't rename it", filepath.base(path)))
+		return {}, false
+	}
+	if same_path(filepath.dir(path), path) {
+		set_status("a drive can't be renamed")
+		return {}, false
+	}
+	return Fn_Entry{filepath.base(path), path, true, 0}, true
+}
+
+// rebased: `p` with the folder `old` renamed to `new` - p itself or a path
+// inside it; false when p isn't under old. Temp-allocated.
+@(private = "file")
+rebased :: proc(p, old, new: string) -> (string, bool) {
+	if p == "" || old == "" do return "", false
+	np, no := norm_path(p), norm_path(old)
+	if np == no do return new, true
+	if !strings.has_prefix(np, strings.concatenate({no, "/"}, context.temp_allocator)) do return "", false
+	return strings.concatenate({new, p[len(no):]}, context.temp_allocator), true
+}
+
 // filenav_renamed: the dialog renamed old_path to path - keep the open file and
-// the highlight on it. (The view itself can't be renamed: its "here" tab refuses.)
+// the highlight on it. A folder takes everything inside it along: the open and
+// the alt-tab file, the project folder (save target, run folder), the root and
+// the view (when it was the folder you're in, or inside it).
 filenav_renamed :: proc(old_path, path: string, is_dir: bool) {
 	if same_path(old_path, g_current_file) do set_current_file(path)
-	if is_dir && g_current_file != "" && strings.has_prefix(norm_path(g_current_file), strings.concatenate({norm_path(old_path), "/"}, context.temp_allocator)) {
-		// The open file was inside the renamed folder.
-		set_current_file(fmt.tprintf("%s%s", path, g_current_file[len(old_path):]))
+	if is_dir {
+		if p, ok := rebased(g_current_file, old_path, path); ok do set_current_file(p)
+		if p, ok := rebased(g_prev_file, old_path, path); ok {
+			delete(g_prev_file)
+			g_prev_file = strings.clone(p)
+		}
+		if p, ok := rebased(g_project_dir, old_path, path); ok do set_project_dir(p)
+		if p, ok := rebased(g_fn_dir, old_path, path); ok {
+			delete(g_fn_dir)
+			g_fn_dir = strings.clone(p)
+		}
+		if v, ok := rebased(g_fn_grid.view, old_path, path); ok {
+			d := g_fn_grid.descents
+			fn_show(v, path) // the folder you're in (or one around it) was renamed
+			g_fn_grid.descents = d
+			return
+		}
 	}
 	filenav_refresh_entries()
 	filenav_select_path(path)
