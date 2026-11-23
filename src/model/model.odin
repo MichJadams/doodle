@@ -391,6 +391,23 @@ import_text :: proc(path: string, allocator := context.allocator) -> string {
 	return strings.concatenate({"import \"", path, "\""}, allocator)
 }
 
+// IMPORT_PATH_KIND: an import's `"core:fmt"` - a stop the cursor can land on
+// (LT+A reopens the Import menu to swap the package), not editable text.
+IMPORT_PATH_KIND :: "import_path"
+
+// import_node: `import "path"` or `import alias "path"` (alias editable), the
+// path its own stop. The menus and the loader (parse.odin) build the same.
+import_node :: proc(path: string, alias := "") -> Node {
+	n: Node
+	append(&n.fields, Field{strings.clone("import "), false, false, "", "", ""})
+	if alias != "" {
+		append(&n.fields, Field{strings.clone(alias), true, false, "", "", ""})
+		append(&n.fields, Field{strings.clone(" "), false, false, "", "", ""})
+	}
+	append(&n.fields, Field{strings.concatenate({"\"", path, "\""}), false, false, IMPORT_PATH_KIND, "", ""})
+	return n
+}
+
 platform_ok :: proc(app: ^App, e: Entry) -> bool {
 	if e.platform == "" do return true
 	s := e.platform
@@ -449,11 +466,7 @@ append_kw_node :: proc(app: ^App, keyword, ident: string) {
 
 // Append an aliased import: `import <alias> "<path>"` with editable alias.
 append_aliased_import_node :: proc(app: ^App, path: string) {
-	n: Node
-	append(&n.fields, Field{strings.clone("import "), false, false, "", "", ""})
-	append(&n.fields, Field{strings.clone(alias_default(path)), true, false, "", "", ""})
-	append(&n.fields, Field{strings.concatenate({" \"", path, "\""}), false, false, "", "", ""})
-	doc_insert(app, n)
+	doc_insert(app, import_node(path, alias_default(path)))
 }
 
 // Extract the default alias from an import path (the last segment).
@@ -2778,16 +2791,9 @@ menu_select :: proc(app: ^App) {
 			}
 			delete(app.doc.nodes[ni].fields)
 			// Build the new import node
-			n: Node
-			if app.import_alias || needs_import_alias(e.import_path) {
-				append(&n.fields, Field{strings.clone("import "), false, false, "", "", ""})
-				append(&n.fields, Field{strings.clone(alias_default(e.import_path)), true, false, "", "", ""})
-				append(&n.fields, Field{strings.concatenate({" \"", e.import_path, "\""}), false, false, "", "", ""})
-			} else {
-				node_txt := import_text(e.import_path, context.temp_allocator)
-				append(&n.fields, Field{strings.clone(node_txt), false, false, "", "", ""})
-			}
-			app.doc.nodes[ni] = n
+			alias := ""
+			if app.import_alias || needs_import_alias(e.import_path) do alias = alias_default(e.import_path)
+			app.doc.nodes[ni] = import_node(e.import_path, alias)
 			record_recent(app, e.import_path)
 			app.import_alias = false
 			app.replacing = false
@@ -2798,8 +2804,7 @@ menu_select :: proc(app: ^App) {
 		if app.import_alias || needs_import_alias(e.import_path) {
 			append_aliased_import_node(app, e.import_path)
 		} else {
-			node := import_text(e.import_path, context.temp_allocator)
-			append_text_node(app, node)
+			doc_insert(app, import_node(e.import_path))
 		}
 		record_recent(app, e.import_path)
 		app.import_alias = false

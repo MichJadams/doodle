@@ -237,13 +237,20 @@ parse_branch_line :: proc(line: string, type_case: bool, in_data := false) -> (n
 		if colon > len("case") {
 			if s[4] != ' ' do return
 			append(&fs, fx(" "))
-			values := split_values(s[5:colon])
-			if len(values) == 0 do return
-			for v, i in values {
-				if v == "" || strings.trim_space(v) != v do return
-				if i > 0 do append(&fs, fx(", "))
-				if type_case do append(&fs, Field{strings.clone(v), true, false, "type", "", ""})
-				else do emit_case_value(&fs, v)
+			if strings.trim_space(s[5:colon]) == "" {
+				// `case :` - a case saved with its value dot unfilled (`case:` without the
+				// space is the default case): the dot comes back, as Add case builds it.
+				// branch_sync then gives it the switched value's type.
+				append(&fs, Field{"", false, true, type_case ? VARIANT_KIND : "value", "", ""})
+			} else {
+				values := split_values(s[5:colon])
+				if len(values) == 0 do return
+				for v, i in values {
+					if v == "" || strings.trim_space(v) != v do return
+					if i > 0 do append(&fs, fx(", "))
+					if type_case do append(&fs, Field{strings.clone(v), true, false, "type", "", ""})
+					else do emit_case_value(&fs, v)
+				}
 			}
 		} else if colon != len("case") {
 			return

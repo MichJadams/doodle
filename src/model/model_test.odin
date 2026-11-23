@@ -206,10 +206,11 @@ test_aliased_import_inserts_with_editable_alias :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(app.doc.nodes), 1)
 	txt := node_text(app.doc.nodes[0], context.temp_allocator)
 	testing.expect_value(t, txt, "import fmt \"core:fmt\"")
-	// Check that the second field (alias) is editable
-	testing.expect_value(t, len(app.doc.nodes[0].fields), 3)
+	// Check that the second field (alias) is editable, and the path is a stop (import_node)
+	testing.expect_value(t, len(app.doc.nodes[0].fields), 4)
 	testing.expect_value(t, app.doc.nodes[0].fields[1].editable, true)
 	testing.expect_value(t, app.doc.nodes[0].fields[1].text, "fmt")
+	testing.expect_value(t, app.doc.nodes[0].fields[3].kind, IMPORT_PATH_KIND)
 }
 
 @(test)
@@ -3496,14 +3497,14 @@ test_parse_various_lines :: proc(t: ^testing.T) {
 	
 	testing.expect_value(t, len(app.doc.nodes), 4)
 	
-	// Non-call lines are single fixed fields (a comment's text is editable: stmt_layout.odin)
-	for i in ([]int{0, 3}) {
-		testing.expect_value(t, len(app.doc.nodes[i].fields), 1)
-		testing.expect_value(t, app.doc.nodes[i].fields[0].editable, false)
-	}
+	// A closing brace is one fixed field (a comment's text is editable: stmt_layout.odin;
+	// an import's path is a stop: import_node).
+	testing.expect_value(t, len(app.doc.nodes[3].fields), 1)
+	testing.expect_value(t, app.doc.nodes[3].fields[0].editable, false)
 
 	// Verify exact text
-	testing.expect_value(t, app.doc.nodes[0].fields[0].text, "import \"core:fmt\"")
+	testing.expect_value(t, node_text(app.doc.nodes[0], context.temp_allocator), "import \"core:fmt\"")
+	testing.expect_value(t, app.doc.nodes[0].fields[1].kind, IMPORT_PATH_KIND)
 	testing.expect_value(t, app.doc.nodes[1].fields[0].text, "// ")
 	testing.expect_value(t, app.doc.nodes[1].fields[1].text, "comment")
 	testing.expect_value(t, app.doc.nodes[1].fields[1].editable, true)

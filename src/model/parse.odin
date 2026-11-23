@@ -125,6 +125,54 @@ parse_return_statement :: proc(line: string, multi_only := false) -> (node: Node
 	return node, true
 }
 
+// parse_import_line: `import "path"` or `import alias "path"` at the start of
+// a line, nothing after it (a comment or anything else stays text).
+@(private = "file")
+parse_import_line :: proc(line: string) -> (node: Node, ok: bool) {
+	s := strings.trim_right_space(line)
+	if !strings.has_prefix(s, "import ") do return
+	rest := strings.trim_left_space(s[len("import "):])
+	alias := ""
+	if len(rest) > 0 && rest[0] != '"' {
+		sp := strings.index_byte(rest, ' ')
+		if sp <= 0 || !is_valid_identifier(rest[:sp]) do return
+		alias = rest[:sp]
+		rest = strings.trim_left_space(rest[sp:])
+	}
+	if len(rest) < 2 || rest[0] != '"' || rest[len(rest) - 1] != '"' do return
+	path := rest[1:len(rest) - 1]
+	if path == "" || strings.contains_any(path, "\"\\") do return
+	return import_node(path, alias), true
+}
+
+// is_const_value: is the right side of a top-level `NAME :: v` clearly a value
+// (structured like a filled Constant dot) rather than a type or a declaration?
+// Literals, true / false / nil, calls and operator expressions; a bare name
+// (`A :: B` - a type alias or a constant) and every type form stay text.
+@(private = "file")
+is_const_value :: proc(v: string) -> bool {
+	if v == "" do return false
+	if v == OPEN_VALUE_MARK do return true // `NAME ::` saved unfilled (open_value_line)
+	if strings.contains(v, "//") do return false
+	switch v {
+	case "true", "false", "nil": return true
+	}
+	c := v[0]
+	if c == '"' || c == '`' || c == '\'' || (c >= '0' && c <= '9') do return true
+	if c == '-' && len(v) > 1 && v[1] >= '0' && v[1] <= '9' do return true
+	if c == '#' || c == '^' || c == '[' || c == '$' || c == '{' || c == '(' do return false
+	for kw in ([]string{"proc", "struct", "enum", "union", "bit_set", "bit_field", "distinct", "map", "matrix", "typeid", "cast", "transmute", "auto_cast"}) {
+		if v == kw || strings.has_prefix(v, kw) && len(v) > len(kw) && !is_ident_byte(v[len(kw)]) do return false
+	}
+	// A call `f(...)` / `pkg.f(...)` spanning the whole value.
+	j := 0
+	for j < len(v) && (is_ident_byte(v[j]) || v[j] == '.') do j += 1
+	if j > 0 && j < len(v) && v[j] == '(' && v[len(v) - 1] == ')' do return true
+	// An operator expression with spaces around it (Doodle's format).
+	for op in EXPR_BINARY_OPS do if strings.contains(v, strings.concatenate({" ", op, " "}, context.temp_allocator)) do return true
+	return false
+}
+
 // The placeholder value for open_value_line (an identifier no one writes).
 @(private = "file")
 OPEN_VALUE_MARK :: "__doodle_open_value__"
@@ -136,7 +184,7 @@ OPEN_VALUE_MARK :: "__doodle_open_value__"
 open_value_line :: proc(lines: []string, i: int) -> bool {
 	s := strings.trim_right_space(lines[i])
 	if strings.contains(s, "//") || strings.trim_space(s) == "" do return false
-	open := strings.has_suffix(s, " :=")
+	open := strings.has_suffix(s, " :=") || (strings.has_suffix(s, " ::") && len(s) > 0 && !is_whitespace(rune(s[0]))) // + a constant's (top level)
 	if !open do for op in ASSIGN_OPS {
 		if strings.has_suffix(s, op) && len(s) > len(op) && s[len(s) - len(op) - 1] == ' ' { open = true; break }
 	}
@@ -649,6 +697,8 @@ attach_call_signature :: proc(app: ^App, ni: int, callee: string) {
 //   - Everything else -> one fixed field with the whole line
 @(private = "file")
 parse_line :: proc(line: string, in_data := false) -> Node {
+	// `import "core:fmt"` / `import win "core:sys/windows"`: as the menus build it.
+	if inode, iok := parse_import_line(line); iok do return inode
 	node: Node
 	node.fields = make([dynamic]Field)
 	
@@ -691,6 +741,13 @@ parse_line :: proc(line: string, in_data := false) -> Node {
 				rest := line[idx:]
 				// `name :: proc(a: int, b: string) ...`: the parameter names are names too.
 				if emit_proc_params(&node.fields, rest) do return node
+				// `NAME :: "text"` / `:: 42` / `:: A | B`: a constant's value structured
+				// (a string's text editable), as Values > Constant builds it.
+				if value := strings.trim_space(line[idx + 4:]); is_const_value(value) {
+					append(&node.fields, Field{strings.clone(" :: "), false, false, "", "", ""})
+					emit_expr(&node.fields, value)
+					return node
+				}
 				append(&node.fields, Field{
 					text = strings.clone(rest),
 					editable = false,

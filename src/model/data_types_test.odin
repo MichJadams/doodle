@@ -360,7 +360,7 @@ test_load_type_decls_round_trip :: proc(t: ^testing.T) {
 	expect_line(t, &app, "Handle :: ", "[Handle][ :: distinct ][win.HANDLE]")
 	expect_line(t, &app, "Matrix :: ", "[Matrix][ :: ][matrix[2, 2]f32]")
 	expect_line(t, &app, "Ptrs :: ", "[Ptrs][ :: ][[^]][^][u8]")
-	expect_line(t, &app, "NOT_A_TYPE", "[NOT_A_TYPE][ :: 0x00FF0062]")
+	expect_line(t, &app, "NOT_A_TYPE", "[NOT_A_TYPE][ :: ][0x00FF0062]") // a constant: its value as a filled Constant dot (parse.odin)
 	expect_line(t, &app, "grid: [8]", "[\t][grid][: ][[][8][]][[][8][]][int]")
 	expect_line(t, &app, "Local :: ", "[\t][Local][ :: enum { ][A][, ][B][ }]") // a local type
 
