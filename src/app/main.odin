@@ -827,17 +827,22 @@ draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
 
 	margin := f32(40)
 	gap := f32(12)
-	// Cells are compact (fixed max) for small menus, shrinking only when needed
-	// to fit many columns; the grid is centered.
+	// Cells are as wide as the longest label needs (220 at least, 480 at most),
+	// shrinking only when needed to fit many columns; the grid is centered.
 	fit_w := (fw - 2 * margin - f32(cols - 1) * gap) / f32(cols)
-	cellw := min(f32(220), fit_w)
+	longest := f32(0)
+	for e in v.entries do longest = max(longest, text.measure(g_ui, e.label).x)
+	cellw := min(clamp(longest + 24, f32(220), f32(480)), fit_w)
+	// A label that still doesn't fit: the highlighted one is shown in full below
+	// the grid (room kept for it all the while, so the grid doesn't jump).
+	full_line := longest > cellw - 10
 	cellh := f32(44)
 	vgap := f32(8)
 	caption_h := sectioned ? f32(24) : 0 // "RECENTLY USED" / "ALL" captions
 	grid_w := f32(cols) * cellw + f32(cols - 1) * gap
 	start_x := (fw - grid_w) * 0.5
 	start_y := fh * 0.14
-	bottom := f32(h) - 185 // leave room for the HUD + hint
+	bottom := f32(h) - (full_line ? 220 : 185) // leave room for the HUD + hint (+ the full label)
 
 	visible_rows := int((bottom - start_y - 2 * caption_h) / (cellh + vgap))
 	if visible_rows < 1 do visible_rows = 1
@@ -883,6 +888,13 @@ draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
 		else if recent do gpu.draw_rect_outline(r, box, 1, RECENT_COL)
 		col_text := e.dim ? COL_DIM : COL_TEXT
 		text.draw_centered(r, g_ui, box, fit_label(g_ui, e.label, cellw - 10), col_text)
+	}
+
+	// The highlighted label in full, when its cell cuts it short.
+	if full_line && v.index >= 0 && v.index < n {
+		if lbl := v.entries[v.index].label; text.measure(g_ui, lbl).x > cellw - 10 {
+			text.draw_centered(r, g_ui, {0, f32(h) - 196, fw, 24}, fit_label(g_ui, lbl, fw - 2 * margin), COL_TEXT)
+		}
 	}
 
 	// Scroll indicators + position.
