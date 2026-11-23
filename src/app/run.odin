@@ -118,10 +118,13 @@ save_run_cmds :: proc() {
 // --- Running commands ---
 
 // run_command executes a command with cwd = g_project_dir in a visible console window.
-// keep_open leaves the console up even on success (test results are worth reading).
+// keep_open leaves the console up even on success (test results are worth reading);
+// so does turning off Settings > "Automatically close the run terminal" (settings.odin).
+// An error keeps it open either way.
 run_command :: proc(cmd: string, keep_open := false) {
 	if cmd == "" do return
-	
+	keep_open := keep_open || !setting_on(.Auto_Close_Run)
+
 	// Save first so the command runs the code that's on screen.
 	if g_app != nil && !save_current(g_app) do return
 

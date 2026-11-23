@@ -61,7 +61,12 @@ PAGE             :: 12  // Alpha-bucket page size
 FLAT_MAX         :: 60  // Show a group flat (scrollable) up to this size; only split beyond it
 MIN_PREFIX_SHARE :: 3   // Min procs sharing a prefix to form a group
 
-MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder", "Key Layout"}
+MENU_ITEMS := [?]string{"New Project", "Recent Projects", "Open Folder", "Key Layout", "Settings"}
+
+// menu_items: the main menu. A replay of a run recorded before Settings
+// existed (menu_legacy) gets the 4-item menu it was recorded with: a 5th item
+// changes the grid (2x2 -> 3+2), so its presses would land elsewhere.
+menu_items :: proc(app: ^App) -> []string { return app.menu_legacy ? MENU_ITEMS[:4] : MENU_ITEMS[:] }
 
 // A menu entry. Exactly one behaviour applies:
 //   children non-empty -> submenu
@@ -138,6 +143,7 @@ MenuView :: struct {
 App :: struct {
 	state:          State,
 	menu_index:     int,
+	menu_legacy:    bool, // the main menu without Settings (menu_items; a replay of an older run)
 	doc:            Doc,
 	nav:            [dynamic]MenuView,
 	return_state:   State,
@@ -3062,7 +3068,7 @@ update :: proc(app: ^App, inp: Input) {
 
 	switch app.state {
 	case .Menu:
-		app.menu_index = grid_nav(app.menu_index, len(MENU_ITEMS), inp)
+		app.menu_index = grid_nav(app.menu_index, len(menu_items(app)), inp)
 		if inp.cancel do app.want_quit = true
 		if inp.confirm {
 			if app.menu_index == 0 do new_project(app) // New Project (Doodle asks where first: app/new_project.odin)

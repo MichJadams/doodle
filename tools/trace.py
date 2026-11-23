@@ -1010,7 +1010,7 @@ def cmd_script(args):
              "meta projects " + os.path.abspath(args.projects or projects).replace(" ", "\\s"),
              "meta start_file " + (os.path.join(projects, args.open).replace(" ", "\\s") if args.open else ""),
              "meta start_rel " + (args.open.replace("\\", "/").replace(" ", "\\s") if args.open else ""),
-             "meta stt 0", "meta snapshot_ok 1", "meta roots", "0 t 0", "0 size %d %d" % tuple(args.size)]
+             "meta stt 0", "meta snapshot_ok 1", "meta roots", "meta settings", "0 t 0", "0 size %d %d" % tuple(args.size)]
     lines += script_lines(tokens)
     with open(os.path.join(d, "input.log"), "w", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")

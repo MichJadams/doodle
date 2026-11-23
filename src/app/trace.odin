@@ -389,6 +389,7 @@ record_begin :: proc(m: ^model.App) {
 	add_meta(fmt.tprintf("meta snapshot_ok %d", snap_ok ? 1 : 0))
 	add_meta(fmt.tprintf("meta keymap %s", esc(keys_store_text(context.temp_allocator)))) // the button layout in use
 	add_meta(fmt.tprintf("meta roots %s", esc(strings.join(g_roots[:], "\t", context.temp_allocator)))) // extra project folders (tab-separated)
+	add_meta(fmt.tprintf("meta settings %s", esc(settings_store_text(context.temp_allocator)))) // main menu -> Settings
 	for a in os.args[1:] do add_meta(fmt.tprintf("meta arg %s", esc(a)))
 	if !open_files() do return
 	write_header(meta_json(stamp, snap_ok, snap_ms, "", 0))
@@ -813,6 +814,10 @@ screen_ctx :: proc(m: ^model.App) -> Trace_Ctx {
 		c.title = model.slot_name(bank, b)
 		items, _ := screen_items(m)
 		pick(&c, items, g_keys.picking ? g_keys.pick : bank * len(model.KEYS_ROWS) + g_keys.row)
+	case g_settings_open:
+		c.scr = "settings"
+		items, _ := screen_items(m)
+		pick(&c, items, g_settings_row)
 	case g_proj_open:
 		c.scr = "projects"
 		items, _ := screen_items(m)
@@ -888,8 +893,10 @@ screen_items :: proc(m: ^model.App) -> (items: []string, recent: int) {
 			for c in g_run_cmds do append(&out, c.cmd)
 			append(&out, "+ New command")
 		}
+	case g_settings_open:
+		for info, k in model.SETTING_INFO do append(&out, fmt.tprintf("%s: %s", info.label, g_settings.on[k] ? "On" : "Off"))
 	case m.state == .Menu:
-		for it in model.MENU_ITEMS do append(&out, it)
+		for it in model.menu_items(m) do append(&out, it)
 	case m.state == .Radial:
 		if v := model.current_view(m); v != nil {
 			for e in v.entries do append(&out, e.label)
@@ -991,6 +998,14 @@ fingerprint :: proc(m: ^model.App) -> u64 {
 	h = fnv_int(h, g_fn_grid.descents)
 	h = fnv_int(h, g_fn_grid.group)
 	h = fnv_int(h, g_fn_grid.item)
+	// Settings page and the options - only while it's open, so recordings made
+	// before Settings existed keep their fingerprints (the options only change
+	// what the page shows, and a replay doesn't run programs).
+	if g_settings_open {
+		h = fnv_int(h, 1)
+		h = fnv_int(h, g_settings_row)
+		for on in g_settings.on do h = fnv_int(h, int(on))
+	}
 	// Key Layout page and the layout itself.
 	h = fnv_int(h, int(g_keys_open))
 	h = fnv_int(h, g_keys.bank)
@@ -1158,6 +1173,15 @@ replay_begin :: proc(arg: string, m: ^model.App) -> bool {
 		roots_store_override(stand[:], false)
 	} else {
 		roots_store_override(nil, true)
+	}
+
+	// The Settings the run was recorded with (never saved during a replay).
+	// Recordings made before Settings existed had a 4-item main menu.
+	if rp_has_meta("settings") {
+		settings_store_override(rp_meta("settings"))
+	} else {
+		settings_store_override("")
+		m.menu_legacy = true
 	}
 
 	if rp_meta("stt") == "1" && g_stt_e == nil {

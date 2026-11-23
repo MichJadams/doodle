@@ -156,6 +156,8 @@ main :: proc() {
 	ensure_projects_dir()
 	roots_store_init()
 	defer roots_store_shutdown()
+	settings_store_init() // main menu -> Settings (settings.odin); also before trace_start
+	defer settings_store_shutdown()
 
 	// Record this run / set up a replay (trace.odin; debug builds only).
 	trace_start(win, &m) // TRACE hook
@@ -189,7 +191,7 @@ main :: proc() {
 		down_edge := inp.down
 		// Talk is a hold on whichever button the layout gives it (model/keymap.odin).
 		talk_down := model.keymap_holding(m.keymap, raw.held, inp.lt_held, inp.rt_held, .Talk)
-		mic_hold := !g_keys_open && talk_down
+		mic_hold := !g_keys_open && !g_settings_open && talk_down
 		// A Talk press made while an overlay is open belongs to the overlay (Talk on
 		// plain Y, and Y closes the docs): it stays stale until released.
 		if !talk_down do g_talk_stale = false
@@ -206,7 +208,7 @@ main :: proc() {
 		// opens the project picker; A on "New Project" asks which folder it goes in
 		// (new_project.odin), which then sets up a fresh project folder there.
 		new_project := false
-		if m.state == .Menu && !g_proj_open && !g_np_open && !g_keys_open && raw.e_confirm {
+		if m.state == .Menu && !g_proj_open && !g_np_open && !g_keys_open && !g_settings_open && raw.e_confirm {
 			switch model.MENU_ITEMS[m.menu_index] {
 			case "Recent Projects":
 				projects_open()
@@ -220,6 +222,9 @@ main :: proc() {
 				}
 			case "Key Layout":
 				keys_page_open(inp)
+				raw.e_confirm = false; raw.e_a = false
+			case "Settings":
+				settings_page_open() // settings.odin
 				raw.e_confirm = false; raw.e_a = false
 			}
 		}
@@ -235,6 +240,9 @@ main :: proc() {
 		} else if g_keys_open {
 			// The Key Layout page owns all input while it's open (its controls are fixed).
 			handle_keys_input(&raw, inp)
+		} else if g_settings_open {
+			// The Settings page owns all input while it's open.
+			handle_settings_input(&raw)
 		} else if g_proj_open {
 			// The project picker owns all input while it's open.
 			handle_projects_input(&raw)
@@ -360,6 +368,7 @@ main :: proc() {
 		if g_save_open do draw_save_dialog(r, w, h)
 		if g_doc_open do draw_doc_panel(r, w, h)
 		if g_keys_open do draw_keys_page(r, w, h)
+		if g_settings_open do draw_settings_page(r, w, h)
 		// On the Key Layout page the HUD previews the cursor's bank.
 		hud_inp := inp
 		if g_keys_open {
@@ -661,7 +670,8 @@ draw_menu :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int) 
 	text.draw_centered(r, g_ui, {0, fh * 0.20 + 56, fw, 30}, "Odin IDE  -  gamepad native", COL_DIM)
 
 	// Square-ish, centered grid (same treatment as the radial menus).
-	n := len(model.MENU_ITEMS)
+	items := model.menu_items(m)
+	n := len(items)
 	cols := model.grid_cols(n)
 	rows := (n + cols - 1) / cols
 	gap, vgap := f32(14), f32(12)
@@ -669,12 +679,12 @@ draw_menu :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int) 
 	grid_w := f32(cols) * cellw + f32(cols - 1) * gap
 	start_x := (fw - grid_w) * 0.5
 	start_y := fh * 0.44
-	for item, i in model.MENU_ITEMS {
+	for item, i in items {
 		col := i % cols
 		row := i / cols
 		box := gpu.Rect{start_x + f32(col) * (cellw + gap), start_y + f32(row) * (cellh + vgap), cellw, cellh}
 		active := i == m.menu_index
-		enabled := item == "New Project" || item == "Recent Projects" || item == "Key Layout"
+		enabled := item == "New Project" || item == "Recent Projects" || item == "Key Layout" || item == "Settings"
 		gpu.draw_rect(r, box, active ? COL_HILITE : COL_PANEL)
 		if active do gpu.draw_rect_outline(r, box, 2, COL_ACCENT)
 		text.draw_centered(r, g_ui, box, item, enabled ? COL_TEXT : COL_DIM)
@@ -906,7 +916,7 @@ draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
 
 // overlay_open: something owns the input instead of the editor / main menu.
 overlay_open :: proc() -> bool {
-	return g_filenav || g_save_open || g_doc_open || g_run_open || g_proj_open || g_np_open || g_keys_open
+	return g_filenav || g_save_open || g_doc_open || g_run_open || g_proj_open || g_np_open || g_keys_open || g_settings_open
 }
 
 draw_hud :: proc(r: ^gpu.Renderer, m: ^model.App, inp: model.Input, w, h: int) {
