@@ -129,12 +129,7 @@ open_pass_as_menu :: proc(app: ^App, pick: Ref_Target) {
 	option(&out, name, name)
 	// Converted to the expected type, written as you'd write it in this file (windows.LPCWSTR).
 	if slot.hint != "" {
-		ty := slot.hint
-		if slot.hint_pkg != "" {
-			imports := collect_imports(app)
-			defer delete(imports)
-			for imp in imports do if imp.path == slot.hint_pkg { ty = fmt.tprintf("%s.%s", imp.ref, slot.hint); break }
-		}
+		ty := type_text_here(app, slot.hint, slot.hint_pkg) // `Maybe(^sdl3.FRect)`, `win32.LPCWSTR` (expr.odin)
 		conv := fmt.tprintf("%s(%s)", ty, name)
 		option(&out, conv, conv)
 	}

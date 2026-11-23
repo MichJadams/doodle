@@ -333,14 +333,37 @@ make_slot_conversion :: proc(app: ^App, ni, fi: int, e: Entry) {
 
 // ---- The Convert menu ----
 
-// How a type is written in this file: `HINSTANCE` in core:sys/windows -> "win32.HINSTANCE".
-@(private = "file")
+// type_text_here: how a type written in package hint_pkg is written in this
+// file - each name that package declares gets the import's prefix, the rest
+// (builtins, Maybe, already qualified names) stays: `HINSTANCE` in
+// core:sys/windows -> "win32.HINSTANCE"; `Maybe(^FRect)` in vendor:sdl3 ->
+// "Maybe(^sdl3.FRect)" (not "sdl3.Maybe(^FRect)": Maybe is Odin's).
+// Temp-allocated.
 type_text_here :: proc(app: ^App, hint, hint_pkg: string) -> string {
 	if hint_pkg == "" do return hint
+	ref := ""
 	imports := collect_imports(app)
 	defer delete(imports)
-	for imp in imports do if imp.path == hint_pkg do return fmt.tprintf("%s.%s", imp.ref, hint)
-	return hint
+	for imp in imports do if imp.path == hint_pkg { ref = imp.ref; break }
+	if ref == "" do return hint
+	b := strings.builder_make(context.temp_allocator)
+	for i := 0; i < len(hint); {
+		c := hint[i]
+		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			strings.write_byte(&b, c)
+			i += 1
+			continue
+		}
+		j := i
+		for j < len(hint) && (hint[j] == '_' || (hint[j] >= 'a' && hint[j] <= 'z') || (hint[j] >= 'A' && hint[j] <= 'Z') || (hint[j] >= '0' && hint[j] <= '9')) do j += 1
+		name := hint[i:j]
+		qualified := i > 0 && hint[i - 1] == '.'           // `c.int`: already qualified
+		member := j < len(hint) && hint[j] == '.'           // `c` in `c.int`: a package name
+		if _, ok := core_type_index(hint_pkg, name); ok && !qualified && !member do strings.write_string(&b, strings.concatenate({ref, "."}, context.temp_allocator))
+		strings.write_string(&b, name)
+		i = j
+	}
+	return strings.to_string(b)
 }
 
 // A Type-menu entry as a Convert leaf (fill CONV_FILL); composite types are
