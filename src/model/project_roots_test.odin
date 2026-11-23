@@ -7,12 +7,20 @@ import "core:time"
 
 @(test)
 test_roots_parse_skips_header_comments_blanks_and_repeats :: proc(t: ^testing.T) {
-	roots := roots_parse("doodle-roots 1\n\n# a comment\nC:/work/odin\r\n  D:\\games  \nc:\\WORK\\odin\\\n")
+	// Windows paths repeat in any case and with \ (roots_same); elsewhere a
+	// path is case-sensitive, so the repeat there is the same path with a /.
+	when ODIN_OS == .Windows {
+		roots := roots_parse("doodle-roots 1\n\n# a comment\nC:/work/odin\r\n  D:\\games  \nc:\\WORK\\odin\\\n")
+		first, second := "C:/work/odin", "D:\\games"
+	} else {
+		roots := roots_parse("doodle-roots 1\n\n# a comment\n/work/odin\r\n  /games  \n/work/odin/\n")
+		first, second := "/work/odin", "/games"
+	}
 	defer roots_free(&roots)
 	testing.expect_value(t, len(roots), 2)
 	if len(roots) != 2 do return
-	testing.expect_value(t, roots[0], "C:/work/odin")
-	testing.expect_value(t, roots[1], "D:\\games")
+	testing.expect_value(t, roots[0], first)
+	testing.expect_value(t, roots[1], second)
 }
 
 @(test)
@@ -42,19 +50,29 @@ test_roots_text_ok :: proc(t: ^testing.T) {
 test_roots_add :: proc(t: ^testing.T) {
 	roots: [dynamic]string
 	defer roots_free(&roots)
-	def := "C:\\Users\\me/DoodleProjects"
-	testing.expect_value(t, roots_add(&roots, "C:/work/", def), Roots_Add_Result.Added)
-	testing.expect_value(t, roots[0], "C:/work")
-	testing.expect_value(t, roots_add(&roots, "c:\\WORK", def), Roots_Add_Result.Duplicate)
-	testing.expect_value(t, roots_add(&roots, "C:/users/me/doodleprojects/", def), Roots_Add_Result.Is_Default)
+	// The same cases with each OS's paths (Windows: any case, \ or /; elsewhere
+	// case-sensitive, so the duplicate / default spellings differ only in slashes).
+	when ODIN_OS == .Windows {
+		def := "C:\\Users\\me/DoodleProjects"
+		work, work_again, def_again, top := "C:/work/", "c:\\WORK", "C:/users/me/doodleprojects/", "D:/"
+		work_kept, top_kept := "C:/work", "D:/" // a drive root keeps its slash
+	} else {
+		def := "/home/me/DoodleProjects"
+		work, work_again, def_again, top := "/work/", "/work", "/home/me/DoodleProjects/", "/"
+		work_kept, top_kept := "/work", "/" // the root keeps its slash
+	}
+	testing.expect_value(t, roots_add(&roots, work, def), Roots_Add_Result.Added)
+	testing.expect_value(t, roots[0], work_kept)
+	testing.expect_value(t, roots_add(&roots, work_again, def), Roots_Add_Result.Duplicate)
+	testing.expect_value(t, roots_add(&roots, def_again, def), Roots_Add_Result.Is_Default)
 	testing.expect_value(t, roots_add(&roots, "   ", def), Roots_Add_Result.Empty)
-	testing.expect_value(t, roots_add(&roots, "D:/", def), Roots_Add_Result.Added)
-	testing.expect_value(t, roots[1], "D:/") // a drive root keeps its slash
+	testing.expect_value(t, roots_add(&roots, top, def), Roots_Add_Result.Added)
+	testing.expect_value(t, roots[1], top_kept)
 	testing.expect_value(t, len(roots), 2)
 
 	roots_remove(&roots, 0)
 	testing.expect_value(t, len(roots), 1)
-	testing.expect_value(t, roots[0], "D:/")
+	testing.expect_value(t, roots[0], top_kept)
 	roots_remove(&roots, 5) // out of range: nothing
 	testing.expect_value(t, len(roots), 1)
 }
