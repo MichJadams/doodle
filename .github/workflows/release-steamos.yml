@@ -1,19 +1,22 @@
-# SteamOS / Steam Deck + Windows release build.
+# SteamOS / Steam Deck + Linux + Windows release build.
 #
 # Trigger manually:   gh workflow run release-steamos.yml -f version=0.1.0
-# (or Actions tab -> "Release (SteamOS + Windows)" -> Run workflow)
+# (or Actions tab -> "Release (SteamOS + Linux + Windows)" -> Run workflow)
 # Build only, no GitHub Release:   ... -f publish=false   (packages stay on the run)
 #
 # SteamOS: builds inside Valve's Steam Linux Runtime 3.0 "sniper" SDK so the
 # binary runs on SteamOS, the Steam Linux runtime, and ordinary Linux desktops.
 # Output is a tarball (doodle/bin/doodle + bundled SDL2/SDL3 + whisper-cli,
 # models/ggml-base.en.bin, assets).
+# Linux: the same build on Ubuntu 22.04 (glibc 2.35; runs on 22.04+ / Debian 12 and
+# newer), outside the Steam runtime: doodle-linux-<version>.tar.gz, same layout.
 # Windows: an x64 build on windows-latest. Output is a zip with the same layout
 # (doodle/bin/doodle.exe + SDL2.dll + whisper-cli.exe, models/, assets/).
 # Both are attached to a GitHub Release tagged v<version>, each also under a
-# fixed name (doodle-steamos.tar.gz, doodle-windows.zip) for .../releases/latest/download/.
+# fixed name (doodle-steamos.tar.gz, doodle-linux.tar.gz, doodle-windows.zip) for
+# .../releases/latest/download/.
 
-name: Release (SteamOS + Windows)
+name: Release (SteamOS + Linux + Windows)
 
 on:
   workflow_dispatch:
@@ -202,6 +205,154 @@ jobs:
           path: doodle-steamos-*.tar.gz
           if-no-files-found: error
 
+  # ---- Linux (x86-64, Ubuntu 22.04: glibc 2.35, so it runs on 22.04+ /
+  # Debian 12 / Mint 21 and newer) - the same steps as SteamOS, outside the
+  # Steam runtime container, with SDL2 from Ubuntu bundled next to the binary.
+  build-linux:
+    needs: version
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq patchelf curl make cmake git binutils clang libsdl2-dev
+          # Odin links through `clang`.
+          if ! command -v clang >/dev/null; then
+            sudo ln -s "$(ls /usr/bin/clang-[0-9]* | sort -V | tail -1)" /usr/local/bin/clang
+          fi
+          clang --version
+
+      - name: Install Odin ${{ env.ODIN_TAG }}
+        run: |
+          curl -fsSL -o /tmp/odin.tar.gz \
+            "https://github.com/odin-lang/Odin/releases/download/${ODIN_TAG}/odin-linux-amd64-${ODIN_TAG}.tar.gz"
+          sudo mkdir -p /opt/odin
+          sudo chown "$(id -u):$(id -g)" /opt/odin
+          tar -xzf /tmp/odin.tar.gz -C /opt/odin --strip-components=1
+          echo "/opt/odin" >> "$GITHUB_PATH"
+          ldd /opt/odin/odin || true
+          /opt/odin/odin version
+          # vendor:stb needs its static libs built on Linux.
+          if ! ls /opt/odin/vendor/stb/lib/*.a >/dev/null 2>&1; then
+            (cd /opt/odin/vendor/stb/src && sh ./build_stb.sh)
+          fi
+
+      - name: Test
+        if: ${{ inputs.run_tests }}
+        run: |
+          odin test src/model
+          odin test src/stt
+
+      # ---- whisper.cpp (speech-to-text) ----
+      - name: Fetch whisper.cpp ${{ env.WHISPER_TAG }}
+        run: git clone -q --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp.git /tmp/whisper.cpp
+
+      - name: Cache whisper-cli
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: whisper-out/whisper-cli
+          key: whisper-cli-${{ env.WHISPER_TAG }}-ubuntu2204-avx2-static-v1
+
+      - name: Build whisper-cli
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        run: |
+          # Portable x86-64 build: NOT -march=native (the CI CPU may have AVX-512,
+          # the Deck's Zen 2 doesn't). AVX2/FMA/F16C cover the Deck and most PCs
+          # since ~2015. Static whisper/ggml + libstdc++, no OpenMP: one binary.
+          cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DCMAKE_BUILD_TYPE=Release             -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF             -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON             -DGGML_AVX512=OFF -DGGML_OPENMP=OFF             -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+          cmake --build /tmp/whisper.cpp/build --target whisper-cli -j "$(nproc)"
+          mkdir -p whisper-out
+          cp /tmp/whisper.cpp/build/bin/whisper-cli whisper-out/
+          strip whisper-out/whisper-cli
+
+      - name: Cache model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: whisper-out/ggml-${{ env.WHISPER_MODEL }}.bin
+          key: whisper-model-${{ env.WHISPER_MODEL }}-${{ env.WHISPER_MODEL_SHA256 }}
+
+      - name: Download model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p whisper-out
+          curl -fsSL -o "whisper-out/ggml-$WHISPER_MODEL.bin"             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$WHISPER_MODEL.bin"
+
+      - name: Check whisper-cli
+        run: |
+          set -eu
+          echo "$WHISPER_MODEL_SHA256  whisper-out/ggml-$WHISPER_MODEL.bin" | sha256sum -c -
+          ldd whisper-out/whisper-cli
+          # No AVX-512 (zmm registers) may sneak in, or it crashes on the Deck.
+          if objdump -d whisper-out/whisper-cli | grep -q '%zmm'; then
+            echo "whisper-cli uses AVX-512" >&2; exit 1
+          fi
+          # Real transcription with the exact model we ship.
+          out="$(whisper-out/whisper-cli -m "whisper-out/ggml-$WHISPER_MODEL.bin"                  -f /tmp/whisper.cpp/samples/jfk.wav -nt -np -t 4 2>/dev/null)"
+          echo "$out"
+          echo "$out" | grep -qi "ask not what your country"
+
+      - name: Build
+        run: |
+          mkdir -p bin
+          odin build src/app -out:bin/doodle -o:speed -no-bounds-check
+
+      - name: Package
+        run: |
+          set -eu
+          pkg=dist/doodle
+          mkdir -p "$pkg/bin"
+          cp bin/doodle "$pkg/bin/"
+          cp -r assets "$pkg/"
+          # Bundle SDL2 next to the binary and point the loader at it.
+          sdl="$(ldd bin/doodle | awk '/libSDL2/ {print $3}')"
+          cp -L "$sdl" "$pkg/bin/"
+          patchelf --set-rpath '$ORIGIN' "$pkg/bin/doodle"
+          # The runtime's libSDL2 is sdl2-compat, which dlopen()s libSDL3.so.0:
+          # bundle SDL3 too, and give the shim an $ORIGIN runpath so its
+          # dlopen finds the bundled copy first.
+          if grep -aq 'libSDL3.so.0' "$pkg/bin/libSDL2-2.0.so.0"; then
+            sdl3="$(ldconfig -p | awk '/libSDL3\.so\.0 / {print $NF; exit}')"
+            [ -n "$sdl3" ] || { echo "sdl2-compat needs libSDL3.so.0 but none found" >&2; exit 1; }
+            cp -L "$sdl3" "$pkg/bin/libSDL3.so.0"
+            patchelf --set-rpath '$ORIGIN' "$pkg/bin/libSDL2-2.0.so.0"
+          fi
+          # Speech-to-text: whisper-cli beside doodle, model in models/.
+          cp whisper-out/whisper-cli "$pkg/bin/"
+          mkdir -p "$pkg/models" "$pkg/licenses"
+          cp "whisper-out/ggml-$WHISPER_MODEL.bin" "$pkg/models/"
+          cp /tmp/whisper.cpp/LICENSE "$pkg/licenses/whisper.cpp-LICENSE"
+          readelf -d "$pkg/bin/doodle" | grep -E 'RUNPATH|NEEDED'
+          ls -l "$pkg/bin" "$pkg/models"
+
+      - name: Check bundled libraries load
+        run: |
+          # Load the bundled SDL2 and confirm every SDL library resolves from dist/.
+          LD_DEBUG=libs python3 -c "import ctypes; ctypes.CDLL('dist/doodle/bin/libSDL2-2.0.so.0').SDL_GetVersion" 2> ld.log || true
+          grep -E 'calling init: .*libSDL' ld.log
+          if grep -E 'calling init: .*libSDL' ld.log | grep -v 'dist/doodle/bin/'; then
+            echo "an SDL library was loaded from outside the package" >&2; exit 1
+          fi
+          # And the binary itself resolves SDL2 from its own folder.
+          ldd dist/doodle/bin/doodle | grep SDL | tee /dev/stderr | grep -q 'dist/doodle/bin/'
+
+      - name: Archive
+        run: |
+          echo "${{ needs.version.outputs.version }} (${GITHUB_SHA::7}, Odin ${ODIN_TAG}, whisper.cpp ${WHISPER_TAG} ${WHISPER_MODEL}, linux-x64 ubuntu-22.04)" > dist/doodle/VERSION
+          tar -czf "doodle-linux-${{ needs.version.outputs.version }}.tar.gz" -C dist doodle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doodle-linux
+          path: doodle-linux-*.tar.gz
+          if-no-files-found: error
+
   # ---- Windows (x64) ----
   build-windows:
     needs: version
@@ -346,7 +497,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [version, build-steamos, build-windows]
+    needs: [version, build-steamos, build-linux, build-windows]
     if: ${{ inputs.publish }}
     runs-on: ubuntu-latest
     permissions:
@@ -364,12 +515,14 @@ jobs:
           set -eu
           flags=""
           if [ "${{ inputs.prerelease }}" = "true" ]; then flags="--prerelease"; fi
-          # Also attach fixed-name copies so .../releases/latest/download/doodle-steamos.tar.gz
-          # and .../doodle-windows.zip always point at the newest release.
+          # Also attach fixed-name copies so .../releases/latest/download/doodle-steamos.tar.gz,
+          # .../doodle-linux.tar.gz and .../doodle-windows.zip always point at the newest release.
           steamos="$(ls doodle-steamos-*.tar.gz)"
+          linux="$(ls doodle-linux-*.tar.gz)"
           windows="$(ls doodle-windows-*.zip)"
           cp "$steamos" doodle-steamos.tar.gz
+          cp "$linux" doodle-linux.tar.gz
           cp "$windows" doodle-windows.zip
-          gh release create "$TAG" "$steamos" doodle-steamos.tar.gz "$windows" doodle-windows.zip \
+          gh release create "$TAG" "$steamos" doodle-steamos.tar.gz "$linux" doodle-linux.tar.gz "$windows" doodle-windows.zip \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Doodle $TAG" --generate-notes $flags

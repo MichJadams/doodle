@@ -38,7 +38,7 @@ Need more detail (SDL2, Whisper, Steam Deck setup)? See [`docs/INSTALL.md`](docs
 
 ### SteamOS release builds
 
-A manual GitHub Actions workflow builds Doodle in Valve's Steam Linux Runtime ("sniper") SDK and on Windows (x64), and publishes a release with `doodle-steamos-<version>.tar.gz` and `doodle-windows-<version>.zip`:
+A manual GitHub Actions workflow builds Doodle in Valve's Steam Linux Runtime ("sniper") SDK, on Ubuntu 22.04 and on Windows (x64), and publishes a release with `doodle-steamos-<version>.tar.gz`, `doodle-linux-<version>.tar.gz` and `doodle-windows-<version>.zip`:
 
 ```sh
 gh workflow run release-steamos.yml -f version=0.1.0   # add -f prerelease=true for a test build
@@ -47,6 +47,7 @@ gh run watch                                            # follow it
 ```
 
 On Windows, unzip `doodle-windows.zip` anywhere and run `doodle\bin\doodle.exe` (SDL2, speech-to-text and the model are included).
+On other Linux desktops (Ubuntu 22.04 or newer, Debian 12, ...), unpack `doodle-linux.tar.gz` and run `doodle/bin/doodle` (SDL2, speech-to-text and the model are included).
 
 On the Deck, `tools/deck_install.sh [tag]` downloads a release into `~/Applications/doodle`. Without a checkout:
 
