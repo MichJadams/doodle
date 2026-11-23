@@ -173,6 +173,7 @@ main :: proc() {
 		reset_edges(&raw)
 
 		clear(&events)
+		win.dpad_no_repeat = g_recording // a held d-pad repeats, except while dictating (Down ends a word)
 		trace_poll(win, &events) // TRACE hook (was: platform.poll_events)
 		for e in events {
 			if _, is_quit := e.(platform.Quit_Event); is_quit {

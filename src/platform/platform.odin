@@ -13,7 +13,19 @@ Window :: struct {
 	width:      i32,
 	height:     i32,
 	controller: ^sdl.GameController,
+	dpad:       [4]Dpad_Hold, // Up, Down, Left, Right: held pad d-pad buttons, for auto-repeat
+	dpad_no_repeat: bool,     // set by the app: no auto-repeat now (dictating: Down ends a word)
 }
+
+// A held d-pad button: when it went down and when it last fired.
+Dpad_Hold :: struct { held: bool, down_at, last: f64 }
+
+// Holding a pad d-pad direction repeats it like a held keyboard arrow: after
+// DPAD_REPEAT_DELAY, a press every DPAD_REPEAT_EVERY seconds. The repeats are
+// ordinary press events, so the trace records them and a replay feeds the
+// same moves back (keyboard arrows already repeat: the OS sends repeat KEYDOWNs).
+DPAD_REPEAT_DELAY :: 0.35
+DPAD_REPEAT_EVERY :: 0.07
 
 Button :: enum {
 	A, B, X, Y,
@@ -143,17 +155,44 @@ poll_events :: proc(win: ^Window, out: ^[dynamic]Event) {
 		case .CONTROLLERBUTTONDOWN:
 			if btn, ok := map_button(sdl.GameControllerButton(e.cbutton.button)); ok {
 				append(out, Button_Event{btn, true})
+				if k, dir := dpad_index(btn); dir {
+					t := now_seconds()
+					win.dpad[k] = {held = true, down_at = t, last = t}
+				}
 			}
 		case .CONTROLLERBUTTONUP:
 			if btn, ok := map_button(sdl.GameControllerButton(e.cbutton.button)); ok {
 				append(out, Button_Event{btn, false})
+				if k, dir := dpad_index(btn); dir do win.dpad[k].held = false
 			}
+		case .CONTROLLERDEVICEREMOVED:
+			win.dpad = {} // a held button can't be released any more
 		case .CONTROLLERAXISMOTION:
 			if ax, ok := map_axis(sdl.GameControllerAxis(e.caxis.axis)); ok {
 				append(out, Axis_Event{ax, f32(e.caxis.value) / 32767.0})
 			}
 		}
 	}
+	dpad_repeat_tick(win, now_seconds(), out)
+}
+
+// dpad_repeat_tick: the auto-repeat presses of held d-pad directions at time t
+// (see DPAD_REPEAT_DELAY).
+dpad_repeat_tick :: proc(win: ^Window, t: f64, out: ^[dynamic]Event) {
+	for &h, k in win.dpad {
+		if !h.held || win.dpad_no_repeat || t - h.down_at < DPAD_REPEAT_DELAY || t - h.last < DPAD_REPEAT_EVERY do continue
+		h.last = t
+		append(out, Button_Event{DPAD_BUTTONS[k], true})
+	}
+}
+
+@(private = "file")
+DPAD_BUTTONS := [4]Button{.Up, .Down, .Left, .Right}
+
+@(private = "file")
+dpad_index :: proc(b: Button) -> (int, bool) {
+	for d, k in DPAD_BUTTONS do if d == b do return k, true
+	return 0, false
 }
 
 present :: proc(win: ^Window) {
