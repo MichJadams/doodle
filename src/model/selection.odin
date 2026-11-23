@@ -376,12 +376,25 @@ tree_ensure :: proc(app: ^App) {
 		top := app.tree_path[len(app.tree_path) - 1]
 		valid = top.ni < n && top.end_ni < n
 	}
-	if valid do return
+	if valid do return // the cursor hasn't moved since the last walk: carry on from there
 	clear(&app.tree_path)
 	app.tree_sticky = false
 	if n == 0 do return
+	// Start at the cursor's own line - its statement, or the block it opens -
+	// with the constructs around it above it in the path, so Left widens out
+	// (statement -> its loop / if -> the procedure). A closing `}` or a blank
+	// line: the innermost block around it.
 	line := clamp(app.editor_line, 0, n - 1)
-	for r in tree_roots(app) do if line >= r.ni && line <= r.end_ni { append(&app.tree_path, r); break }
+	level := tree_roots(app)
+	for _ in 0 ..< 64 {
+		next := -1
+		for s, i in level do if s.kind != .Unit && s.ni <= line && line <= s.end_ni { next = i; break }
+		if next < 0 do break
+		s := level[next]
+		append(&app.tree_path, s)
+		if s.ni == line do break // this line's statement / block
+		level = tree_children(app, s)
+	}
 	if len(app.tree_path) == 0 {
 		roots := tree_roots(app)
 		if len(roots) > 0 do append(&app.tree_path, roots[len(roots) - 1])
@@ -438,6 +451,26 @@ tree_move :: proc(app: ^App, dx, dy: int) {
 	top := app.tree_path[len(app.tree_path) - 1]
 	tree_sync_cursor(app, top)
 	app.tree_sticky = top.kind == .Unit // keep highlighting this part after RT is released
+}
+
+// tree_select_lines makes the construct on lines [ni, end_ni] (a statement or a
+// block) the RT selection, highlighted until the cursor moves (grab.odin: what
+// was just dropped).
+tree_select_lines :: proc(app: ^App, ni, end_ni: int) {
+	clear(&app.tree_path)
+	level := tree_roots(app)
+	for {
+		next := -1
+		for s, i in level do if s.kind != .Unit && s.ni <= ni && end_ni <= s.end_ni { next = i; break }
+		if next < 0 do break
+		s := level[next]
+		append(&app.tree_path, s)
+		if s.ni == ni && s.end_ni == end_ni do break
+		level = tree_children(app, s)
+	}
+	if len(app.tree_path) == 0 do return
+	tree_sync_cursor(app, app.tree_path[len(app.tree_path) - 1])
+	app.tree_sticky = true
 }
 
 // The highlighted part for the renderer / actions: the RT selection while it's

@@ -178,6 +178,13 @@ App :: struct {
 	tree_dot:    bool,
 	tree_nodes:  int,
 	tree_sticky: bool, // keep highlighting the RT selection after RT is released (Y acts on it)
+	// Grab (grab.odin): the lifted statement / block, sliding among its siblings.
+	grab_active: bool,
+	grab_sel:    Sel,               // the lifted lines (kind Line / Block)
+	grab_top:    bool,              // lifted from the top level (slides only there)
+	grab_proc:   Sel,               // ... else the procedure it can't leave
+	grab_indent: string,            // its first line's indent when lifted (B restores it; owned)
+	grab_ops:    [dynamic]Grab_Op,  // every move, so B can undo them exactly
 
 	// Y on an argument (change.odin): its original fields while the fill menu is open.
 	refill_saved:  [dynamic]Field,
@@ -3075,6 +3082,7 @@ update :: proc(app: ^App, inp: Input) {
 		}
 	case .Editor:
 		if ref_pick_update(app, inp) do return // picking a name for "Reference"
+		if grab_update(app, inp, keys) do return // something is lifted: slide / drop / put back (grab.odin)
 		if mod_pick_update(app, inp) do return // picking a declaration for a modifier (modifiers.odin)
 		keymap_run(app, keys.fired)
 		if app.state != .Editor do return // an action opened a menu
@@ -3142,6 +3150,7 @@ keymap_run :: proc(app: ^App, fired: Actions) {
 		case .Walk_In:     tree_move(app, +1, 0)
 		case .Walk_Out:    tree_move(app, -1, 0)
 		case .Format_File: format_doc(app)
+		case .Grab:        grab_start(app) // lift the RT selection (grab.odin)
 		case .Docs, .Copy, .Save_As, .Run_List, .Files, .Run_Favorite, .Run_Tests, .Prev_File, .Key_Layout:
 			app.requests += {a}
 		}

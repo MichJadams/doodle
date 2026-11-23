@@ -26,6 +26,7 @@ Action :: enum u8 {
 	Run_Favorite, Run_Tests, Talk, IDE_Menu,
 	Walk_Prev, Walk_Next, Walk_In, Walk_Out,
 	Format_File, Prev_File, Key_Layout,
+	Grab, // appended: the enum order is only internal (the file uses ACTION_INFO.key)
 }
 Actions :: bit_set[Action]
 
@@ -72,6 +73,7 @@ ACTION_INFO := [Action]Action_Info{
 	.Format_File  = {key = "format_file",  label = "Format file",  glyph = "~", hint = "fix indentation and blank lines"},
 	.Prev_File    = {key = "prev_file",    label = "Previous file", glyph = "P", hint = "switch back to the file you had before"},
 	.Key_Layout   = {key = "key_layout",   label = "Key layout",   glyph = "K", hint = "open this page"},
+	.Grab         = {key = "grab",         label = "Grab / drop",  glyph = "G", hint = "lift the highlighted statement / block, slide it with Up / Down, press again to drop (B puts it back)"},
 }
 
 BUTTON_KEY  := [Pad_Button]string{.Up = "up", .Down = "down", .Left = "left", .Right = "right", .A = "a", .B = "b", .X = "x", .Y = "y"}
@@ -81,9 +83,9 @@ BANK_PREFIX := [BANKS]string{"LT+", "", "RT+"} // "LT+B" matches the hint text t
 
 // The layout Doodle ships with (and what tests get: App.keymap == nil).
 KEYMAP_DEFAULT :: Keymap{slots = {
-	BANK_LT   = {.Up = .None, .Down = .None, .Left = .IDE_Menu, .Right = .None, .A = .Edit, .B = .Delete, .X = .Talk, .Y = .Docs},
+	BANK_LT   = {.Up = .None, .Down = .None, .Left = .IDE_Menu, .Right = .Run_List, .A = .Edit, .B = .Delete, .X = .Talk, .Y = .Docs},
 	BANK_NONE = {.Up = .Move_Up, .Down = .Move_Down, .Left = .Move_Left, .Right = .Move_Right, .A = .Select, .B = .Back, .X = .None, .Y = .Change},
-	BANK_RT   = {.Up = .Walk_Prev, .Down = .Walk_Next, .Left = .Walk_Out, .Right = .Walk_In, .A = .Copy, .B = .Files, .X = .Run_List, .Y = .Save_As},
+	BANK_RT   = {.Up = .Walk_Prev, .Down = .Walk_Next, .Left = .Walk_Out, .Right = .Walk_In, .A = .Copy, .B = .Files, .X = .Grab, .Y = .Save_As},
 }}
 
 // One shared default for nil lookups (not rebuilt on every call).

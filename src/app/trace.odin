@@ -785,6 +785,7 @@ screen_ctx :: proc(m: ^model.App) -> Trace_Ctx {
 	if m.slot_menu != nil do append(&modes, "slot")
 	if m.ctrl_menu != .None do append(&modes, fmt.tprintf("ctrl:%v", m.ctrl_menu))
 	if m.tree_sticky do append(&modes, "tree_sticky")
+	if m.grab_active do append(&modes, "grab") // something is lifted (model/grab.odin)
 	if g_recording do append(&modes, "dictating")
 	if g_save_open && g_save_overwrite != "" do append(&modes, "overwrite_prompt")
 	if g_keys_open && g_keys.picking do append(&modes, "picker")

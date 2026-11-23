@@ -37,8 +37,8 @@ line_balance :: proc(txt: string) -> (delta: int, leading_closers: int) {
 	return
 }
 
-// Set a line's indentation (its leading whitespace) to `indent`.
-@(private = "file")
+// Set a line's indentation (its leading whitespace) to `indent`. (Also used
+// by grab.odin when a lifted statement moves into / out of a block.)
 set_indent :: proc(n: ^Node, indent: string) {
 	if is_blank_line(n^) {
 		for f in n.fields do if len(f.text) > 0 do delete(f.text)

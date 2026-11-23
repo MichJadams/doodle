@@ -370,8 +370,25 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	sy := -g_scroll
 	visible :: proc(y0, y1, top, bottom: f32) -> bool { return y1 > top && y0 < bottom }
 
+	// Lifted with Grab (model/grab.odin): a glowing orange box around its lines.
+	gni, gend, grabbed := model.grab_lines(m)
+	if grabbed && gni >= 0 && gend < n {
+		y0 := lays[gni].y + sy
+		y1 := lays[gend].y + f32(lays[gend].rows) * lh + sy
+		if y1 > top && y0 < bottom {
+			box := gpu.Rect{pad, max(y0, top), f32(w) - pad * 2, min(y1, bottom) - max(y0, top)}
+			pulse := 0.5 + 0.5 * math.sin(f32(g_time) * 4.0)
+			for k in 1 ..= 4 { // the glow: fading outlines outside the box
+				d := f32(k) * 3
+				gpu.draw_rect_outline(r, {box.x - d, box.y - d, box.w + 2 * d, box.h + 2 * d}, 3, {1.00, 0.55, 0.10, (0.20 + 0.15 * pulse) / f32(k)})
+			}
+			gpu.draw_rect(r, box, {1.00, 0.60, 0.15, 0.14 + 0.06 * pulse})
+			gpu.draw_rect_outline(r, box, 2, {0.95, 0.50, 0.05, 0.95})
+		}
+	}
+
 	// A whole line / block selected with RT: shade its rows.
-	if has_hl && hl.fb < 0 && hl.ni >= 0 && hl.end_ni < n {
+	if !grabbed && has_hl && hl.fb < 0 && hl.ni >= 0 && hl.end_ni < n {
 		y0 := lays[hl.ni].y + sy
 		y1 := lays[hl.end_ni].y + f32(lays[hl.end_ni].rows) * lh + sy
 		if y1 > top && y0 < bottom {
@@ -528,8 +545,15 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 		text.draw_centered(r, g_ui, bar, model.mod_pick_banner(m), {0.42, 0.28, 0.00, 1})
 	}
 	// What Y / LT+B do on a highlighted keyword (when, #assert, attributes, ...).
-	if hint := model.rebind_hint(m.keymap, model.ctrl_hint(m)); hint != "" && !m.ref_pick_active {
+	hint := model.rebind_hint(m.keymap, model.ctrl_hint(m))
+	if m.grab_active {
+		// Lifted (model/grab.odin): only these buttons do anything now.
+		hint = "Up/Down move   RT+Up/Down jump   X / A drop   B put back"
+	}
+	if hint != "" && !m.ref_pick_active {
 		hw := text.measure(g_ui, hint).x
+		// On the title bar's own colour, so a long file path under it doesn't show through.
+		gpu.draw_rect(r, {f32(w) - 352 - hw, 8, hw + 24, 34}, COL_BG)
 		text.draw_line(r, g_ui, {f32(w) - 340 - hw, 14}, hint, COL_ACCENT)
 	}
 
