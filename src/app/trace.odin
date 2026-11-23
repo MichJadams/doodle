@@ -815,6 +815,10 @@ screen_ctx :: proc(m: ^model.App) -> Trace_Ctx {
 		c.title = model.slot_name(bank, b)
 		items, _ := screen_items(m)
 		pick(&c, items, g_keys.picking ? g_keys.pick : bank * len(model.KEYS_ROWS) + g_keys.row)
+	case g_vp_open:
+		c.scr = "vendor_path"
+		items, _ := screen_items(m)
+		pick(&c, items, g_vp_index)
 	case g_settings_open:
 		c.scr = "settings"
 		items, _ := screen_items(m)
@@ -894,6 +898,8 @@ screen_items :: proc(m: ^model.App) -> (items: []string, recent: int) {
 			for c in g_run_cmds do append(&out, c.cmd)
 			append(&out, "+ New command")
 		}
+	case g_vp_open:
+		for ch in VP_CHOICES do append(&out, ch)
 	case g_settings_open:
 		for info, k in model.SETTING_INFO do append(&out, fmt.tprintf("%s: %s", info.label, g_settings.on[k] ? "On" : "Off"))
 	case m.state == .Menu:
@@ -999,6 +1005,11 @@ fingerprint :: proc(m: ^model.App) -> u64 {
 	h = fnv_int(h, g_fn_grid.descents)
 	h = fnv_int(h, g_fn_grid.group)
 	h = fnv_int(h, g_fn_grid.item)
+	// The vendor library prompt - only while it's open (older recordings keep their fingerprints).
+	if g_vp_open {
+		h = fnv_int(h, 2)
+		h = fnv_int(h, g_vp_index)
+	}
 	// Settings page and the options - only while it's open, so recordings made
 	// before Settings existed keep their fingerprints (the options only change
 	// what the page shows, and a replay doesn't run programs).

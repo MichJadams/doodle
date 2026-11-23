@@ -133,23 +133,37 @@ run_command :: proc(cmd: string, keep_open := false) {
 	if dir == "" {
 		dir = "."
 	}
+	// The vendor libraries it imports (SDL3.dll, ...) must be findable: maybe
+	// ask first (vendor_path.odin), then run_launch.
+	vendor_run(cmd, dir, keep_open)
+}
+
+// run_launch starts the run, with `lib_dirs` (vendor library folders) on its
+// PATH (Windows) / LD_LIBRARY_PATH (Linux; DYLD_LIBRARY_PATH on macOS).
+run_launch :: proc(cmd, dir: string, keep_open: bool, lib_dirs: []string) {
 	when ODIN_OS == .Windows {
-		run_command_windows(cmd, dir, keep_open)
+		run_command_windows(cmd, dir, keep_open, lib_dirs)
 	} else {
-		run_command_posix(cmd, dir, keep_open)
+		run_command_posix(cmd, dir, keep_open, lib_dirs)
 	}
 }
 
 // run_command_windows opens a new cmd.exe console running cmd in dir.
-run_command_windows :: proc(cmd, dir: string, keep_open: bool) {
+run_command_windows :: proc(cmd, dir: string, keep_open: bool, lib_dirs: []string) {
 	// cmd.exe wants backslashes; quote the path in case it has spaces.
 	win_dir, _ := strings.replace_all(dir, "/", "\\", context.temp_allocator)
 
 	// Make sure `odin` resolves even if Doodle was launched from an environment
 	// whose PATH doesn't include the compiler (e.g. a shell started before PATH changed).
+	// The vendor library folders the project's imports need go on PATH too
+	// (vendor_path.odin): a program using vendor:sdl3 can't start without
+	// SDL3.dll. A DLL next to the program's .exe still wins - Windows looks there first.
 	path_prefix := ""
+	dirs := strings.join(lib_dirs, ";", context.temp_allocator)
 	if od := odin_dir(); od != "" {
-		path_prefix = fmt.tprintf("set \"PATH=%s;%%PATH%%\" && ", od)
+		path_prefix = fmt.tprintf("set \"PATH=%s;%s%s%%PATH%%\" && ", od, dirs, dirs != "" ? ";" : "")
+	} else if dirs != "" {
+		path_prefix = fmt.tprintf("set \"PATH=%s;%%PATH%%\" && ", dirs)
 	}
 
 	// Build command to open a new visible console that stays open:
@@ -170,14 +184,14 @@ run_command_windows :: proc(cmd, dir: string, keep_open: bool) {
 // open it in a terminal window. With no terminal (no display, inside the Steam
 // runtime, DOODLE_TERMINAL=none) it runs in the background and its output goes
 // to <project>/.doodle/run.log instead.
-run_command_posix :: proc(cmd, dir: string, keep_open: bool) {
+run_command_posix :: proc(cmd, dir: string, keep_open: bool, lib_dirs: []string) {
 	abs_dir := dir
 	if a, err := os.get_absolute_path(dir, context.temp_allocator); err == nil do abs_dir = a
 
 	tmp, terr := os.temp_directory(context.temp_allocator)
 	if terr != nil do tmp = "/tmp"
 	script := fmt.tprintf("%s/doodle_run.sh", tmp)
-	body := run_script_text(abs_dir, odin_dir(), cmd, keep_open)
+	body := run_script_text(abs_dir, odin_dir(), cmd, keep_open, lib_dirs)
 	if os.write_entire_file(script, transmute([]byte)body) != nil {
 		set_status("run: couldn't write the run script")
 		return

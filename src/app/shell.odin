@@ -70,11 +70,16 @@ sh_quote :: proc(s: string, allocator := context.temp_allocator) -> string {
 // run_script_text builds the sh script a Run executes: cd into the project,
 // put Odin on PATH, run the command, and (like the Windows console) wait for
 // Enter when it fails, or always when keep_open is set.
-run_script_text :: proc(dir, odin_dir, cmd: string, keep_open: bool, allocator := context.temp_allocator) -> string {
+run_script_text :: proc(dir, odin_dir, cmd: string, keep_open: bool, lib_dirs: []string = nil, allocator := context.temp_allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "#!/bin/sh\n")
 	fmt.sbprintf(&b, "cd %s || exit 1\n", sh_quote(dir))
 	if odin_dir != "" do fmt.sbprintf(&b, "PATH=%s:\"$PATH\"; export PATH\n", sh_quote(odin_dir))
+	// The vendor library folders the project's imports need (vendor_path.odin).
+	if len(lib_dirs) > 0 {
+		v := "DYLD_LIBRARY_PATH" when ODIN_OS == .Darwin else "LD_LIBRARY_PATH"
+		fmt.sbprintf(&b, "%s=%s${%s:+:$%s}; export %s\n", v, sh_quote(strings.join(lib_dirs, ":", context.temp_allocator)), v, v, v)
+	}
 	fmt.sbprintf(&b, "printf '%%s\\n\\n' %s\n", sh_quote(fmt.tprintf("$ %s", cmd)))
 	fmt.sbprintf(&b, "(\n%s\n)\n", cmd) // subshell: an `exit`/`cd` in cmd can't skip the pause
 	strings.write_string(&b, "status=$?\n")

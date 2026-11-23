@@ -191,7 +191,7 @@ main :: proc() {
 		down_edge := inp.down
 		// Talk is a hold on whichever button the layout gives it (model/keymap.odin).
 		talk_down := model.keymap_holding(m.keymap, raw.held, inp.lt_held, inp.rt_held, .Talk)
-		mic_hold := !g_keys_open && !g_settings_open && talk_down
+		mic_hold := !g_keys_open && !g_settings_open && !g_vp_open && talk_down
 		// A Talk press made while an overlay is open belongs to the overlay (Talk on
 		// plain Y, and Y closes the docs): it stays stale until released.
 		if !talk_down do g_talk_stale = false
@@ -230,7 +230,10 @@ main :: proc() {
 		}
 
 		// Route input to file-nav handler when active (suppresses normal editor input).
-		if g_save_open {
+		if g_vp_open {
+			// "Library not on your PATH" before a run (vendor_path.odin) owns all input.
+			handle_vendor_prompt_input(&raw)
+		} else if g_save_open {
 			// The Save-as / Rename dialog owns all input while it's open (rename is
 			// opened from file navigation, so it comes first).
 			handle_save_input(&m, &raw)
@@ -369,6 +372,7 @@ main :: proc() {
 		if g_doc_open do draw_doc_panel(r, w, h)
 		if g_keys_open do draw_keys_page(r, w, h)
 		if g_settings_open do draw_settings_page(r, w, h)
+		if g_vp_open do draw_vendor_prompt(r, w, h) // on top: it can come up over the Run list
 		// On the Key Layout page the HUD previews the cursor's bank.
 		hud_inp := inp
 		if g_keys_open {
@@ -916,7 +920,7 @@ draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
 
 // overlay_open: something owns the input instead of the editor / main menu.
 overlay_open :: proc() -> bool {
-	return g_filenav || g_save_open || g_doc_open || g_run_open || g_proj_open || g_np_open || g_keys_open || g_settings_open
+	return g_filenav || g_save_open || g_doc_open || g_run_open || g_proj_open || g_np_open || g_keys_open || g_settings_open || g_vp_open
 }
 
 draw_hud :: proc(r: ^gpu.Renderer, m: ^model.App, inp: model.Input, w, h: int) {
