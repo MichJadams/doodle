@@ -3,6 +3,8 @@ package main
 // Settings > SETUP: what Doodle needs from the machine, whether it's there,
 // and (A) installing what's missing.
 //
+//   Doodle              this install: up to date, or A updates it from the
+//                       latest GitHub release (updater.odin)
 //   Odin compiler       everything: problem highlighting, Run, Build. A downloads
 //                       the Odin release Doodle is built with (ODIN_TAG),
 //                       checks its SHA-256, and unpacks it into
@@ -48,11 +50,12 @@ when ODIN_OS == .Windows {
 ODIN_URL :: "https://github.com/odin-lang/Odin/releases/download/" + ODIN_TAG + "/" + ODIN_ASSET
 ODIN_INSTALL_OFFERED :: ODIN_OS == .Windows || ODIN_OS == .Linux
 
-Setup_Item :: enum { Odin, Build_Tools, Clang, Stb, Speech }
+Setup_Item :: enum { Doodle, Odin, Build_Tools, Clang, Stb, Speech }
 
 // setup_items: this OS's rows, in order. Temp-allocated.
 setup_items :: proc() -> []Setup_Item {
-	out := make([dynamic]Setup_Item, 0, 5, context.temp_allocator)
+	out := make([dynamic]Setup_Item, 0, 6, context.temp_allocator)
+	append(&out, Setup_Item.Doodle)
 	append(&out, Setup_Item.Odin)
 	when ODIN_OS == .Windows do append(&out, Setup_Item.Build_Tools)
 	when TOOLCHAIN_OFFERED do append(&out, Setup_Item.Clang)
@@ -62,6 +65,7 @@ setup_items :: proc() -> []Setup_Item {
 }
 
 SETUP_LABELS := [Setup_Item]string{
+	.Doodle      = "Doodle",
 	.Odin        = "Odin compiler",
 	.Build_Tools = "Microsoft C++ Build Tools",
 	.Clang       = "clang (to build and run programs)",
@@ -132,8 +136,17 @@ run_logged :: proc(cmd, log: string) -> bool {
 	return libc.system(strings.clone_to_cstring(full, context.temp_allocator)) == 0
 }
 
+// run_cmd: a shell command (cmd.exe on Windows, sh elsewhere); true = it worked.
+run_cmd :: proc(cmd: string) -> bool {
+	when ODIN_OS == .Windows {
+		full := fmt.tprintf("\"%s\"", cmd) // cmd /c strips the outer quotes
+	} else {
+		full := cmd
+	}
+	return libc.system(strings.clone_to_cstring(full, context.temp_allocator)) == 0
+}
+
 // q: a path or URL quoted for this OS's shell.
-@(private = "file")
 q :: proc(s: string) -> string {
 	when ODIN_OS == .Windows do return fmt.tprintf("\"%s\"", s)
 	else do return sh_quote(s)
@@ -142,7 +155,6 @@ q :: proc(s: string) -> string {
 // sys_tool: the system's own curl / tar. On Windows the ones in System32
 // (Windows 10+): another `tar` earlier on PATH - Git for Windows' GNU tar -
 // reads "C:" in a path as a remote host. Temp-allocated, quoted.
-@(private = "file")
 sys_tool :: proc(name: string) -> string {
 	when ODIN_OS == .Windows {
 		root := os.get_env("SystemRoot", context.temp_allocator)
@@ -344,6 +356,7 @@ setup_install_build_tools :: proc() {
 
 // setup_refresh: look again (the page opening, and while it's open).
 setup_refresh :: proc() {
+	if !g_up_looked do update_check() // once per session (updater.odin)
 	when TOOLCHAIN_OFFERED do toolchain_refresh()
 	when ODIN_OS == .Windows {
 		if sync.atomic_load(&g_bt_found) == 0 || g_time - g_bt_last > 4 do bt_check()
@@ -353,6 +366,8 @@ setup_refresh :: proc() {
 // setup_action: A on a row.
 setup_action :: proc(it: Setup_Item) {
 	switch it {
+	case .Doodle:
+		update_action()
 	case .Odin:
 		if odin_root() == "" do setup_install_odin()
 	case .Build_Tools:
@@ -370,6 +385,8 @@ Setup_Look :: enum { Good, Missing, Busy, Bad, Info }
 // setup_row: the row's value, the line under it, and how it looks.
 setup_row :: proc(it: Setup_Item) -> (value, about: string, look: Setup_Look) {
 	switch it {
+	case .Doodle:
+		return update_row()
 	case .Odin:
 		root := odin_root()
 		switch {
@@ -434,3 +451,4 @@ setup_missing :: proc() -> string {
 	if odin_root() == "" do return "Odin isn't installed: main menu > Settings > Setup can install it"
 	return ""
 }
+

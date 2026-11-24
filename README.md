@@ -44,6 +44,8 @@ On Windows, unzip `doodle-windows.zip` anywhere and run `doodle\bin\doodle.exe` 
 To build and run your programs it also needs the Odin compiler and Microsoft's C++ Build Tools: **main menu > Settings > Setup** shows whether they're there and installs what's missing (Odin is downloaded and checked by Doodle; the Build Tools come from Microsoft's own installer, through `winget`).
 On other Linux desktops (Ubuntu 22.04 or newer, Debian 12, ...), unpack `doodle-linux.tar.gz` and run `doodle/bin/doodle` (SDL2, speech-to-text and the model are included).
 
+**Updating:** an installed release updates itself: **main menu > Settings > Setup > Doodle** checks GitHub for a newer release, then downloads it (checked against the release's checksum) and installs it. Your settings and key layout are kept. On Linux and the Deck it's swapped in straight away and used from the next start; on Windows, Doodle closes, the new version is copied in, and it starts again.
+
 On the Deck, `tools/deck_install.sh [tag]` downloads a release into `~/Applications/doodle`. Without a checkout:
 
 ```sh
