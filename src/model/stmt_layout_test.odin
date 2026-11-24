@@ -301,10 +301,7 @@ y_option :: proc(t: ^testing.T, app: ^App, ni: int, text, option: string, loc :=
 // Assignment > Assignment on the "●" line ni, Y on the target -> `target`.
 @(private = "file")
 assign_to :: proc(t: ^testing.T, app: ^App, ni: int, target: string, loc := #caller_location) {
-	if add_in_body(t, app, ni, "Assignment", "Assignment", loc) < 0 do return
-	back_out(app)
-	for f, i in app.doc.nodes[ni].fields do if f.editable { focus_field_index(app, ni, i); break }
-	change_selected(app)
+	if add_in_body(t, app, ni, "Assignment", "Assignment", loc) < 0 do return // the target pick opens at once
 	if ref_choose(t, app, target, loc) && app.state == .Radial do pick(t, app, target, loc)
 }
 
@@ -495,6 +492,7 @@ test_layout_file_scope_comment_and_blank :: proc(t: ^testing.T) {
 	defer cleanup(&app)
 	load(&app, "package main\n\nA :: 1\nB :: 2\nc: int = A\n")
 	add_at_dot(t, &app, line_with(&app, "c: int"), "File Setup", "Comments")
+	pick(t, &app, "Single-line comment") // File Setup > Comments is a submenu now
 	ci := line_with(&app, "c: int") - 1
 	say_comment(t, &app, ci, "Stands in for Casey's `static DWORD Operation` inside the callback")
 	add_at_dot(t, &app, ci, "File Setup", "Blank line")
@@ -724,8 +722,10 @@ test_layout_handmade_from_empty_project :: proc(t: ^testing.T) {
 	testing.expect_value(t, line_src(&app, g), "operation: u32 = WHITENESS")
 	// The comments right above WHITENESS and operation, a blank line before the second.
 	add_at_dot(t, &app, line_with(&app, "WHITENESS ::"), "File Setup", "Comments")
+	pick(t, &app, "Single-line comment") // File Setup > Comments is a submenu now
 	say_comment(t, &app, line_with(&app, "WHITENESS ::") - 1, "Kept local in case your Odin version's gdi32 bindings don't export these")
 	add_at_dot(t, &app, line_with(&app, "operation:"), "File Setup", "Comments")
+	pick(t, &app, "Single-line comment") // File Setup > Comments is a submenu now
 	ci := line_with(&app, "operation:") - 1
 	say_comment(t, &app, ci, "Stands in for Casey's `static DWORD Operation` inside the callback")
 	add_at_dot(t, &app, ci, "File Setup", "Blank line")

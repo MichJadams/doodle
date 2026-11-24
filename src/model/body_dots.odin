@@ -18,7 +18,7 @@ import "core:strings"
 
 // A blank line (only whitespace, no dots).
 is_blank_line :: proc(n: Node) -> bool {
-	for f in n.fields do if f.slot || strings.trim_space(f.text) != "" do return false
+	for f in n.fields do if f.slot || f.kind == COMMENT_KIND || strings.trim_space(f.text) != "" do return false // a comment's (empty) text isn't a blank line
 	return true
 }
 
@@ -52,9 +52,10 @@ body_points :: proc(app: ^App, allocator := context.temp_allocator) -> []bool {
 		// After a run of blank lines: a dot on the first real line (not between two
 		// blanks, and not before a closing `}`, so an empty function `{\n\n}` keeps one dot).
 		after_blank_ok := !is_blank_line(prev) || (!is_blank_line(cur) && !strings.has_prefix(strings.trim_space(node_text(cur, context.temp_allocator)), "}"))
-		if in_code && i > 0 && !is_body_slot_line(cur) && !is_body_slot_line(prev) && after_blank_ok {
+		if in_code && i > 0 && !is_body_slot_line(cur) && !is_body_slot_line(prev) && after_blank_ok && !inside_block_comment(app, i) {
 			bp[i] = true
 		}
+		if in_block_comment(cur) do continue // its braces are comment text (block_comment.odin)
 		// Track braces on this line (outside strings and comments).
 		txt := node_text(app.doc.nodes[i], context.temp_allocator)
 		quote: u8 = 0
@@ -199,7 +200,8 @@ body_insert_cancel :: proc(app: ^App) {
 	focus_dot_at(app, ni)
 }
 
-@(private = "file")
+// remove_node deletes line ni (and frees it). (Also: field_access.odin, an
+// Assignment whose target wasn't picked.)
 remove_node :: proc(app: ^App, ni: int) {
 	for f in app.doc.nodes[ni].fields do if len(f.text) > 0 do delete(f.text)
 	delete(app.doc.nodes[ni].fields)

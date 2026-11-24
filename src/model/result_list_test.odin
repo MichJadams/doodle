@@ -231,3 +231,37 @@ test_result_list_loader_leaves_others :: proc(t: ^testing.T) {
 	testing.expect_value(t, shown(&app, c), "return fmt.println(\"hi\", ●)○")
 	testing.expect_value(t, saved(&app), src)
 }
+
+// LT+B on a return without a value (`return` loaded from a file, or an
+// unfilled `return ●`) deletes the statement: its dot is the only stop there.
+@(test)
+test_delete_bare_return :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	doc_from_source(&app, "package main\n\nmain :: proc() {\n\tfor {\n\t\tif true {\n\t\t\treturn\n\t\t}\n\t\treturn\n\t}\n}\n")
+	r := -1
+	for n, i in app.doc.nodes do if strings.trim_space(node_text(n, context.temp_allocator)) == "return" { r = i; break }
+	if !testing.expect(t, r >= 0, "the first return") do return
+	focus_field_index(&app, r, nth_dot(&app, r, 0)) // its only stop: the extra dot
+	delete_selected(&app)
+	update(&app, Input{})
+	testing.expect_value(t, saved(&app), "package main\n\nmain :: proc() {\n\tfor {\n\t\tif true {\n\t\t}\n\t\treturn\n\t}\n}\n")
+
+	// A menu-built `return ●`, left unfilled: LT+B on its dot deletes it too.
+	b: App
+	defer cleanup(&b)
+	b.state = .Editor
+	doc_from_source(&b, "package main\n\nmain :: proc() {\n}")
+	closing := -1
+	for n, i in b.doc.nodes do if strings.trim_space(node_text(n, context.temp_allocator)) == "}" do closing = i
+	focus_dot_at(&b, closing)
+	update(&b, Input{confirm = true})
+	if pick(t, &b, "Jumps and cleanup") do pick(t, &b, "Return")
+	rr := line_of(&b, "return")
+	if !testing.expect(t, rr >= 0, "return ●") do return
+	focus_field_index(&b, rr, nth_dot(&b, rr, 0))
+	delete_selected(&b)
+	update(&b, Input{})
+	testing.expect(t, line_of(&b, "return") < 0, "the unfilled return is gone")
+}

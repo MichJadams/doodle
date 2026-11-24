@@ -290,10 +290,7 @@ rename_nth :: proc(app: ^App, ni: int, name: string, nth := 0) {
 // Assignment > Assignment on the green dot before line `at`, Y on the target -> `target`.
 @(private = "file")
 add_assignment :: proc(t: ^testing.T, app: ^App, at: int, target: string, loc := #caller_location) -> int {
-	ni := add_stmt(t, app, at, "Assignment", "Assignment", loc)
-	back_out(app)
-	for f, i in app.doc.nodes[ni].fields do if f.editable { focus_field_index(app, ni, i); break }
-	change_selected(app) // Y on the target
+	ni := add_stmt(t, app, at, "Assignment", "Assignment", loc) // the target pick opens at once
 	if ref_choose(t, app, target, loc) && app.state == .Radial do pick(t, app, target, loc)
 	return ni
 }

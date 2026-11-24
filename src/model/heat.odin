@@ -193,7 +193,7 @@ heat_is_action :: proc(app: ^App, e: Entry) -> bool {
 	// ctrl_menu_choose / loop_option_choose / branch_fill: "not possible here", the menu stays open.
 	if e.dim && (app.ctrl_menu != .None || e.fill == CTRL_MENU_FILL || e.fill == LOOP_OPT_FILL || e.fill == BR_OPT_FILL) do return false
 	switch e.fill {
-	case CONV_FORM_FILL, NUM_KEY_FILL, REF_AS_FILL, RENAME_FILL, INDEX_FILL:
+	case CONV_FORM_FILL, NUM_KEY_FILL, REF_AS_FILL, RENAME_FILL, INDEX_FILL, WORD_FILL:
 		return false
 	case TXT_FILL:
 		return e.call_name == "case" || e.call_name == "esc" // not "wcase:<i>" / "tick:<i>:<j>" (comment words)

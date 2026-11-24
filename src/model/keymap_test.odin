@@ -66,7 +66,7 @@ test_keymap_defaults :: proc(t: ^testing.T) {
 	testing.expect_value(t, keymap_get(nil, BANK_RT, .B), Action.Files)
 	testing.expect_value(t, keymap_get(nil, BANK_RT, .X), Action.Grab)     // lift / drop (grab.odin)
 	testing.expect_value(t, keymap_get(nil, BANK_LT, .Right), Action.Run_List)
-	testing.expect_value(t, keymap_get(nil, BANK_RT, .Y), Action.Save_As)
+	testing.expect_value(t, keymap_get(nil, BANK_RT, .Y), Action.Save)
 	testing.expect_value(t, keymap_get(nil, BANK_RT, .Up), Action.Walk_Prev)
 	testing.expect_value(t, keymap_get(nil, BANK_RT, .Left), Action.Walk_Out)
 }
@@ -114,7 +114,7 @@ test_keymap_update_requests :: proc(t: ^testing.T) {
 	defer cleanup(&app)
 	setup(&app)
 	update(&app, Input{y = true, rt_held = true})
-	testing.expect_value(t, app.requests, Actions{.Save_As})
+	testing.expect_value(t, app.requests, Actions{.Save})
 	testing.expect_value(t, app.state, State.Editor)
 	app.requests = {}
 	update(&app, Input{cancel = true, rt_held = true})
@@ -189,13 +189,13 @@ test_keymap_custom_layout :: proc(t: ^testing.T) {
 @(test)
 test_keymap_assign_rules :: proc(t: ^testing.T) {
 	km := KEYMAP_DEFAULT
-	res, ob, obtn, moved := keymap_assign(&km, BANK_LT, .Y, .Save_As) // swap with Docs
+	res, ob, obtn, moved := keymap_assign(&km, BANK_LT, .Y, .Save) // swap with Docs
 	testing.expect_value(t, res, Assign_Result.Swapped)
 	testing.expect_value(t, ob, BANK_RT)
 	testing.expect_value(t, obtn, Pad_Button.Y)
 	testing.expect_value(t, moved, Action.Docs)
 	testing.expect_value(t, km.slots[BANK_RT][.Y], Action.Docs)
-	testing.expect_value(t, km.slots[BANK_LT][.Y], Action.Save_As)
+	testing.expect_value(t, km.slots[BANK_LT][.Y], Action.Save)
 	testing.expect(t, keymap_valid(&km))
 
 	km = KEYMAP_DEFAULT
@@ -271,7 +271,7 @@ test_keymap_round_trip :: proc(t: ^testing.T) {
 @(test)
 test_keymap_parse_repairs :: proc(t: ^testing.T) {
 	// Duplicates (first wins), a locked slot, Talk on the d-pad, a walk on plain X,
-	// unknown names, and no line for Save_As's slot after it moved away.
+	// unknown names, and no line for Save's slot after it moved away.
 	text := "doodle-keys 1\n" +
 		"plain\tx\tdocs\n" +
 		"lt\ty\tdocs\n" +       // duplicate: dropped
@@ -280,7 +280,7 @@ test_keymap_parse_repairs :: proc(t: ^testing.T) {
 		"plain\ty\twalk_next\n" + // walks need a trigger
 		"rt\tleft\tbogus\n" +   // unknown action
 		"mid\tx\tedit\n" +      // unknown bank
-		"rt\ty\tnone\n" +       // Save_As loses its button...
+		"rt\ty\tnone\n" +       // Save loses its button...
 		"lt\tb\tnone\n"         // ...and Delete too
 	km, _ := keymap_parse(text)
 	testing.expect(t, keymap_valid(&km), "repaired")
@@ -292,7 +292,7 @@ test_keymap_parse_repairs :: proc(t: ^testing.T) {
 	testing.expect_value(t, km.slots[BANK_RT][.Down], Action.Walk_Next)
 	testing.expect_value(t, km.slots[BANK_LT][.X], Action.Talk)
 	testing.expect_value(t, km.slots[BANK_RT][.Left], Action.Walk_Out) // not mentioned (bogus line skipped): default
-	testing.expect_value(t, km.slots[BANK_RT][.Y], Action.Save_As)     // required: back home
+	testing.expect_value(t, km.slots[BANK_RT][.Y], Action.Save)     // required: back home
 	testing.expect_value(t, km.slots[BANK_LT][.B], Action.Delete)
 	testing.expect_value(t, km.slots[BANK_LT][.A], Action.Edit)        // missing line: default
 
@@ -307,8 +307,8 @@ test_keymap_parse_repairs :: proc(t: ^testing.T) {
 	km3, _ := keymap_parse("doodle-keys 1\nrt\ty\tdocs\nlt\ty\tnone\n")
 	testing.expect(t, keymap_valid(&km3))
 	testing.expect_value(t, km3.slots[BANK_RT][.Y], Action.Docs)
-	sb, sbtn, ok := keymap_find(&km3, .Save_As)
-	testing.expect(t, ok && keymap_allows(sb, sbtn, .Save_As))
+	sb, sbtn, ok := keymap_find(&km3, .Save)
+	testing.expect(t, ok && keymap_allows(sb, sbtn, .Save))
 }
 
 @(test)
@@ -316,7 +316,7 @@ test_keymap_names_and_hints :: proc(t: ^testing.T) {
 	testing.expect_value(t, slot_name(BANK_LT, .A), "LT+A")
 	testing.expect_value(t, slot_name(BANK_NONE, .Y), "Y")
 	testing.expect_value(t, slot_name(BANK_RT, .Up), "RT+Up")
-	testing.expect_value(t, action_slot_name(nil, .Save_As), "RT+Y")
+	testing.expect_value(t, action_slot_name(nil, .Save), "RT+Y")
 
 	h := "Y: add else when    LT+B: remove branch"
 	testing.expect_value(t, rebind_hint(nil, h), h)
@@ -341,9 +341,9 @@ test_keymap_try_leaves_the_keymap_alone :: proc(t: ^testing.T) {
 	res, _, _, moved = keymap_try(&km, BANK_LT, .X, .Walk_Next) // Talk would land on RT+Down
 	testing.expect_value(t, res, Assign_Result.Not_Here)
 	testing.expect_value(t, moved, Action.Talk)
-	res, _, _, moved = keymap_try(&km, BANK_RT, .Y, .Format_File) // Save as would lose its button
+	res, _, _, moved = keymap_try(&km, BANK_RT, .Y, .Format_File) // Save would lose its button
 	testing.expect_value(t, res, Assign_Result.Needs_Home)
-	testing.expect_value(t, moved, Action.Save_As)
+	testing.expect_value(t, moved, Action.Save)
 	res, _, _, _ = keymap_try(&km, BANK_NONE, .X, .None) // already empty
 	testing.expect_value(t, res, Assign_Result.Same)
 }
@@ -354,4 +354,16 @@ test_walk_natural_only_on_rt :: proc(t: ^testing.T) {
 	testing.expect(t, walk_natural(BANK_RT, .Up, .Walk_Prev))
 	testing.expect(t, !walk_natural(BANK_LT, .Left, .Walk_Out)) // an LT walk must show: blank = unbound there
 	testing.expect(t, !walk_natural(BANK_RT, .Left, .Walk_In))
+}
+
+// A layout saved before Save existed (RT+Y = Save as): Save as keeps RT+Y and
+// Save gets a free button - so old recordings, which pin their layout, replay
+// the same.
+@(test)
+test_keymap_old_save_as_layout :: proc(t: ^testing.T) {
+	km, _ := keymap_parse("doodle-keys 1\nrt\ty\tsave_as\n")
+	testing.expect(t, keymap_valid(&km), "repaired")
+	testing.expect_value(t, km.slots[BANK_RT][.Y], Action.Save_As)
+	b, btn, ok := keymap_find(&km, .Save)
+	testing.expect(t, ok && !(b == BANK_RT && btn == .Y), "Save got another button")
 }

@@ -64,7 +64,7 @@ is_op_field :: proc(f: Field) -> bool {
 // Names, dots, and a declaration's operator (`:=` / `:` / `::`, kind "decl": Y
 // switches between `x := v`, `x: T = v` and `x :: v`), and keywords Y / LT+B act
 // on (kind "kw": when, #assert, attributes, struct directives, calling conventions - ctrl.odin).
-selectable :: proc(f: Field) -> bool { return f.editable || f.slot || f.kind == "decl" || f.kind == KW || f.kind == BR_KW || f.kind == ASSIGN_OP_KIND || f.kind == CONV_KIND || f.kind == IMPORT_PATH_KIND } // BR_KW: if / switch / case (branch.odin); IMPORT_PATH_KIND: an import's "core:fmt"; ASSIGN_OP_KIND: `=` / `+=` (loops.odin); CONV_KIND: `cast(T)` (expr.odin)
+selectable :: proc(f: Field) -> bool { return f.editable || f.slot || f.kind == "decl" || f.kind == KW || f.kind == BR_KW || f.kind == ASSIGN_OP_KIND || f.kind == CONV_KIND || f.kind == IMPORT_PATH_KIND || f.kind == COMMENT_MARK } // BR_KW: if / switch / case (branch.odin); IMPORT_PATH_KIND: an import's "core:fmt"; ASSIGN_OP_KIND: `=` / `+=` (loops.odin); CONV_KIND: `cast(T)` (expr.odin)
 
 // parse_expr builds the unit for the expression in fields [a, b).
 @(private = "file")

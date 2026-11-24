@@ -343,13 +343,10 @@ test_fix_enum_array_index_key :: proc(t: ^testing.T) {
 	k3, _, _ := index_types(&app, Var_Type{"[4]int", ""})
 	testing.expect_value(t, k3.expr, "int")
 	// Assignment > Assignment, Y on its target -> y, then its value: Reference arr -> arr[i].
-	add_at(t, &app, len(app.doc.nodes) - 1, "Assignment", "Assignment")
-	back_out(&app)
+	add_at(t, &app, len(app.doc.nodes) - 1, "Assignment", "Assignment") // the target pick opens at once
 	y := -1
 	for n, i in app.doc.nodes do if has_slot_in(n) && !is_body_slot_line(n) { y = i; break }
 	if !testing.expect(t, y >= 0, "an assignment line") do return
-	for f, i in app.doc.nodes[y].fields do if f.editable && !f.slot { focus_field_index(&app, y, i); break }
-	change_selected(&app)
 	if ref_choose(t, &app, "y") && app.state == .Radial do pick(t, &app, "y")
 	back_out(&app)
 	if !open_dot(t, &app, y, 0) || !pick(t, &app, "Reference") || !ref_choose(t, &app, "arr") do return
@@ -631,15 +628,12 @@ test_fix_assign_ops :: proc(t: ^testing.T) {
 	testing.expect(t, line_with(&app, "n %%= 1") >= 0, "Y > %%=")
 	odin_check(t, "fix_assign_ops", src(&app))
 	// Inserted from the Assignment group; its target picked with Reference is dimmed by type.
-	add_at(t, &app, len(app.doc.nodes) - 1, "Assignment", "%%=")
-	back_out(&app)
+	add_at(t, &app, len(app.doc.nodes) - 1, "Assignment", "%%=") // the target pick opens at once
 	ni := line_with(&app, "%%= ")
 	for k := ni; k >= 0 && k < len(app.doc.nodes); k = line_with(&app, "%%= ", k + 1) {
 		if has_slot_in(app.doc.nodes[k]) { ni = k; break }
 	}
 	if !testing.expectf(t, ni >= 0 && has_slot_in(app.doc.nodes[ni]), "a `● %%%%= ●` line:\n%s", src(&app)) do return
-	for f, i in app.doc.nodes[ni].fields do if f.editable && !f.slot { focus_field_index(&app, ni, i); break }
-	change_selected(&app)
 	if app.ref_pick_active && ref_choose(t, &app, "ratio") do testing.expect(t, dimmed(t, &app, "ratio"), "%%= can't take a f32 target")
 	back_out(&app)
 }

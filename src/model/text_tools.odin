@@ -17,6 +17,8 @@ package model
 
 import "core:strings"
 
+WORDS_LABEL :: "Edit word by word" // into the text: word_edit.odin
+
 TXT_FILL :: "__txt__" // call_name = the tool ("case", "esc", "wcase:<i>", "tick:<i>:<j>"), call_pkg = its argument
 
 Case_Style :: enum { Snake, Upper_Snake, Ada_Case, Camel, Pascal, Joined }
@@ -143,10 +145,10 @@ text_tools_menu :: proc(app: ^App, ni, fi: int) -> []Entry {
 	case "string":
 		esc := make([]Entry, len(ESCAPES))
 		for e, i in ESCAPES do esc[i] = tool(e, "esc", e)
-		return make_slice(group("Case", case_entries(true)), group("Escape", esc))
+		return make_slice(group("Case", case_entries(true)), group("Escape", esc), tool(WORDS_LABEL, "words", ""))
 	case COMMENT_KIND:
 		words := comment_words(f.text)
-		if len(words) == 0 do return nil
+		if len(words) == 0 do return make_slice(tool(WORDS_LABEL, "words", ""))
 		labels := word_labels(words)
 		wcase := make([]Entry, len(words))
 		ticks := make([]Entry, len(words))
@@ -160,7 +162,7 @@ text_tools_menu :: proc(app: ^App, ni, fi: int) -> []Entry {
 			}
 			ticks[i] = group(labels[i], ends)
 		}
-		return make_slice(group("Word case", wcase), group("Backticks", ticks))
+		return make_slice(group("Word case", wcase), group("Backticks", ticks), tool(WORDS_LABEL, "words", ""))
 	case "":
 		if is_number_field(f) do return nil
 		return make_slice(group("Case", case_entries(false)))
@@ -169,9 +171,16 @@ text_tools_menu :: proc(app: ^App, ni, fi: int) -> []Entry {
 }
 
 // open_text_tools (model.odin edit_selected, LT+A): false when the field has none.
-open_text_tools :: proc(app: ^App, ni, fi: int) -> bool {
+open_text_tools :: proc(app: ^App, ni, fi: int, refill := false) -> bool {
 	menu := text_tools_menu(app, ni, fi)
 	if menu == nil do return false
+	if refill { // Y on a string argument: putting another value there comes first
+		with := make([]Entry, len(menu) + 1)
+		with[0] = tool("Replace value", "refill", "")
+		copy(with[1:], menu)
+		delete(menu)
+		menu = with
+	}
 	if app.slot_menu != nil do free_entries(app.slot_menu)
 	app.slot_menu = menu
 	app.slot_ni, app.slot_fi = ni, fi
@@ -249,6 +258,15 @@ replace_words :: proc(t: string, i, j: int, with: string, allocator := context.t
 text_tool :: proc(app: ^App, e: Entry) {
 	ni, fi := app.slot_ni, app.slot_fi
 	ok := ni >= 0 && ni < len(app.doc.nodes) && fi >= 0 && fi < len(app.doc.nodes[ni].fields) && app.doc.nodes[ni].fields[fi].editable
+	if e.call_name == "words" || e.call_name == "refill" {
+		clear_nav(app)
+		app.state = .Editor
+		if app.slot_menu != nil { free_entries(app.slot_menu); app.slot_menu = nil }
+		if !ok do return
+		if e.call_name == "words" do word_edit_start(app, ni, fi) // word_edit.odin
+		else do refill_string(app, ni, fi)
+		return
+	}
 	nt, changed := "", false
 	if ok {
 		t := app.doc.nodes[ni].fields[fi].text
@@ -261,4 +279,15 @@ text_tool :: proc(app: ^App, e: Entry) {
 	if ok do focus_field_index(app, ni, fi)
 	// A declaration's new name: asks whether its uses follow (rename.odin).
 	if changed do rename_field(app, ni, fi, nt)
+}
+
+// refill_string ("Replace value" in Y's text tools on a string argument): the
+// argument becomes a dot again, with the fill menu (change.odin begin_refill).
+refill_string :: proc(app: ^App, ni, fi: int) {
+	focus_field_index(app, ni, fi)
+	lni, u, ok := editor_leaf(app)
+	if !ok do return
+	full, found := find_unit(app.doc.nodes[lni], u.fa, u.fb)
+	if !found || !full.is_arg do return
+	begin_refill(app, lni, full)
 }

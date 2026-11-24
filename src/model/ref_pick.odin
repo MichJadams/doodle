@@ -29,12 +29,16 @@ ref_candidates :: proc(app: ^App) -> []Ref_Target {
 	out := make([dynamic]Ref_Target, 0, 16, context.temp_allocator)
 	tni, tfi := ref_target(app) // loop variables only inside their loop (loops.odin)
 	scope := ref_scope_make(app, tni) // locals only where they're in scope (ref_scope.odin)
+	// Picking what an assignment assigns to: not a name declared with `::` - a
+	// procedure, a type or a constant can't be assigned (field_access.odin).
+	assigning := app.ref_pick_active && app.ref_ni >= 0 && app.ref_ni < len(app.doc.nodes) && is_assign_target(app.doc.nodes[app.ref_ni], app.ref_fi)
 	for n, ni in app.doc.nodes {
 		txt := strings.trim_space(node_text(n, context.temp_allocator))
 		if strings.has_prefix(txt, "package ") || strings.has_prefix(txt, "import ") || strings.has_prefix(txt, "foreign ") do continue
 		for f, fi in n.fields {
 			if !f.editable || f.kind != "" || strings.trim_space(f.text) == "" || strings.contains(f.text, ".") do continue // (a.b: an assignment's field target)
 			if fi + 1 < len(n.fields) && !n.fields[fi + 1].slot && (n.fields[fi + 1].text == "(" || n.fields[fi + 1].text == "( ") do continue // a call's name
+			if assigning && fi + 1 < len(n.fields) && !n.fields[fi + 1].slot && strings.has_prefix(strings.trim_left_space(n.fields[fi + 1].text), "::") do continue // `name :: ...`
 			if branch_name_hidden(app, ni, fi, app.ref_pick_active ? app.ref_ni : app.slot_ni) do continue // only known inside its if / switch (branch.odin)
 			if !loop_name_visible(app, ni, fi, tni, tfi) do continue
 			if !ref_scope_visible(app, &scope, ni, fi) do continue
@@ -46,10 +50,10 @@ ref_candidates :: proc(app: ^App) -> []Ref_Target {
 
 // start_ref_pick: called when "Reference" is chosen for the dot at (ni, fi).
 start_ref_pick :: proc(app: ^App, ni, fi: int) {
-	cands := ref_candidates(app)
 	app.ref_pick_active = true
 	app.ref_ni, app.ref_fi = ni, fi
 	app.state = .Editor
+	cands := ref_candidates(app) // after ref_ni / ref_fi: which dot decides the names (an assignment's target: no `::`)
 	if len(cands) == 0 {
 		ref_pick_cancel(app)
 		return
@@ -183,6 +187,7 @@ ref_pick_finish_text :: proc(app: ^App, text: string) {
 	f := app.doc.nodes[ni].fields[fi]
 	if !f.slot {
 		if is_assign_target(app.doc.nodes[ni], fi) do set_assign_target(app, ni, fi, name) // field_access.odin
+		app.assign_pick_new = false
 		return
 	}
 	was_args := f.kind == "args"
@@ -198,7 +203,14 @@ ref_pick_finish_text :: proc(app: ^App, text: string) {
 
 // Cancel: back to the dot (or, for Y on a filled argument, its original text).
 ref_pick_cancel :: proc(app: ^App) {
+	// (Counted while still picking: the candidates depend on what's being picked.)
+	nothing := app.assign_pick_new && len(ref_candidates(app)) == 0
 	app.ref_pick_active = false
+	if app.assign_pick_new { // a new Assignment without a target: it goes again (field_access.odin)
+		if nothing do app.notice = "nothing declared to assign to here - declare it first (Declarations > Variable)"
+		assign_pick_drop(app, app.ref_ni)
+		return
+	}
 	if app.refill_active {
 		refill_restore(app)
 		return

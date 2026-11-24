@@ -807,12 +807,10 @@ make_jump :: proc(app: ^App, ni, fi: int, text: string) {
 make_assign_op_statement :: proc(app: ^App, ni, fi: int, op: string) {
 	indent := get_body_indent(app, ni)
 	defer delete(indent)
-	name := generate_ident(app)
-	defer delete(name)
 	fields := &app.doc.nodes[ni].fields
 	if len(fields[fi].text) > 0 do delete(fields[fi].text)
 	ordered_remove(fields, fi)
-	inject_at(fields, fi, fname(name), fop(op), fdot())
+	inject_at(fields, fi, fname(""), fop(op), fdot()) // the target is picked next (assign_pick_start)
 	add_next_line(app, ni, indent)
 }
 

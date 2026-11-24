@@ -539,9 +539,7 @@ test_handmade_accept_build_program :: proc(t: ^testing.T) {
 	testing.expect_value(t, line_src(&app, ni), "win32.PatBlt(device_context, x, y, width, height, operation)")
 
 	// operation = BLACKNESS   (stands in for `BLACKNESS if operation == WHITENESS else WHITENESS`)
-	ni = add_stmt(t, &app, body_line(&app, hdr), "Assignment", "Assignment")
-	for f, i in app.doc.nodes[ni].fields do if f.editable { focus_field_index(&app, ni, i); break }
-	change_selected(&app) // Y on the target
+	ni = add_stmt(t, &app, body_line(&app, hdr), "Assignment", "Assignment") // the target pick opens at once
 	ref_choose(t, &app, "operation")
 	if app.state == .Radial do pick(t, &app, "operation")
 	fill_ref(t, &app, ni, "BLACKNESS")
@@ -556,9 +554,7 @@ test_handmade_accept_build_program :: proc(t: ^testing.T) {
 	testing.expect_value(t, line_src(&app, ni), "win32.EndPaint(window, &paint)")
 
 	// result = win32.DefWindowProcW(window, message, w_param, l_param)
-	ni = add_stmt(t, &app, body_line(&app, hdr), "Assignment", "Assignment")
-	for f, i in app.doc.nodes[ni].fields do if f.editable { focus_field_index(&app, ni, i); break }
-	change_selected(&app)
+	ni = add_stmt(t, &app, body_line(&app, hdr), "Assignment", "Assignment") // the target pick opens at once
 	ref_choose(t, &app, "result")
 	if app.state == .Radial do pick(t, &app, "result")
 	testing.expect_value(t, line_src(&app, ni), "result =")

@@ -107,6 +107,7 @@ block_infos :: proc(app: ^App) -> []Block_Info {
 		k := when_kw_index(node)
 		kw := k >= 0 ? node.fields[k].text : ""
 		popped := -1
+		if in_block_comment(node) do continue // a /* ... */ comment's braces are text (block_comment.odin)
 		for c in line_brace_seq(node_text(node, context.temp_allocator)) {
 			if c == '}' {
 				if len(stack) == 0 do continue
@@ -1043,6 +1044,7 @@ ctrl_menu_cancel :: proc(app: ^App) {
 ctrl_hint :: proc(app: ^App) -> string {
 	if app.state != .Editor || app.mod_pick_active do return ""
 	if on_attr_dot(app) do return "A: attributes  (test, private, ...)" // the purple dot (attr_dots.odin)
+	if h := block_comment_hint(app); h != "" do return h // a /* ... */ comment (block_comment.odin)
 	if h := branch_hint(app); h != "" do return h // if / switch / case (branch.odin)
 	if h := loop_hint(app); h != "" do return h // loops, `+=`, break / continue (loops.odin)
 	ni, fi, ok := editor_target(app)

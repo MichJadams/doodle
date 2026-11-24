@@ -191,12 +191,10 @@ test_review_struct_literal_graying_is_fast :: proc(t: ^testing.T) {
 	load(&app, "package main\n\nimport win32 \"core:sys/windows\"\nimport sdl \"vendor:sdl2\"\nimport vk \"vendor:vulkan\"\n\nmain :: proc() {\n\tr: win32.RECT = q\n}")
 	ni := line_with(&app, "r: win32.RECT")
 	dot := -1
-	for f, i in app.doc.nodes[ni].fields do if f.text == " = q" do dot = i
-	if !testing.expect(t, dot >= 0, fields_debug(app.doc.nodes[ni])) do return
+	for f, i in app.doc.nodes[ni].fields do if f.text == "q" do dot = i // ` = ` and `q` are their own fields
+	if !testing.expect(t, dot >= 0 && app.doc.nodes[ni].fields[dot - 1].text == " = ", fields_debug(app.doc.nodes[ni])) do return
 	delete(app.doc.nodes[ni].fields[dot].text)
-	app.doc.nodes[ni].fields[dot] = Field{strings.clone(" = "), false, false, "", "", ""}
-	dot += 1
-	inject_at(&app.doc.nodes[ni].fields, dot, Field{"", false, true, "value", "", ""})
+	app.doc.nodes[ni].fields[dot] = Field{"", false, true, "value", "", ""}
 	sync_typed_decl_value_hint(&app, ni)
 	focus_field_index(&app, ni, dot)
 	start := time.now()

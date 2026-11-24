@@ -355,9 +355,7 @@ test_assignment_to_a_field :: proc(t: ^testing.T) {
 	inject_at(&app.doc.nodes, line_with(&app, "class: win32") + 1, line)
 
 	ni = add_statement(t, &app, "Assignment", "Assignment")
-	for f, i in app.doc.nodes[ni].fields do if f.editable { focus_field_index(&app, ni, i); break }
-	change_selected(&app) // Y on the target
-	testing.expect(t, app.ref_pick_active)
+	testing.expect(t, app.ref_pick_active, "adding an Assignment picks its target at once")
 	ref_choose(t, &app, "class")
 	testing.expect_value(t, current_view(&app).title, "Assign to")
 	pick(t, &app, "Field of class")

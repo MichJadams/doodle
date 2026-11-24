@@ -146,3 +146,35 @@ test_load_empty_constant :: proc(t: ^testing.T) {
 	testing.expect_value(t, shape(&app, line_of(&app, "BRAVE_OTTER")), "BRAVE_OTTER ed |  ::  | ● value")
 	testing.expect_value(t, file_text(&app, context.temp_allocator), src)
 }
+
+// Foreign imports and foreign blocks: the library name is a stop (so LT+B can
+// delete the line), from the menus and when loading.
+@(test)
+test_foreign_lines :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	app.state = .Editor
+	src := "package main\n\nforeign import libc \"system:c\"\n\nforeign libc {\n\tputs :: proc(s: cstring) -> i32 ---\n}\n"
+	doc_from_source(&app, src)
+	testing.expect_value(t, shape(&app, line_of(&app, "foreign import")), "foreign import  | libc ed |   | \"system:c\" import_path")
+	testing.expect_value(t, shape(&app, line_of(&app, "foreign libc")), "foreign  | libc ed |  {")
+	testing.expect_value(t, file_text(&app, context.temp_allocator), src)
+
+	// Menu-built (Dependencies > Foreign import), then LT+B deletes it.
+	m: App
+	defer cleanup(&m)
+	m.state = .Editor
+	doc_from_source(&m, "package main\n")
+	focus_dot(&m)
+	update(&m, Input{confirm = true})
+	v := current_view(&m)
+	for e, i in v.entries do if e.label == "Dependencies" { v.index = i; update(&m, Input{confirm = true}); break }
+	v = current_view(&m)
+	for e, i in v.entries do if e.label == "Foreign import" { v.index = i; update(&m, Input{confirm = true}); break }
+	fi := line_of(&m, "foreign import")
+	if !testing.expect(t, fi >= 0, "a foreign import line") do return
+	testing.expect(t, len(line_leaves(m.doc.nodes[fi])) > 0, "it has a stop")
+	focus_field_index(&m, fi, 1)
+	delete_selected(&m)
+	testing.expect(t, line_of(&m, "foreign import") < 0, "LT+B deleted it")
+}

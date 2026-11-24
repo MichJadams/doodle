@@ -91,6 +91,12 @@ format_doc :: proc(app: ^App) {
 		txt := node_text(app.doc.nodes[i], context.temp_allocator)
 		delta, lead := line_balance(txt)
 		t := strings.trim_space(txt)
+		// A /* ... */ comment (block_comment.odin): its braces are text, and its
+		// lines of text keep the indentation they were written with.
+		if in_block_comment(app.doc.nodes[i]) {
+			delta, lead = 0, 0
+			if block_comment_body(app.doc.nodes[i]) do continue
+		}
 		level := depth - lead
 		if strings.has_prefix(t, "case ") || strings.has_prefix(t, "case:") do level -= 1
 		else if strings.has_prefix(t, "//") {
@@ -126,6 +132,7 @@ format_doc :: proc(app: ^App) {
 	for i := 0; i < n; i += 1 {
 		txt := node_text(app.doc.nodes[i], context.temp_allocator)
 		delta, _ := line_balance(txt)
+		if in_block_comment(app.doc.nodes[i]) do delta = 0 // a /* ... */ comment's braces are text
 		at_top := depth == 0
 		t := strings.trim_space(txt)
 
@@ -150,7 +157,7 @@ format_doc :: proc(app: ^App) {
 			switch {
 			case strings.has_prefix(t, "package "):                                    kind = .Package
 			case strings.has_prefix(t, "import ") || strings.has_prefix(t, "foreign import "): kind = .Import
-			case strings.has_prefix(t, "//") || strings.has_prefix(t, "@"):            kind = .Comment // attributes stay on their declaration too
+			case strings.has_prefix(t, "//") || strings.has_prefix(t, "@") || in_block_comment(app.doc.nodes[i]): kind = .Comment // attributes / a /* */ comment stay on what follows
 			case delta > 0:                                                            kind = .Block
 			case:                                                                       kind = .Single
 			}

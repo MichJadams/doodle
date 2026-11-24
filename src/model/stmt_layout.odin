@@ -43,7 +43,7 @@ inject_comment :: proc(fields: ^[dynamic]Field, at: int, marker, text: string) {
 }
 
 // Placeholder text for a new comment: a generated name, as words ("brave otter").
-@(private = "file")
+// Temp-allocated. (Also: block_comment.odin.)
 comment_placeholder :: proc(app: ^App) -> string {
 	name := generate_ident(app)
 	defer delete(name)
@@ -89,6 +89,7 @@ layout_extend_body_menu :: proc(app: ^App) {
 layout_group :: proc() -> Entry {
 	return Entry{label = "Layout", children = make_slice(
 		Entry{label = "Comment", fill = COMMENT_FILL},
+		Entry{label = "Multi-line comment", fill = BLOCK_COMMENT_FILL}, // /* ... */ (block_comment.odin)
 		Entry{label = "Blank line", fill = BLANK_FILL},
 	)}
 }
@@ -102,6 +103,9 @@ layout_add_insert :: proc(app: ^App, insert: string) -> bool {
 		inject_comment(&n.fields, 0, "// ", comment_placeholder(app))
 	case BLANK_INSERT:
 		append(&n.fields, Field{strings.clone(""), false, false, "", "", ""})
+	case BLOCK_COMMENT_INSERT:
+		block_comment_insert(app) // /* ... */ (block_comment.odin)
+		return true
 	case:
 		return false
 	}
@@ -116,13 +120,26 @@ layout_fill :: proc(app: ^App, e: Entry) -> bool {
 	case ARG_ROW_FILL:
 		arg_row_choose(app, e.call_name)
 		return true
-	case COMMENT_FILL, BLANK_FILL:
+	case COMMENT_FILL, BLANK_FILL, BLOCK_COMMENT_FILL:
 	case:
 		return false
 	}
 	ni, fi := app.slot_ni, app.slot_fi
 	if ni < 0 || ni >= len(app.doc.nodes) || fi < 0 || fi >= len(app.doc.nodes[ni].fields) || app.doc.nodes[ni].fields[fi].kind != "body" {
 		return false
+	}
+	if e.fill == BLOCK_COMMENT_FILL {
+		// /* ... */ in the statement's place (block_comment.odin), its text focused.
+		t := block_comment_fill(app, ni, fi)
+		body_insert_done(app)
+		clear_nav(app)
+		app.state = app.return_state
+		if app.slot_menu != nil {
+			free_entries(app.slot_menu)
+			app.slot_menu = nil
+		}
+		focus_kth_selectable(app, t, 0)
+		return true
 	}
 	fields := &app.doc.nodes[ni].fields
 	indent := strings.clone(line_indent(app.doc.nodes[ni]), context.temp_allocator)

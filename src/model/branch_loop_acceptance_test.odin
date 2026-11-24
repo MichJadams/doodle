@@ -293,10 +293,7 @@ y_option :: proc(t: ^testing.T, app: ^App, ni: int, text, option: string, loc :=
 // a number, a name, or name.field (with `field_label` for the Field of menu).
 @(private = "file")
 assign :: proc(t: ^testing.T, app: ^App, ni: int, target, value: string, field_label := "", loc := #caller_location) {
-	if add_in_body(t, app, ni, "Assignment", "Assignment", loc) < 0 do return
-	back_out(app)
-	for f, i in app.doc.nodes[ni].fields do if f.editable { focus_field_index(app, ni, i); break }
-	change_selected(app) // Y on the target
+	if add_in_body(t, app, ni, "Assignment", "Assignment", loc) < 0 do return // the target pick opens at once
 	if ref_choose(t, app, target, loc) && app.state == .Radial do pick(t, app, target, loc)
 	if value[0] >= '0' && value[0] <= '9' {
 		fill_number(t, app, ni, value, loc)
@@ -697,10 +694,7 @@ test_accept_loop_while :: proc(t: ^testing.T) {
 	testing.expect_value(t, line_src(&app, ni), "for x < 10 {")
 	reach(t, &app, ni, "for", "x", "10")
 	// x += 1   (Assignment > +=, Y on the target)
-	a := add_in_body(t, &app, body_line(&app, ni), "Assignment", "+=")
-	back_out(&app)
-	focus_field_index(&app, a, 1)
-	change_selected(&app)
+	a := add_in_body(t, &app, body_line(&app, ni), "Assignment", "+=") // the target pick opens at once
 	if ref_choose(t, &app, "x") && app.state == .Radial do pick(t, &app, "x")
 	fill_number(t, &app, a, "1")
 	testing.expect_value(t, line_src(&app, a), "x += 1")
@@ -808,10 +802,7 @@ test_accept_loop_by_reference :: proc(t: ^testing.T) {
 	reach(t, &app, ni, "for", "item", "items")
 	b := body_line(&app, ni)
 	known(t, &app, b, "item", "Player")
-	a := add_in_body(t, &app, b, "Assignment", "-=")
-	back_out(&app)
-	focus_field_index(&app, a, 1)
-	change_selected(&app)
+	a := add_in_body(t, &app, b, "Assignment", "-=") // the target pick opens at once
 	if ref_choose(t, &app, "item") && app.state == .Radial && pick(t, &app, "Field of item") do pick(t, &app, "hp   int")
 	fill_number(t, &app, a, "1")
 	testing.expect_value(t, line_src(&app, a), "item.hp -= 1")
@@ -997,10 +988,7 @@ test_accept_handmade_switch_message_and_message_loop :: proc(t: ^testing.T) {
 	testing.expect(t, !pok, "paint is local to its case clause")
 
 	// case: result = win32.DefWindowProcW(window, message, w_param, l_param)
-	ni = add_in_body(t, &app, body_line(&app, line_with(&app, "case:")), "Assignment", "Assignment")
-	back_out(&app)
-	for f, i in app.doc.nodes[ni].fields do if f.editable { focus_field_index(&app, ni, i); break }
-	change_selected(&app)
+	ni = add_in_body(t, &app, body_line(&app, line_with(&app, "case:")), "Assignment", "Assignment") // the target pick opens at once
 	if ref_choose(t, &app, "result") && app.state == .Radial do pick(t, &app, "result")
 	fill_call(t, &app, ni, "DefWindowProcW")
 	for name in ([]string{"window", "message", "w_param", "l_param"}) do fill_ref(t, &app, ni, name)

@@ -514,12 +514,7 @@ y_option :: proc(p: ^Pad, ni: int, text, option: string, loc := #caller_location
 // Assignment > Assignment on the "●" line ni, Y on the target -> `target`.
 @(private = "file")
 assign_to :: proc(p: ^Pad, ni: int, target: string, loc := #caller_location) {
-	if add_in_body(p, ni, "Assignment", "Assignment", loc) < 0 do return
-	for f, i in p.app.doc.nodes[ni].fields do if f.editable {
-		if !dpad_to(p, ni, false, i, loc) do return
-		break
-	}
-	press_y(p)
+	if add_in_body(p, ni, "Assignment", "Assignment", loc) < 0 do return // the target pick opens at once
 	if ref_choose(p, target, loc) && p.app.state == .Radial do pick(p, target, loc)
 }
 
@@ -649,9 +644,11 @@ test_handmade_exact_build :: proc(t: ^testing.T) {
 
 	// ---- the two file-scope comments, a blank line before the second ----
 	add_at_dot(p, line_with(&app, "WHITENESS ::"), "File Setup", "Comments")
+	pick(p, "Single-line comment") // File Setup > Comments is a submenu now
 	say_comment(p, line_with(&app, "WHITENESS ::") - 1, "Kept local in case your odin version's gdi32 bindings don't export these")
 	text_tools(p, "Word case", "odin", "Capitalized")
 	add_at_dot(p, line_with(&app, "operation:"), "File Setup", "Comments")
+	pick(p, "Single-line comment") // File Setup > Comments is a submenu now
 	ci := line_with(&app, "operation:") - 1
 	say_comment(p, ci, "Stands in for Casey's static dword operation inside the callback")
 	text_tools(p, "Word case", "dword", "UPPER")

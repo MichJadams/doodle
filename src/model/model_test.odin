@@ -1426,28 +1426,12 @@ test_body_slot_assignment_transform :: proc(t: ^testing.T) {
 	select_label(&app, "Assignment")
 	select_label(&app, "Assignment")
 	testing.expect_value(t, app.state, State.Editor)
-	// Check that body line contains a generated var name and " = "
-	txt := node_text(app.doc.nodes[1], context.temp_allocator)
-	testing.expect(t, strings.contains(txt, " = "), "body should contain ' = '")
-	// Verify fields: editable var name (snake_case), " = ", value slot
-	ni := 1
-	found_name := false
-	found_equals := false
-	found_value_slot := false
-	for f in app.doc.nodes[ni].fields {
-		if f.editable && !f.slot && len(f.text) > 0 && strings.contains(f.text, "_") {
-			found_name = true
-		}
-		if f.text == " = " && !f.editable && !f.slot {
-			found_equals = true
-		}
-		if f.text == "" && !f.editable && f.slot && f.kind == "value" {
-			found_value_slot = true
-		}
-	}
-	testing.expect(t, found_name, "should have editable 'value' field")
-	testing.expect(t, found_equals, "should have ' = ' separator")
-	testing.expect(t, found_value_slot, "should have value slot")
+	// Nothing is declared in this procedure, so there's nothing to assign to:
+	// Assignment doesn't invent a name (that would be a declaration) - the line
+	// goes again, with a note on the status line.
+	for n in app.doc.nodes do testing.expect(t, !strings.contains(node_text(n, context.temp_allocator), " = "), "no `● = ●` line left")
+	testing.expect(t, !app.ref_pick_active && !app.assign_pick_new, "not picking")
+	testing.expect(t, strings.contains(app.notice, "declare it first"), app.notice)
 }
 
 // OLD TEST: Procedure call is now replaced by Calls category with subtypes
@@ -1516,6 +1500,11 @@ test_body_slot_multiple_statements :: proc(t: ^testing.T) {
 	select_label(&app, "Assignment")
 	select_label(&app, "Assignment")
 	testing.expect_value(t, app.state, State.Editor)
+	// Its target: the variable declared above (picked at once), then "Assign to" > it.
+	testing.expect(t, app.ref_pick_active, "picking the Assignment's target")
+	update(&app, Input{confirm = true})
+	update(&app, Input{confirm = true})
+	testing.expect(t, !app.ref_pick_active && app.state == .Editor, "target picked")
 	// Verify we now have 5 nodes: signature, stmt1, stmt2, new body slot, closing brace
 	testing.expect_value(t, len(app.doc.nodes), 5)
 	// Check that there's still a body slot available

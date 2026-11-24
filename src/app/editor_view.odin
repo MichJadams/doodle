@@ -91,6 +91,7 @@ Item :: struct {
 	col:   gpu.Color,
 	dot:   bool,
 	label: string, // a dot's expected-type label
+	wstop: int,    // word by word (model/word_edit.odin): 1 + the stop (odd: a word, even: a yellow dot); 0 = not
 	x, w:  f32,
 	row:   int,
 }
@@ -110,7 +111,7 @@ expand_tabs :: proc(s: string) -> string {
 }
 
 // layout_node places a node's fields into rows between x0 and max_x.
-layout_node :: proc(n: model.Node, x0, max_x: f32, packages: []string) -> Node_Layout {
+layout_node :: proc(n: model.Node, x0, max_x: f32, packages: []string, word_fi := -1) -> Node_Layout {
 	lay := Node_Layout{items = make([dynamic]Item, 0, len(n.fields) * 2, context.temp_allocator), rows = 1}
 	lay.num_rows = make([dynamic][2]int, 0, 4, context.temp_allocator)
 	font := g_code
@@ -178,6 +179,17 @@ layout_node :: proc(n: model.Node, x0, max_x: f32, packages: []string) -> Node_L
 				label := slot_hint_label(f)
 				w := DOT_W + (label != "" ? text.measure(g_ui, label).x + 6 : 0)
 				place(&lay, Item{fi = fi, dot = true, label = label, w = w}, &x, &row_start, &row, max_x, cont_x)
+				continue
+			}
+			if fi == word_fi {
+				// Word by word: each word on its own, a yellow dot in every gap and at both ends.
+				toks := model.word_tokens(f.text)
+				for k in 0 ..= len(toks) {
+					place(&lay, Item{fi = fi, wstop = 2 * k + 1, w = WORD_DOT_W}, &x, &row_start, &row, max_x, cont_x)
+					if k == len(toks) do break
+					piece := expand_tabs(f.text[toks[k].a:toks[k].b])
+					place(&lay, Item{fi = fi, wstop = 2 * k + 2, text = piece, col = run_color(f, hl, offs[fi] + toks[k].a), w = text.measure(font, piece).x}, &x, &row_start, &row, max_x, cont_x)
+				}
 				continue
 			}
 			s := f.text
@@ -335,7 +347,7 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	lays := make([]Node_Layout, n, context.temp_allocator)
 	y := y_start
 	for node, ni in m.doc.nodes {
-		lays[ni] = layout_node(node, x0, max_x, packages)
+		lays[ni] = layout_node(node, x0, max_x, packages, m.word_edit_active && ni == m.word_ni ? m.word_fi : -1)
 		lays[ni].y = y
 		y += f32(lays[ni].rows) * lh
 	}
@@ -436,6 +448,15 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 				if iy + lh <= top || iy >= bottom do continue
 				// The highlighted part (one field, or several: a whole argument).
 				selected := has_hl && hl.fb >= 0 && it.fi >= 0 && in_hl(hl, ni, it.fi)
+				if m.word_edit_active && ni == m.word_ni && it.wstop == 0 do selected = false // just the word, not its quotes
+				if it.wstop > 0 {
+					// Word by word: the cursor's word in the green box, yellow dots in the gaps.
+					selected = it.wstop - 1 == m.word_stop && it.wstop % 2 == 0
+					if it.wstop % 2 == 1 {
+						draw_word_dot(r, it.x + it.w / 2, iy + lh / 2, it.wstop - 1 == m.word_stop)
+						continue
+					}
+				}
 				if selected {
 					gpu.draw_rect(r, {it.x - 3, iy, it.w + 6, lh}, COL_SEL_BG)
 					gpu.draw_rect_outline(r, {it.x - 3, iy, it.w + 6, lh}, 2, COL_ACCENT)
@@ -546,6 +567,7 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	}
 	// What Y / LT+B do on a highlighted keyword (when, #assert, attributes, ...).
 	hint := model.rebind_hint(m.keymap, model.ctrl_hint(m))
+	if m.word_edit_active do hint = model.word_edit_hint(m) // inside a string, word by word
 	if m.grab_active {
 		// Lifted (model/grab.odin): only these buttons do anything now.
 		hint = "Up/Down move   RT+Up/Down jump   X / A drop   B put back"
@@ -563,4 +585,18 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	} else if g_heard != "" {
 		text.draw_line(r, g_ui, {f32(w) - 320, 14}, fmt.tprintf("heard: %s", g_heard), COL_ACCENT)
 	}
+}
+
+// Word by word (model/word_edit.odin): the yellow dot in a gap between words.
+WORD_DOT_W :: f32(16)
+COL_WORD_DOT :: gpu.Color{0.90, 0.68, 0.05, 1}
+
+draw_word_dot :: proc(r: ^gpu.Renderer, cx, cy: f32, on: bool) {
+	if on {
+		pulse := 0.5 + 0.5 * math.sin(f32(g_time) * 4.0)
+		gpu.draw_circle(r, cx, cy, 7 + 1.5 * pulse, {COL_WORD_DOT.r, COL_WORD_DOT.g, COL_WORD_DOT.b, 0.22 + 0.18 * pulse})
+		gpu.draw_circle(r, cx, cy, 4, COL_WORD_DOT)
+		return
+	}
+	gpu.draw_circle(r, cx, cy, 3, COL_WORD_DOT)
 }

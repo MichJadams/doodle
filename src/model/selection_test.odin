@@ -155,7 +155,8 @@ test_y_on_string_inside_nested_call :: proc(t: ^testing.T) {
 	focus_line(&app, ni)
 	for _ in 0 ..< 3 do update(&app, Input{right = true}) // "Testing" (L's argument)
 	testing.expect_value(t, cursor_text(&app), "\"Testing\"")
-	change_selected(&app)
+	change_selected(&app) // a string: its text tools, "Replace value" first
+	testing.expect(t, pick(t, &app, "Replace value"))
 	f := app.doc.nodes[ni].fields[app.slot_fi]
 	testing.expect_value(t, f.hint, "string") // L(value: string)
 	testing.expect(t, !find_entry(current_view(&app).entries, "String").dim)

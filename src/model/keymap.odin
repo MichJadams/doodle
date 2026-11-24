@@ -27,6 +27,7 @@ Action :: enum u8 {
 	Walk_Prev, Walk_Next, Walk_In, Walk_Out,
 	Format_File, Prev_File, Key_Layout,
 	Grab, // appended: the enum order is only internal (the file uses ACTION_INFO.key)
+	Save,
 }
 Actions :: bit_set[Action]
 
@@ -59,7 +60,7 @@ ACTION_INFO := [Action]Action_Info{
 	.Change       = {key = "change",       label = "Change",       glyph = "*", hint = "change the highlighted part: another proc, refill an argument..."},
 	.Docs         = {key = "docs",         label = "Docs",         glyph = "?", hint = "documentation of the highlighted part"},
 	.Copy         = {key = "copy",         label = "Copy",         glyph = "C", hint = "copy the statement / block (whole file on a green dot)"},
-	.Save_As      = {key = "save_as",      label = "Save as",      glyph = "S", required = true, hint = "name the file and save it"},
+	.Save_As      = {key = "save_as",      label = "Save as",      glyph = "N", hint = "save under a new name (renaming: Files > LT+X)"},
 	.Run_List     = {key = "run_list",     label = "Run list",     glyph = ">", hint = "pick a command to run"},
 	.Files        = {key = "files",        label = "Files",        glyph = "F", required = true, hint = "browse the project's files"},
 	.Run_Favorite = {key = "run_favorite", label = "Run favorite", glyph = "R", hint = "save, then run the favorite command (RB too)"},
@@ -73,6 +74,7 @@ ACTION_INFO := [Action]Action_Info{
 	.Format_File  = {key = "format_file",  label = "Format file",  glyph = "~", hint = "fix indentation and blank lines"},
 	.Prev_File    = {key = "prev_file",    label = "Previous file", glyph = "P", hint = "switch back to the file you had before"},
 	.Key_Layout   = {key = "key_layout",   label = "Key layout",   glyph = "K", hint = "open this page"},
+	.Save         = {key = "save",         label = "Save",         glyph = "S", required = true, hint = "save the file (a new project: main.odin in its folder); rename it in Files with LT+X"},
 	.Grab         = {key = "grab",         label = "Grab / drop",  glyph = "G", hint = "lift the highlighted statement / block, slide it with Up / Down, press again to drop (B puts it back)"},
 }
 
@@ -85,7 +87,7 @@ BANK_PREFIX := [BANKS]string{"LT+", "", "RT+"} // "LT+B" matches the hint text t
 KEYMAP_DEFAULT :: Keymap{slots = {
 	BANK_LT   = {.Up = .None, .Down = .None, .Left = .IDE_Menu, .Right = .Run_List, .A = .Edit, .B = .Delete, .X = .Talk, .Y = .Docs},
 	BANK_NONE = {.Up = .Move_Up, .Down = .Move_Down, .Left = .Move_Left, .Right = .Move_Right, .A = .Select, .B = .Back, .X = .None, .Y = .Change},
-	BANK_RT   = {.Up = .Walk_Prev, .Down = .Walk_Next, .Left = .Walk_Out, .Right = .Walk_In, .A = .Copy, .B = .Files, .X = .Grab, .Y = .Save_As},
+	BANK_RT   = {.Up = .Walk_Prev, .Down = .Walk_Next, .Left = .Walk_Out, .Right = .Walk_In, .A = .Copy, .B = .Files, .X = .Grab, .Y = .Save},
 }}
 
 // One shared default for nil lookups (not rebuilt on every call).

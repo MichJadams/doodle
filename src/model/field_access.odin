@@ -146,6 +146,29 @@ is_assign_target :: proc(n: Node, fi: int) -> bool {
 	return strings.has_prefix(t, "=") && !strings.has_prefix(t, "==")
 }
 
+// assign_pick_start: an Assignment just added (`● = ●`, `● += ●`) asks at once
+// which declared name it assigns to - Odin assigns only to what exists (a new
+// name would be a declaration) - by picking it the way Y on a target does. B,
+// or nothing declared in scope yet: the new line goes again.
+assign_pick_start :: proc(app: ^App, ni: int) {
+	if ni < 0 || ni >= len(app.doc.nodes) do return
+	n := app.doc.nodes[ni]
+	for _, fi in n.fields do if is_assign_target(n, fi) {
+		app.assign_pick_new = true
+		start_ref_pick(app, ni, fi)
+		return
+	}
+}
+
+// assign_pick_drop: the Assignment whose target wasn't picked goes again.
+assign_pick_drop :: proc(app: ^App, ni: int) {
+	app.assign_pick_new = false
+	if ni < 0 || ni >= len(app.doc.nodes) do return
+	remove_node(app, ni)
+	if ni < len(app.doc.nodes) && is_body_slot_line(app.doc.nodes[ni]) do focus_field_index(app, ni, 1)
+	else do focus_dot_at(app, ni)
+}
+
 // open_assign_target_menu: "Assign to" for a name picked as an assignment's
 // target: the name itself, what it points to, or one of its fields.
 open_assign_target_menu :: proc(app: ^App, pick: Ref_Target) {

@@ -276,6 +276,11 @@ result_list_delete :: proc(app: ^App) -> bool {
 	}
 	if a, b, rok := return_span(n^); rok && fi >= a && fi < b {
 		items, more, _ := list_items(n^, a, b)
+		// A return without a value (`return`, an unfilled `return ●`): its dots
+		// are the only stops, so LT+B there deletes the statement itself.
+		filled := 0
+		for it in items do if !lone_empty(n^, it) do filled += 1
+		if filled == 0 do return false
 		if fi == more do return true
 		for it in items do if fi >= it.a && fi < it.b {
 			if it.b - it.a != 1 do return false // a part of an expression

@@ -226,6 +226,14 @@ fn_descend :: proc() {
 // would hide its sister folders); the view shows the current file in its
 // folder's column, highlighted.
 filenav_init :: proc() {
+	// The root follows the project: one left over from another project (New
+	// Project doesn't reset it - e.g. still `window` while editing `dark-eagle`)
+	// is replaced; one the current project is inside (it was climbed above) stays.
+	here := g_current_file != "" ? filepath.dir(g_current_file) : g_project_dir
+	if g_fn_dir != "" && here != "" && !same_path(here, g_fn_dir) && !model.fgrid_under(here, g_fn_dir) {
+		delete(g_fn_dir)
+		g_fn_dir = ""
+	}
 	if g_fn_dir == "" {
 		root := g_project_dir != "" ? g_project_dir : (g_projects_dir != "" ? g_projects_dir : ".")
 		if proj, ok := project_root_of(g_current_file); ok do root = proj // under any projects folder (roots_store.odin)

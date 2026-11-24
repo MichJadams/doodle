@@ -169,6 +169,17 @@ write_doc :: proc(m: ^model.App, path: string) -> string {
 // save_current saves without asking (used before running): back to the open
 // file, or <project>/main.odin if nothing has been saved yet. RT+Y uses the
 // Save-as dialog instead (save_dialog.odin). Returns true on success.
+// save_now (the Save action, RT+Y by default): save without asking - the open
+// file, or main.odin in the project folder for a new project. Renaming is done
+// in Files (LT+X).
+save_now :: proc(m: ^model.App) {
+	first := g_current_file == ""
+	if !save_current(m) do return
+	name := filepath.base(g_current_file)
+	if first do set_status(fmt.tprintf("saved %s in %s - rename it in Files (LT+X)", name, filepath.base(filepath.dir(g_current_file))))
+	else do set_status(fmt.tprintf("saved %s", name))
+}
+
 save_current :: proc(m: ^model.App) -> bool {
 	target := g_current_file
 	if target == "" do target = fmt.tprintf("%s/main.odin", save_folder())

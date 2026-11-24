@@ -46,7 +46,13 @@ doc_from_source :: proc(app: ^App, src: string) {
 		open_value := open_value_line(lines, i)
 		if open_value do lines[i] = strings.concatenate({strings.trim_right_space(lines[i]), " ", OPEN_VALUE_MARK}, context.temp_allocator)
 		nodes_before := len(app.doc.nodes)
-		if cnode, cok := parse_comment_line(lines[i]); cok {
+		block_comment := false
+		if bnodes, bused, bok := parse_block_comment(lines[i:]); bok {
+			for b in bnodes do append(&app.doc.nodes, b) // /* ... */ on lines of their own (block_comment.odin)
+			delete(bnodes)
+			consumed = bused
+			block_comment = true
+		} else if cnode, cok := parse_comment_line(lines[i]); cok {
 			append(&app.doc.nodes, cnode) // `// text`: the text is editable (stmt_layout.odin)
 		} else if node, ok := parse_ctrl_line(lines[i], roles[i]); ok {
 			append(&app.doc.nodes, node)
@@ -73,7 +79,7 @@ doc_from_source :: proc(app: ^App, src: string) {
 			append(&app.doc.nodes, parse_line(lines[i], in_data))
 		}
 		if open_value && len(app.doc.nodes) > nodes_before do open_value_to_dot(&app.doc.nodes[len(app.doc.nodes) - 1])
-		for k in i ..< i + consumed do track_blocks(&blocks, lines[k])
+		if !block_comment do for k in i ..< i + consumed do track_blocks(&blocks, lines[k]) // a comment's braces are text
 		i += consumed
 	}
 	// Type declarations and data-body members: the same fields the menus build (data_types.odin).
@@ -125,11 +131,44 @@ parse_return_statement :: proc(line: string, multi_only := false) -> (node: Node
 	return node, true
 }
 
+// parse_foreign_line: `foreign import libc "system:c"` (the library name
+// editable, the path a stop, like an import) and a foreign block's header
+// `foreign libc {` / `foreign libc { }` (the name editable) - so the cursor can
+// land on them and LT+B deletes them. Anything else stays text.
+parse_foreign_line :: proc(line: string) -> (node: Node, ok: bool) {
+	s := strings.trim_right_space(line)
+	if strings.has_prefix(s, "foreign import ") {
+		rest := strings.trim_left_space(s[len("foreign import "):])
+		sp := strings.index_byte(rest, ' ')
+		if sp <= 0 || !is_valid_identifier(rest[:sp]) do return
+		name := rest[:sp]
+		path := strings.trim_left_space(rest[sp:])
+		if len(path) < 2 || path[0] != '"' || path[len(path) - 1] != '"' || strings.contains_any(path[1:len(path) - 1], "\"\\") do return
+		node.fields = make([dynamic]Field)
+		append(&node.fields, Field{strings.clone("foreign import "), false, false, "", "", ""})
+		append(&node.fields, Field{strings.clone(name), true, false, "", "", ""})
+		append(&node.fields, Field{strings.clone(" "), false, false, "", "", ""})
+		append(&node.fields, Field{strings.clone(path), false, false, IMPORT_PATH_KIND, "", ""})
+		return node, true
+	}
+	rest := s[len("foreign "):]
+	sp := strings.index_byte(rest, ' ')
+	if sp <= 0 || !is_valid_identifier(rest[:sp]) do return
+	tail := rest[sp:]
+	if !strings.has_prefix(strings.trim_left_space(tail), "{") do return
+	node.fields = make([dynamic]Field)
+	append(&node.fields, Field{strings.clone("foreign "), false, false, "", "", ""})
+	append(&node.fields, Field{strings.clone(rest[:sp]), true, false, "", "", ""})
+	append(&node.fields, Field{strings.clone(tail), false, false, "", "", ""})
+	return node, true
+}
+
 // parse_import_line: `import "path"` or `import alias "path"` at the start of
 // a line, nothing after it (a comment or anything else stays text).
 @(private = "file")
 parse_import_line :: proc(line: string) -> (node: Node, ok: bool) {
 	s := strings.trim_right_space(line)
+	if strings.has_prefix(s, "foreign ") do return parse_foreign_line(s)
 	if !strings.has_prefix(s, "import ") do return
 	rest := strings.trim_left_space(s[len("import "):])
 	alias := ""
@@ -953,6 +992,21 @@ emit_decl_rest :: proc(fields: ^[dynamic]Field, text: string, start, end: int) {
 		}
 	}
 	if k < len(text) && emit_structured_value(fields, text[k:]) do return // a ternary / cast(T)x value (expr.odin)
+	// The value its own part (highlight it, Y refills it): after a typed
+	// declaration's ` = ` (its own field, as the menus build it), and a string's
+	// text editable (Y: text tools, word by word).
+	if k < len(text) {
+		v := text[k:]
+		lead := ""
+		if typed && strings.has_prefix(v, " = ") do lead, v = " = ", v[3:]
+		clean := v != "" && v == strings.trim_space(v) && !strings.contains(v, "//") && !strings.has_suffix(v, "{")
+		if clean && (lead != "" || v[0] == '"' || v[0] == '`') {
+			if lead != "" do append(fields, Field{strings.clone(lead), false, false, "", "", ""})
+			if v[0] == '"' || v[0] == '`' do emit_expr(fields, v) // `"text"`: quote, text, quote
+			else do append(fields, Field{strings.clone(v), false, false, "", "", ""})
+			return
+		}
+	}
 	if k < len(text) do append(fields, Field{strings.clone(text[k:]), false, false, "", "", ""})
 }
 

@@ -178,6 +178,8 @@ App :: struct {
 	tree_dot:    bool,
 	tree_nodes:  int,
 	tree_sticky: bool, // keep highlighting the RT selection after RT is released (Y acts on it)
+	assign_pick_new: bool,   // picking the target of an Assignment just added: B takes the line away (field_access.odin)
+	notice:          string, // a message for the status line (static text); the app shows it and clears it
 	// Grab (grab.odin): the lifted statement / block, sliding among its siblings.
 	grab_active: bool,
 	grab_sel:    Sel,               // the lifted lines (kind Line / Block)
@@ -185,6 +187,12 @@ App :: struct {
 	grab_proc:   Sel,               // ... else the procedure it can't leave
 	grab_indent: string,            // its first line's indent when lifted (B restores it; owned)
 	grab_ops:    [dynamic]Grab_Op,  // every move, so B can undo them exactly
+	// Edit word by word (word_edit.odin): the string / comment text being edited, and the
+	// cursor in it (odd = word stop/2, even = the yellow dot stop/2 before it).
+	word_edit_active: bool,
+	word_ni, word_fi: int,
+	word_stop:        int,
+	word_nth:         int, // ... the word_nth string / comment text on line word_ni (word_edit_sync)
 
 	// Y on an argument (change.odin): its original fields while the fill menu is open.
 	refill_saved:  [dynamic]Field,
@@ -268,7 +276,10 @@ ensure_menus :: proc(app: ^App) {
 	file_setup := make_slice(
 		kw_leaf("Package declaration", "package", "main"),
 		leaf("File tags", "#+build linux"),
-		leaf("Comments", COMMENT_INSERT), // `// text`, editable (stmt_layout.odin)
+		grp("Comments", make_slice(
+			leaf("Single-line comment", COMMENT_INSERT),     // `// text`, editable (stmt_layout.odin)
+			leaf("Multi-line comment", BLOCK_COMMENT_INSERT), // /* ... */ (block_comment.odin)
+		)),
 		leaf("Blank line", BLANK_INSERT),
 	)
 	aliased_import_src := build_import_collections()
@@ -1162,10 +1173,8 @@ make_body_statement :: proc(app: ^App, ni, fi: int, kind: string) {
 		inject_at(fields, fi, f2)
 		inject_at(fields, fi, f1)
 		
-	case "__stmt_assign__": // Assignment -> name = •
-		var_name := generate_ident(app)
-		defer delete(var_name)
-		f1 := Field{strings.clone(var_name), true, false, "", "", ""} // editable name
+	case "__stmt_assign__": // Assignment -> ● = • (the target is picked next: assign_pick_start)
+		f1 := Field{"", true, false, "", "", ""} // the target: a declared name, picked right after (field_access.odin)
 		f2 := Field{strings.clone(" = "), false, false, ASSIGN_OP_KIND, "", ""}  // Y: += -= ... (loops.odin)
 		f3 := Field{"", false, true, "value", "", ""}                 // value slot
 		inject_at(fields, fi, f3)
@@ -2209,7 +2218,7 @@ insertion_points :: proc(app: ^App, allocator := context.temp_allocator) -> []bo
 	n := len(app.doc.nodes)
 	pts := make([]bool, n + 1, allocator)
 	infos := block_infos(app)
-	for i in 0 ..< n do pts[i] = infos[i].decl_depth <= 0
+	for i in 0 ..< n do pts[i] = infos[i].decl_depth <= 0 && !inside_block_comment(app, i)
 	pts[n] = true
 	return pts
 }
@@ -2330,6 +2339,7 @@ brace_delta :: proc(app: ^App, i: int) -> int {
 	d := 0
 	t := node_text(app.doc.nodes[i], context.temp_allocator)
 	if strings.has_prefix(strings.trim_left_space(t), "//") do return 0 // a comment's braces are text
+	if in_block_comment(app.doc.nodes[i]) do return 0                   // so are a /* ... */ comment's (block_comment.odin)
 	for r in t {
 		if r == '{' do d += 1
 		if r == '}' do d -= 1
@@ -2422,6 +2432,7 @@ delete_construct :: proc(app: ^App, start, end_param: int) {
 // top-level single-node statement, delete that node; if on a body-statement line, delete
 // just that line; if the line is a block header (contains '{'), delete the whole block.
 delete_selected :: proc(app: ^App) {
+	if block_comment_delete(app) do return // a line of a /* ... */ comment, or all of it (block_comment.odin)
 	if layout_delete(app) do return // a comment line; a blank line next to the dot (stmt_layout.odin)
 	if on_dot(app) do return
 	if app.editor_line < 0 || app.editor_line >= len(app.doc.nodes) do return
@@ -2747,6 +2758,14 @@ menu_select :: proc(app: ^App) {
 		number_key(app, e) // LT+A on a number: the keypad (expr.odin)
 		return
 	}
+	if e.fill == WORD_FILL {
+		word_tool(app, e) // word by word: insert a special, change a word (word_edit.odin)
+		return
+	}
+	if len(e.children) > 0 && app.word_edit_active {
+		word_menu_push(app, e) // the word menus keep their order (word_edit.odin)
+		return
+	}
 	if e.fill == TXT_FILL {
 		text_tool(app, e) // LT+A on a name / string / comment: text tools (text_tools.odin)
 		return
@@ -2822,7 +2841,13 @@ menu_select :: proc(app: ^App) {
 		record_recent(app, e.import_path)
 		app.import_alias = false
 	} else if e.insert != "" {
-		if !layout_add_insert(app, e.insert) do append_text_node(app, e.insert) // comment / blank line (stmt_layout.odin)
+		if layout_add_insert(app, e.insert) {
+			// comment / blank line (stmt_layout.odin)
+		} else if fnode, fok := parse_foreign_line(e.insert); fok {
+			doc_insert(app, fnode) // foreign import / foreign block: the name is a stop (parse.odin)
+		} else {
+			append_text_node(app, e.insert)
+		}
 	} else if e.fill != "" {
 		// Compile-time / modifier options (ctrl.odin).
 		if app.ctrl_menu != .None {
@@ -3007,6 +3032,8 @@ menu_select :: proc(app: ^App) {
 			free_entries(app.slot_menu)
 			app.slot_menu = nil
 		}
+		// Assignment / x op= ●: which declared name it assigns to, picked now (field_access.odin).
+		if e.fill == "__stmt_assign__" || e.fill == ASSIGN_OP_FILL do assign_pick_start(app, app.slot_ni)
 		return
 	} else {
 		return // placeholder, no-op
@@ -3057,6 +3084,7 @@ new_project :: proc(app: ^App) {
 }
 
 update :: proc(app: ^App, inp: Input) {
+	defer word_edit_sync(app)      // word by word: its field after the syncs below (word_edit.odin)
 	defer sync_capture_dots(app) // pink "capture the result" dots (capture.odin)
 	defer ctrl_sync(app)         // #assert keeps at most one message dot (ctrl.odin)
 	defer branch_sync(app)       // empty case dots expect the switched value's type (branch.odin)
@@ -3083,6 +3111,7 @@ update :: proc(app: ^App, inp: Input) {
 	case .Editor:
 		if ref_pick_update(app, inp) do return // picking a name for "Reference"
 		if grab_update(app, inp, keys) do return // something is lifted: slide / drop / put back (grab.odin)
+		if word_edit_update(app, inp, keys) do return // inside a string's text, word by word (word_edit.odin)
 		if mod_pick_update(app, inp) do return // picking a declaration for a modifier (modifiers.odin)
 		keymap_run(app, keys.fired)
 		if app.state != .Editor do return // an action opened a menu
@@ -3151,7 +3180,7 @@ keymap_run :: proc(app: ^App, fired: Actions) {
 		case .Walk_Out:    tree_move(app, -1, 0)
 		case .Format_File: format_doc(app)
 		case .Grab:        grab_start(app) // lift the RT selection (grab.odin)
-		case .Docs, .Copy, .Save_As, .Run_List, .Files, .Run_Favorite, .Run_Tests, .Prev_File, .Key_Layout:
+		case .Docs, .Copy, .Save, .Save_As, .Run_List, .Files, .Run_Favorite, .Run_Tests, .Prev_File, .Key_Layout:
 			app.requests += {a}
 		}
 		if app.state != .Editor do return

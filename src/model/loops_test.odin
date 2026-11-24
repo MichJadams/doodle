@@ -277,13 +277,11 @@ test_loops_build_every_form :: proc(t: ^testing.T) {
 	fill_ref(t, &app, ni, "count")
 	fill_number(t, &app, ni, "10")
 	testing.expect_value(t, line_src(&app, ni), "for count < 10 {")
-	a := add_in_body(t, &app, ni + 1, "Assignment", "+=")
-	testing.expect(t, focus_text(&app, a, " += "), "the operator is a part")
-	focus_field_index(&app, a, 1) // the target name
-	change_selected(&app)        // Y: pick what to assign to
+	a := add_in_body(t, &app, ni + 1, "Assignment", "+=") // the target pick opens at once
 	if ref_choose(t, &app, "count") do pick(t, &app, "count")
 	fill_number(t, &app, a, "1")
 	testing.expect_value(t, line_src(&app, a), "count += 1")
+	testing.expect(t, focus_text(&app, a, " += "), "the operator is a part")
 
 	// for { break }
 	ni = add_stmt(t, &app, a + 3, "Loops", "For (infinite)")
@@ -340,9 +338,7 @@ test_loops_build_every_form :: proc(t: ^testing.T) {
 	ni = add_stmt(t, &app, ni + 3, "Loops", "For &x in")
 	fill_ref(t, &app, ni, "items")
 	testing.expect_value(t, line_src(&app, ni), "for &item in items {")
-	a = add_in_body(t, &app, ni + 1, "Assignment", "-=")
-	focus_field_index(&app, a, 1)
-	change_selected(&app)
+	a = add_in_body(t, &app, ni + 1, "Assignment", "-=") // the target pick opens at once
 	if ref_choose(t, &app, "item") && pick(t, &app, "Field of item") do pick(t, &app, "hp   int")
 	fill_number(t, &app, a, "1")
 	testing.expect_value(t, line_src(&app, a), "item.hp -= 1")

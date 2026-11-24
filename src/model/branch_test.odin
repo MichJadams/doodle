@@ -594,7 +594,9 @@ test_branch_case_dots_in_switch_body :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true})
 	pick(t, &app, "Assignment")
 	pick(t, &app, "Assignment")
-	testing.expect(t, strings.has_prefix(node_text(app.doc.nodes[line_with(&app, "case:") + 1], context.temp_allocator), "\t\t"), "statement in the case body")
+	update(&app, Input{confirm = true}) // its target: the nearest name above (x)...
+	update(&app, Input{confirm = true}) // ...Assign to > x
+	testing.expect(t, strings.has_prefix(node_text(app.doc.nodes[line_with(&app, "case:") + 1], context.temp_allocator), "\t\tx = "), "statement in the case body")
 	// The case via the first dot.
 	focus_dot_at(&app, s + 1)
 	update(&app, Input{confirm = true})

@@ -275,6 +275,12 @@ main :: proc() {
 			}
 		}
 
+		// A message from the editor model (e.g. "nothing declared to assign to").
+		if m.notice != "" {
+			set_status(m.notice)
+			m.notice = ""
+		}
+
 		// Menus used this frame: save the heatmap (throttled; heat_store.odin).
 		heat_store_tick()
 
@@ -328,7 +334,11 @@ main :: proc() {
 					set_status(fmt.tprintf("Heard \"%s\" - not a number", final))
 				}
 			} else if final != "" {
-				model.rename_field(&m, g_stt_ni, g_stt_fi, final) // a declaration's name: asks whether its uses follow
+				if m.word_edit_active && m.word_ni == g_stt_ni && m.word_fi == g_stt_fi {
+					model.word_dictated(&m, final) // word by word: the word / the yellow dot (model/word_edit.odin)
+				} else {
+					model.rename_field(&m, g_stt_ni, g_stt_fi, final) // a declaration's name: asks whether its uses follow
+				}
 				if g_heard != "" do delete(g_heard)
 				g_heard = strings.clone(final)
 			}
@@ -497,6 +507,7 @@ app_requests :: proc(m: ^model.App, inp: model.Input) {
 	req := m.requests
 	m.requests = {}
 	if .Copy in req         do copy_selection(m)
+	if .Save in req         do save_now(m)
 	if .Run_Favorite in req do run_favorite()
 	if .Run_Tests in req    do run_tests()
 	if .Prev_File in req {
@@ -640,7 +651,7 @@ action_icon :: proc(a: model.Action) -> (Icon, bool) {
 	#partial switch a {
 	case .Talk:    return .Speech, true
 	case .Delete:  return .Delete, true
-	case .Save_As: return .Save, true
+	case .Save, .Save_As: return .Save, true
 	case .Files:   return .Files, true
 	case .Copy:    return .Copy, true
 	case .Select:  return .Add, true

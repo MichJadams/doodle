@@ -104,6 +104,7 @@ unit_expected :: proc(app: ^App, ni: int, u: Unit) -> (hint, pkg: string) {
 // change_selected: Y.
 change_selected :: proc(app: ^App) {
 	if app.state != .Editor do return
+	if block_comment_change(app) do return // a line of a /* ... */ comment: add a line (block_comment.odin)
 	ni, fa, fb := -1, 0, 0
 	if app.tree_sticky {
 		if s, ok := tree_selection(app); ok && s.kind == .Unit do ni, fa, fb = s.ni, s.fa, s.fb
@@ -141,6 +142,11 @@ change_selected :: proc(app: ^App) {
 			begin_refill(app, ni, Unit{u.fa, close + 1, .Lit, nil, true, 0})
 			return
 		}
+	}
+	// A string's text: the text tools (Case, Escape, Edit word by word), with
+	// "Replace value" first when it's an argument (text_tools.odin).
+	if k := string_literal_text(n, u.fa, u.fb); k >= 0 {
+		if open_text_tools(app, ni, k, u.is_arg) do return
 	}
 	if u.is_arg {
 		begin_refill(app, ni, u)
@@ -382,4 +388,19 @@ apply_decl_form :: proc(app: ^App, ni, fi: int, form: string) -> int {
 	}
 	set_op(&fields[fi], op)
 	return -1
+}
+
+// string_literal_text: the text field when fields [fa, fb) are exactly a string
+// literal (its quotes and its text), else -1. (`L("x")` as a whole isn't one.)
+@(private = "file")
+string_literal_text :: proc(n: Node, fa, fb: int) -> int {
+	text := -1
+	for k in fa ..< fb {
+		f := n.fields[k]
+		if f.editable && f.kind == "string" && text < 0 { text = k; continue }
+		q := strings.trim_space(f.text)
+		if !f.slot && !f.editable && (q == "\"" || q == "`") do continue
+		return -1
+	}
+	return text
 }

@@ -8,13 +8,13 @@ package model
 // Rows of a bank card, top to bottom.
 KEYS_ROWS := [8]Pad_Button{.Up, .Down, .Left, .Right, .A, .B, .X, .Y}
 
-// The picker: 5 x 5 via grid_nav (grid_cols(21) = 5; the last row holds Grab).
-KEYS_PICK := [21]Action{
+// The picker: 5 x 5 via grid_nav (grid_cols(22) = 5; the last row holds Grab and Save).
+KEYS_PICK := [22]Action{
 	.None,      .Edit,         .Delete,    .Change,   .Docs,
 	.Copy,      .Talk,         .Save_As,   .Files,    .Prev_File,
 	.Run_List,  .Run_Favorite, .Run_Tests, .IDE_Menu, .Format_File,
 	.Walk_Prev, .Walk_Next,    .Walk_In,   .Walk_Out, .Key_Layout,
-	.Grab,
+	.Grab,      .Save,
 }
 
 Keys_Page :: struct {
