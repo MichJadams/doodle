@@ -11,8 +11,6 @@ cleanup :: proc(app: ^App) {
 	clear_nav(app)
 	delete(app.nav)
 	if app.slot_menu != nil do free_entries(app.slot_menu)
-	refill_discard(app)
-	delete(app.refill_saved)
 	doc_reset(app)
 	delete(app.doc.nodes)
 	delete(app.recent_imports)
