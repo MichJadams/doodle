@@ -153,7 +153,11 @@ jobs:
       - name: Build
         run: |
           mkdir -p bin
-          odin build src/app -out:bin/doodle -o:speed -no-bounds-check
+          # No action recording in releases (src/app/trace.odin): off explicitly,
+          # whatever other flags this line gets later.
+          odin build src/app -out:bin/doodle -o:speed -no-bounds-check -define:DOODLE_TRACE=false
+          # The recorder writes "doodle-trace 1" at the top of every recording.
+          if grep -aq 'doodle-trace 1' bin/doodle; then echo "action recording is compiled in" >&2; exit 1; fi
 
       - name: Package
         run: |
@@ -301,7 +305,11 @@ jobs:
       - name: Build
         run: |
           mkdir -p bin
-          odin build src/app -out:bin/doodle -o:speed -no-bounds-check
+          # No action recording in releases (src/app/trace.odin): off explicitly,
+          # whatever other flags this line gets later.
+          odin build src/app -out:bin/doodle -o:speed -no-bounds-check -define:DOODLE_TRACE=false
+          # The recorder writes "doodle-trace 1" at the top of every recording.
+          if grep -aq 'doodle-trace 1' bin/doodle; then echo "action recording is compiled in" >&2; exit 1; fi
 
       - name: Package
         run: |
@@ -441,8 +449,11 @@ jobs:
       - name: Build
         run: |
           New-Item -ItemType Directory -Force bin | Out-Null
-          odin build src/app -out:bin/doodle.exe -o:speed -no-bounds-check
+          # No action recording in releases (src/app/trace.odin): off explicitly.
+          odin build src/app -out:bin/doodle.exe -o:speed -no-bounds-check -define:DOODLE_TRACE=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The recorder writes "doodle-trace 1" at the top of every recording.
+          if (Select-String -Path bin\doodle.exe -SimpleMatch 'doodle-trace 1' -Quiet) { throw "action recording is compiled in" }
 
       - name: Package
         run: |

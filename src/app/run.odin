@@ -25,6 +25,7 @@ g_run_index:     int               // Selected index in run list
 g_run_loaded:    bool              // Lazy load flag
 g_run_msg:       string            // Last run message
 g_run_msg_time:  f64               // Time when message was shown
+g_run_msg_hold:  f64               // How long it stays (set_status)
 g_run_submenu:   bool              // Template submenu is open
 g_run_tmpl_idx:  int               // Selected template index
 
@@ -133,9 +134,9 @@ run_command :: proc(cmd: string, keep_open := false) {
 	if dir == "" {
 		dir = "."
 	}
-	// The vendor libraries it imports (SDL3.dll, ...) must be findable: maybe
-	// ask first (vendor_path.odin), then run_launch.
-	vendor_run(cmd, dir, keep_open)
+	// Odin's stb libraries built (Linux; stb_build.odin), the vendor libraries it
+	// imports (SDL3.dll, ...) findable: maybe ask first (vendor_path.odin), then run_launch.
+	stb_run(cmd, dir, keep_open)
 }
 
 // run_launch starts the run, with `lib_dirs` (vendor library folders) on its
@@ -191,7 +192,7 @@ run_command_posix :: proc(cmd, dir: string, keep_open: bool, lib_dirs: []string)
 	tmp, terr := os.temp_directory(context.temp_allocator)
 	if terr != nil do tmp = "/tmp"
 	script := fmt.tprintf("%s/doodle_run.sh", tmp)
-	body := run_script_text(abs_dir, odin_dir(), cmd, keep_open, lib_dirs)
+	body := run_script_text(abs_dir, odin_dir(), cmd, keep_open, lib_dirs, toolchain_bin())
 	if os.write_entire_file(script, transmute([]byte)body) != nil {
 		set_status("run: couldn't write the run script")
 		return
@@ -219,7 +220,8 @@ run_command_posix :: proc(cmd, dir: string, keep_open: bool, lib_dirs: []string)
 }
 
 // set_status shows a short message in the bottom-right corner (save/run feedback).
-set_status :: proc(msg: string) {
+set_status :: proc(msg: string, seconds := RUN_MSG_DURATION) {
+	g_run_msg_hold = seconds
 	if g_run_msg != "" do delete(g_run_msg)
 	g_run_msg = strings.clone(msg)
 	g_run_msg_time = g_time

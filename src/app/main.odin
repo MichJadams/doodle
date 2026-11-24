@@ -53,6 +53,8 @@ g_time: f64
 
 // STT push-to-talk state (for the HUD/editor overlay).
 g_recording: bool
+g_stt_busy:  bool // the mic was let go; its words are still being worked out (the editor waits)
+g_stt_clips: int  // clips queued for this dictation (g_stt_parts fills up to it)
 g_heard:     string
 g_mic_ready: bool            // a field is highlighted + whisper available
 g_walk_held: bool            // a trigger whose bank walks the code tree is held (statement-selection highlight)
@@ -145,6 +147,7 @@ main :: proc() {
 	
 	// Expose STT engine to file-nav for search speech input.
 	g_stt_e = stt_e
+	g_stt_ready = stt_e != nil // Settings > Setup shows it (setup.odin)
 	g_app = &m // for file-nav to load an opened file into the editor
 
 	raw: Raw
@@ -168,9 +171,15 @@ main :: proc() {
 		filenav_load(f)
 	}
 
+	setup_hint_due := !trace_replaying() // TRACE hook: a replay shows what was recorded
 	for !m.want_quit {
 		g_time = platform.now_seconds()
 		reset_edges(&raw)
+		// Something Doodle needs is missing (Odin): say where to install it.
+		if setup_hint_due {
+			setup_hint_due = false
+			if hint := setup_missing(); hint != "" do set_status(hint, 8)
+		}
 
 		clear(&events)
 		win.dpad_no_repeat = g_recording // a held d-pad repeats, except while dictating (Down ends a word)
@@ -192,14 +201,15 @@ main :: proc() {
 		down_edge := inp.down
 		// Talk is a hold on whichever button the layout gives it (model/keymap.odin).
 		talk_down := model.keymap_holding(m.keymap, raw.held, inp.lt_held, inp.rt_held, .Talk)
-		mic_hold := !g_keys_open && !g_settings_open && !g_vp_open && talk_down
+		mic_hold := !g_keys_open && !g_settings_open && !g_vp_open && !g_sb_open && talk_down
 		// A Talk press made while an overlay is open belongs to the overlay (Talk on
 		// plain Y, and Y closes the docs): it stays stale until released.
 		if !talk_down do g_talk_stale = false
 		else if overlay_open() do g_talk_stale = true
-		g_walk_held = !g_recording && model.keymap_bank_walks(m.keymap, model.active_bank(inp))
-		// While recording, the d-pad/buttons drive dictation, not navigation.
-		if g_recording {
+		g_walk_held = !g_recording && !g_stt_busy && model.keymap_bank_walks(m.keymap, model.active_bank(inp))
+		// While recording, the d-pad/buttons drive dictation, not navigation (and
+		// nothing moves until the words are in).
+		if g_recording || g_stt_busy {
 			inp.confirm = false; inp.cancel = false
 			inp.up = false; inp.down = false; inp.left = false; inp.right = false
 			inp.x = false; inp.y = false
@@ -231,7 +241,10 @@ main :: proc() {
 		}
 
 		// Route input to file-nav handler when active (suppresses normal editor input).
-		if g_vp_open {
+		if g_sb_open {
+			// "Stb libraries not built yet" before a run (stb_build.odin) owns all input.
+			handle_stb_prompt_input(&raw)
+		} else if g_vp_open {
 			// "Library not on your PATH" before a run (vendor_path.odin) owns all input.
 			handle_vendor_prompt_input(&raw)
 		} else if g_save_open {
@@ -259,7 +272,7 @@ main :: proc() {
 		} else {
 			// Every editor action comes from the button layout through model.update
 			// (m.requests, then app_requests), so none can fire with an overlay open.
-			if m.state == .Editor && !g_run_open && !g_recording && !m.ref_pick_active && !m.mod_pick_active {
+			if m.state == .Editor && !g_run_open && !g_recording && !g_stt_busy && !m.ref_pick_active && !m.mod_pick_active {
 				// Fixed, outside the layout: Ctrl+C copies, RB runs the favorite, LB the tests.
 				if raw.e_copy { copy_selection(&m); raw.e_copy = false }
 				if raw.e_rb   { run_favorite(); raw.e_rb = false }
@@ -296,7 +309,7 @@ main :: proc() {
 		g_mic_ready = dmode != .None && stt_e != nil && m.state == .Editor
 
 		// Push-to-talk dictation into the highlighted field (not in file-nav mode).
-		if mic_hold && !g_talk_stale && g_mic_ready && !g_recording && !overlay_open() {
+		if mic_hold && !g_talk_stale && g_mic_ready && !g_recording && !g_stt_busy && !overlay_open() {
 			// Free-text for string literals (preserve spaces); snake_case for identifiers.
 			g_stt_mode = dmode
 			// Free text keeps "3.5" / "-2" whole (an identifier would make them 3_5 / 2).
@@ -317,13 +330,35 @@ main :: proc() {
 			g_stt_ni = tni
 			g_stt_fi = tfi
 			clear(&g_stt_parts)
+			g_stt_clips = 0
 		}
+		// The words are worked out in the background (stt.segment_async / end_async):
+		// Down queues what was said so far (an underscore boundary), letting go
+		// queues the rest. The screen keeps going; the editor waits for the words.
 		if g_recording && down_edge {
-			append(&g_stt_parts, trace_stt_segment(stt_e)) // TRACE hook (was: stt.segment); d-pad Down = underscore boundary
+			trace_stt_segment_async(stt_e) // TRACE hook
+			g_stt_clips += 1
 		}
 		if g_recording && !mic_hold {
-			append(&g_stt_parts, trace_stt_end(stt_e)) // TRACE hook (was: stt.end)
+			trace_stt_end_async(stt_e) // TRACE hook
+			g_stt_clips += 1
+			g_recording = false
+			g_stt_busy = true
+		}
+		for len(g_stt_parts) < g_stt_clips {
+			text, ok := trace_stt_poll(stt_e) // TRACE hook: the texts, in order, as they're ready
+			if !ok do break
+			append(&g_stt_parts, text)
+		}
+		if g_stt_busy && len(g_stt_parts) == g_stt_clips {
+			g_stt_busy = false
 			final := g_stt_free ? join_spaces(g_stt_parts[:]) : join_identifier(g_stt_parts[:])
+			// The field it was meant for (the editor took no input meanwhile, but a
+			// file could have been opened by then).
+			if g_stt_ni < 0 || g_stt_ni >= len(m.doc.nodes) || g_stt_fi < 0 || g_stt_fi >= len(m.doc.nodes[g_stt_ni].fields) {
+				delete(final)
+				final = strings.clone("")
+			}
 			if final != "" && g_stt_mode == .Number {
 				// "ten" / "10." / "three point five" -> 10 / 3.5 (model/dictation.odin).
 				if num, ok := model.spoken_number(final); ok {
@@ -345,7 +380,6 @@ main :: proc() {
 			for p in g_stt_parts do delete(p)
 			clear(&g_stt_parts)
 			delete(final)
-			g_recording = false
 			if g_vocab != nil { delete(g_vocab); g_vocab = nil }
 			if g_prompt != "" { delete(g_prompt); g_prompt = "" }
 		}
@@ -384,6 +418,7 @@ main :: proc() {
 		if g_keys_open do draw_keys_page(r, w, h)
 		if g_settings_open do draw_settings_page(r, w, h)
 		if g_vp_open do draw_vendor_prompt(r, w, h) // on top: it can come up over the Run list
+		if g_sb_open do draw_stb_prompt(r, w, h)
 		// On the Key Layout page the HUD previews the cursor's bank.
 		hud_inp := inp
 		if g_keys_open {
@@ -393,7 +428,7 @@ main :: proc() {
 		draw_hud(r, &m, hud_inp, w, h)
 		// Show run message if recent.
 		// Status messages ("copied 6 lines", "ran: odin run .") at the top right.
-		if g_run_msg != "" && (g_time - g_run_msg_time) < RUN_MSG_DURATION {
+		if g_run_msg != "" && (g_time - g_run_msg_time) < g_run_msg_hold {
 			mw := text.measure(g_ui, g_run_msg).x
 			text.draw_line(r, g_ui, {f32(w) - mw - 28, 14}, g_run_msg, COL_ACCENT)
 		}
@@ -430,6 +465,7 @@ load_a_font :: proc(r: ^gpu.Renderer, px: f32) -> ^text.Font {
 		"assets/fonts/mono.ttf",
 		"C:\\Windows\\Fonts\\consola.ttf",
 		"C:\\Windows\\Fonts\\segoeui.ttf",
+		"assets/fonts/DejaVuSansMono.ttf", // bundled (assets/fonts/README.txt): Linux / the Deck always has one
 		"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
 		"/usr/share/fonts/TTF/DejaVuSansMono.ttf",
 	}
@@ -476,7 +512,7 @@ reset_edges :: proc(raw: ^Raw) {
 // dictating (the d-pad/buttons drive dictation then, not navigation).
 editor_input :: proc(raw: ^Raw) -> model.Input {
 	inp := build_input(raw)
-	if g_recording {
+	if g_recording || g_stt_busy {
 		inp.confirm = false; inp.cancel = false
 		inp.up = false; inp.down = false; inp.left = false; inp.right = false
 		inp.x = false; inp.y = false
@@ -932,7 +968,7 @@ draw_radial :: proc(r: ^gpu.Renderer, m: ^model.App, w, h: int) {
 
 // overlay_open: something owns the input instead of the editor / main menu.
 overlay_open :: proc() -> bool {
-	return g_filenav || g_save_open || g_doc_open || g_run_open || g_proj_open || g_np_open || g_keys_open || g_settings_open || g_vp_open
+	return g_filenav || g_save_open || g_doc_open || g_run_open || g_proj_open || g_np_open || g_keys_open || g_settings_open || g_vp_open || g_sb_open
 }
 
 draw_hud :: proc(r: ^gpu.Renderer, m: ^model.App, inp: model.Input, w, h: int) {

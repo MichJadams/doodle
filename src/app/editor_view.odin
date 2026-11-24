@@ -390,12 +390,15 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 		if y1 > top && y0 < bottom {
 			box := gpu.Rect{pad, max(y0, top), f32(w) - pad * 2, min(y1, bottom) - max(y0, top)}
 			pulse := 0.5 + 0.5 * math.sin(f32(g_time) * 4.0)
+			// Orange; red for a copy that can't be dropped here (between procedures).
+			glow, fill, edge := gpu.Color{1.00, 0.55, 0.10, 1}, gpu.Color{1.00, 0.60, 0.15, 1}, gpu.Color{0.95, 0.50, 0.05, 0.95}
+			if model.grab_blocked(m) do glow, fill, edge = {0.90, 0.15, 0.12, 1}, {0.95, 0.20, 0.15, 1}, {0.80, 0.10, 0.08, 0.95}
 			for k in 1 ..= 4 { // the glow: fading outlines outside the box
 				d := f32(k) * 3
-				gpu.draw_rect_outline(r, {box.x - d, box.y - d, box.w + 2 * d, box.h + 2 * d}, 3, {1.00, 0.55, 0.10, (0.20 + 0.15 * pulse) / f32(k)})
+				gpu.draw_rect_outline(r, {box.x - d, box.y - d, box.w + 2 * d, box.h + 2 * d}, 3, {glow.r, glow.g, glow.b, (0.20 + 0.15 * pulse) / f32(k)})
 			}
-			gpu.draw_rect(r, box, {1.00, 0.60, 0.15, 0.14 + 0.06 * pulse})
-			gpu.draw_rect_outline(r, box, 2, {0.95, 0.50, 0.05, 0.95})
+			gpu.draw_rect(r, box, {fill.r, fill.g, fill.b, 0.14 + 0.06 * pulse})
+			gpu.draw_rect_outline(r, box, 2, edge)
 		}
 	}
 
@@ -571,6 +574,8 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	if m.grab_active {
 		// Lifted (model/grab.odin): only these buttons do anything now.
 		hint = "Up/Down move   RT+Up/Down jump   X / A drop   B put back"
+		if m.grab_copy do hint = "Up/Down move the copy   RT+Up/Down jump   X / A drop   B no copy"
+		if model.grab_blocked(m) do hint = "Outside a procedure: can't drop here   Up/Down move   B no copy"
 	}
 	if hint != "" && !m.ref_pick_active {
 		hw := text.measure(g_ui, hint).x
@@ -582,6 +587,10 @@ draw_editor :: proc(r: ^gpu.Renderer, font: ^text.Font, m: ^model.App, w, h: int
 	// STT push-to-talk indicator / last heard word.
 	if g_recording {
 		text.draw_line(r, g_ui, {f32(w) - 150, 14}, "[REC]", COL_ERR)
+	} else if g_stt_busy {
+		// The words are being worked out in the background (stt.end_async): dots that cycle.
+		dots := [?]string{"transcribing.", "transcribing..", "transcribing..."}
+		text.draw_line(r, g_ui, {f32(w) - 190, 14}, dots[int(g_time * 3) % 3], COL_ACCENT)
 	} else if g_heard != "" {
 		text.draw_line(r, g_ui, {f32(w) - 320, 14}, fmt.tprintf("heard: %s", g_heard), COL_ACCENT)
 	}

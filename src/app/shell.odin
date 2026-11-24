@@ -28,7 +28,9 @@ odin_dir :: proc() -> string {
 		os.get_env("ODIN_ROOT", context.temp_allocator),
 		exe_dir != "" ? fmt.tprintf("%s/toolchain/odin", exe_dir) : "",
 		exe_dir != "" ? fmt.tprintf("%s/../toolchain/odin", exe_dir) : "",
+		setup_data_dir() != "" ? fmt.tprintf("%s/odin", setup_data_dir()) : "", // Settings > Setup > Odin installs it here (setup.odin)
 		"C:\\Odin" when ODIN_OS == .Windows else (home != "" ? fmt.tprintf("%s/odin", home) : ""),
+		"" when ODIN_OS == .Windows else (home != "" ? fmt.tprintf("%s/Odin", home) : ""), // docs/INSTALL.md's spelling (Linux paths are case-sensitive)
 		"" when ODIN_OS == .Windows else "/opt/odin",
 	}
 	for c in candidates {
@@ -70,11 +72,13 @@ sh_quote :: proc(s: string, allocator := context.temp_allocator) -> string {
 // run_script_text builds the sh script a Run executes: cd into the project,
 // put Odin on PATH, run the command, and (like the Windows console) wait for
 // Enter when it fails, or always when keep_open is set.
-run_script_text :: proc(dir, odin_dir, cmd: string, keep_open: bool, lib_dirs: []string = nil, allocator := context.temp_allocator) -> string {
+run_script_text :: proc(dir, odin_dir, cmd: string, keep_open: bool, lib_dirs: []string = nil, clang_dir := "", allocator := context.temp_allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "#!/bin/sh\n")
 	fmt.sbprintf(&b, "cd %s || exit 1\n", sh_quote(dir))
 	if odin_dir != "" do fmt.sbprintf(&b, "PATH=%s:\"$PATH\"; export PATH\n", sh_quote(odin_dir))
+	// Settings > Setup > clang (toolchain.odin): last, so a real clang still wins.
+	if clang_dir != "" do fmt.sbprintf(&b, "PATH=\"$PATH\":%s; export PATH\n", sh_quote(clang_dir))
 	// The vendor library folders the project's imports need (vendor_path.odin).
 	if len(lib_dirs) > 0 {
 		v := "DYLD_LIBRARY_PATH" when ODIN_OS == .Darwin else "LD_LIBRARY_PATH"

@@ -117,15 +117,23 @@ setting_on :: proc(s: model.Setting) -> bool { return g_settings.on[s] }
 settings_page_open :: proc() {
 	g_settings_open = true
 	g_settings_row = 0
+	setup_refresh() // the SETUP rows (setup.odin)
 }
+
+// The rows: the on/off options, then SETUP's (setup.odin).
+@(private = "file")
+settings_rows :: proc() -> int { return len(model.Setting) + len(setup_items()) }
 
 settings_page_close :: proc() { g_settings_open = false }
 
 handle_settings_input :: proc(raw: ^Raw) {
-	n := len(model.Setting)
+	n := settings_rows()
 	if raw.e_up   do g_settings_row = (g_settings_row - 1 + n) % n
 	if raw.e_down do g_settings_row = (g_settings_row + 1) % n
-	if raw.e_confirm || raw.e_a || raw.e_left || raw.e_right {
+	if g_settings_row >= len(model.Setting) {
+		// SETUP (setup.odin): A installs what's missing.
+		if raw.e_confirm || raw.e_a do setup_action(setup_items()[g_settings_row - len(model.Setting)])
+	} else if raw.e_confirm || raw.e_a || raw.e_left || raw.e_right {
 		s := model.Setting(g_settings_row)
 		g_settings.on[s] = !g_settings.on[s]
 		settings_store_save()
@@ -160,5 +168,29 @@ draw_settings_page :: proc(r: ^gpu.Renderer, w, h: int) {
 		text.draw_line(r, g_ui, {box.x + cellw - vw - 16, y + 12}, value, on ? COL_ACCENT : COL_DIM)
 		text.draw_line(r, g_ui, {box.x + 16, y + cellh + 8}, fit_label(g_ui, on ? info.on : info.off, cellw - 32), COL_DIM)
 	}
-	text.draw_centered(r, g_ui, {0, f32(h) - 172, fw, 24}, "D-pad move   A switch   B back", COL_DIM)
+	// SETUP (setup.odin): what Doodle needs from the machine. Looked at again
+	// every few seconds while the page is open (an install can finish meanwhile).
+	setup_refresh()
+	head_y := start_y + f32(len(model.Setting)) * (cellh + vgap)
+	text.draw_line(r, g_ui, {start_x, head_y}, "SETUP", COL_ACCENT)
+	for it, k in setup_items() {
+		i := len(model.Setting) + k
+		y := head_y + 30 + f32(k) * (cellh + vgap)
+		box := gpu.Rect{start_x, y, cellw, cellh}
+		active := i == g_settings_row
+		gpu.draw_rect(r, box, active ? COL_HILITE : COL_PANEL)
+		if active do gpu.draw_rect_outline(r, box, 2, COL_ACCENT)
+		value, about, look := setup_row(it)
+		col := COL_DIM
+		switch look {
+		case .Good:             col = COL_ACCENT
+		case .Bad, .Missing:    col = COL_ERR
+		case .Busy, .Info:      col = COL_DIM
+		}
+		vw := text.measure(g_ui, value).x
+		text.draw_line(r, g_ui, {box.x + 16, y + 12}, fit_label(g_ui, SETUP_LABELS[it], cellw - vw - 56), COL_TEXT)
+		text.draw_line(r, g_ui, {box.x + cellw - vw - 16, y + 12}, value, col)
+		text.draw_line(r, g_ui, {box.x + 16, y + cellh + 8}, fit_label(g_ui, about, cellw - 32), COL_DIM)
+	}
+	text.draw_centered(r, g_ui, {0, f32(h) - 172, fw, 24}, "D-pad move   A switch / install   B back", COL_DIM)
 }

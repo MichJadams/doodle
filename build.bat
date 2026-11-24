@@ -34,7 +34,7 @@ if "%~1"=="test" (
 )
 
 if "%~1"=="release" (
-    odin build %SRC% -out:%OUT% -o:speed -no-bounds-check
+    odin build %SRC% -out:%OUT% -o:speed -no-bounds-check -define:DOODLE_TRACE=false
     goto :eof
 )
 

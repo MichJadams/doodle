@@ -43,6 +43,8 @@ press :: proc(app: ^App, b: string, rt_held: bool) {
 	case "b":     inp.cancel = true
 	}
 	update(app, inp)
+	// RT+X opens Refactor: Grab is its first entry.
+	if b == "x" && app.state == .Radial && current_view(app).title == "Refactor" do update(app, Input{confirm = true})
 }
 
 // The cursor on line `text`, then RT+Right (into its construct) - the walk
@@ -231,4 +233,112 @@ test_grab_drop_with_x_or_a :: proc(t: ^testing.T) {
 	update(&app, Input{confirm = true}) // A: drop
 	testing.expect(t, !app.grab_active, "A drops")
 	testing.expect_value(t, body(&app), "main :: proc() {\n\tc := 3\n\ta := 1\n\tb := 2\n}\n")
+}
+
+// ---- Refactor > Copy line ----
+
+// The document's lines as they are (file_text would format them mid-move),
+// minus "package main" and the blank line after it.
+@(private = "file")
+lines :: proc(app: ^App) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	for n, i in app.doc.nodes do if i >= 2 {
+		strings.write_string(&b, node_text(n, context.temp_allocator))
+		strings.write_byte(&b, '\n')
+	}
+	return strings.to_string(b)
+}
+
+COPY_SRC :: "package main\n\nmain :: proc() {\n\ta := 1\n\tb := 2\n}\n\nother :: proc() {\n\tc := 3\n}\n"
+
+// RT+X opens Refactor (Grab / Copy line); B closes it without lifting.
+@(test)
+test_refactor_menu :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	load(&app, COPY_SRC)
+	cursor_on(&app, "a := 1")
+	update(&app, Input{rt_held = true, x = true})
+	v := current_view(&app)
+	if !testing.expect(t, v != nil && v.title == "Refactor" && len(v.entries) == 2, "the Refactor menu") do return
+	testing.expect(t, v.entries[0].label == "Grab" && v.entries[1].label == "Copy line", "Grab, Copy line")
+	update(&app, Input{cancel = true})
+	_, _, lifted := grab_lines(&app)
+	testing.expect(t, app.state == .Editor && !lifted, "B: nothing lifted")
+	testing.expect_value(t, lines(&app), strings.trim_prefix(COPY_SRC, "package main\n\n"))
+}
+
+@(private = "file")
+copy_line :: proc(app: ^App, text: string) {
+	cursor_on(app, text)
+	update(app, Input{rt_held = true, x = true})
+	v := current_view(app)
+	if v == nil do return
+	v.index = 1 // Copy line
+	update(app, Input{confirm = true})
+}
+
+// The copy moves, the original stays; it goes out of main, past the gap and
+// into other (red between them: no drop there), then drops.
+@(test)
+test_copy_line_into_another_procedure :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	load(&app, COPY_SRC)
+	copy_line(&app, "a := 1")
+	ni, end, ok := grab_lines(&app)
+	testing.expect(t, ok && ni == end && app.grab_copy, "a copy is lifted")
+	testing.expect_value(t, lines(&app), "main :: proc() {\n\ta := 1\n\ta := 1\n\tb := 2\n}\n\nother :: proc() {\n\tc := 3\n}\n")
+	plain(&app, "down") // past b
+	plain(&app, "down") // out of main
+	testing.expect_value(t, lines(&app), "main :: proc() {\n\ta := 1\n\tb := 2\n}\na := 1\n\nother :: proc() {\n\tc := 3\n}\n")
+	testing.expect(t, grab_blocked(&app), "between procedures: red")
+	rt(&app, "x") // can't drop here
+	_, _, still := grab_lines(&app)
+	testing.expect(t, still && app.notice != "", "still lifted, with a notice")
+	plain(&app, "down") // into other, under its header
+	testing.expect_value(t, lines(&app), "main :: proc() {\n\ta := 1\n\tb := 2\n}\n\nother :: proc() {\n\ta := 1\n\tc := 3\n}\n")
+	testing.expect(t, !grab_blocked(&app), "inside other: fine")
+	plain(&app, "x") // drop
+	_, _, after := grab_lines(&app)
+	testing.expect(t, !after, "dropped")
+	testing.expect_value(t, lines(&app), "main :: proc() {\n\ta := 1\n\tb := 2\n}\n\nother :: proc() {\n\ta := 1\n\tc := 3\n}\n")
+
+	// Up from the bottom of other, back into main just above its `}`.
+	copy_line(&app, "c := 3")
+	for _ in 0 ..< 4 do plain(&app, "up") // past a, out of other, into main above its `}`
+	testing.expect(t, !grab_blocked(&app), "inside a procedure")
+	plain(&app, "x")
+	testing.expect_value(t, lines(&app), "main :: proc() {\n\ta := 1\n\tb := 2\n\tc := 3\n}\n\nother :: proc() {\n\ta := 1\n\tc := 3\n}\n")
+}
+
+// B: the copy goes away wherever it is, the document as it was.
+@(test)
+test_copy_line_cancel :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	load(&app, COPY_SRC)
+	copy_line(&app, "b := 2")
+	plain(&app, "down")
+	plain(&app, "down")
+	plain(&app, "b")
+	_, _, lifted := grab_lines(&app)
+	testing.expect(t, !lifted, "nothing lifted")
+	testing.expect_value(t, lines(&app), strings.trim_prefix(COPY_SRC, "package main\n\n"))
+}
+
+// A top-level construct: the copy only moves among top-level constructs.
+@(test)
+test_copy_line_top_level :: proc(t: ^testing.T) {
+	app: App
+	defer cleanup(&app)
+	load(&app, COPY_SRC)
+	cursor_on(&app, "other ::")
+	copy_line(&app, "other ::")
+	ni, end, ok := grab_lines(&app)
+	testing.expect(t, ok && end == ni + 2, "the whole procedure is copied")
+	plain(&app, "up")
+	testing.expect(t, !grab_blocked(&app), "top-level copies drop at the top level")
+	plain(&app, "x")
+	testing.expect_value(t, lines(&app), "main :: proc() {\n\ta := 1\n\tb := 2\n}\n\nother :: proc() {\n\tc := 3\n}\nother :: proc() {\n\tc := 3\n}\n")
 }

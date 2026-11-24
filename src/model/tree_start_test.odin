@@ -98,6 +98,7 @@ test_grab_starts_at_the_cursor_line :: proc(t: ^testing.T) {
 	doc_from_source(&app, LOOP_SRC)
 	b := cursor_on(&app, "b := a")
 	rt(&app, Input{x = true})
+	update(&app, Input{confirm = true}) // Refactor > Grab
 	ni, end, ok := grab_lines(&app)
 	testing.expect(t, ok && ni == b && end == b, "the current statement is lifted, not main")
 	update(&app, Input{cancel = true})

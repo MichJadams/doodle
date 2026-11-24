@@ -182,6 +182,7 @@ App :: struct {
 	notice:          string, // a message for the status line (static text); the app shows it and clears it
 	// Grab (grab.odin): the lifted statement / block, sliding among its siblings.
 	grab_active: bool,
+	grab_copy:   bool,              // Copy line: the lifted lines are a copy (the original stays)
 	grab_sel:    Sel,               // the lifted lines (kind Line / Block)
 	grab_top:    bool,              // lifted from the top level (slides only there)
 	grab_proc:   Sel,               // ... else the procedure it can't leave
@@ -2758,6 +2759,10 @@ menu_select :: proc(app: ^App) {
 		number_key(app, e) // LT+A on a number: the keypad (expr.odin)
 		return
 	}
+	if e.fill == REFACTOR_FILL {
+		refactor_choose(app, e) // RT+X: Grab / Copy line (grab.odin)
+		return
+	}
 	if e.fill == WORD_FILL {
 		word_tool(app, e) // word by word: insert a special, change a word (word_edit.odin)
 		return
@@ -3179,7 +3184,7 @@ keymap_run :: proc(app: ^App, fired: Actions) {
 		case .Walk_In:     tree_move(app, +1, 0)
 		case .Walk_Out:    tree_move(app, -1, 0)
 		case .Format_File: format_doc(app)
-		case .Grab:        grab_start(app) // lift the RT selection (grab.odin)
+		case .Grab:        open_refactor_menu(app) // Refactor: Grab / Copy line for the RT selection (grab.odin)
 		case .Docs, .Copy, .Save, .Save_As, .Run_List, .Files, .Run_Favorite, .Run_Tests, .Prev_File, .Key_Layout:
 			app.requests += {a}
 		}

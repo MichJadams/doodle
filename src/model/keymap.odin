@@ -75,7 +75,7 @@ ACTION_INFO := [Action]Action_Info{
 	.Prev_File    = {key = "prev_file",    label = "Previous file", glyph = "P", hint = "switch back to the file you had before"},
 	.Key_Layout   = {key = "key_layout",   label = "Key layout",   glyph = "K", hint = "open this page"},
 	.Save         = {key = "save",         label = "Save",         glyph = "S", required = true, hint = "save the file (a new project: main.odin in its folder); rename it in Files with LT+X"},
-	.Grab         = {key = "grab",         label = "Grab / drop",  glyph = "G", hint = "lift the highlighted statement / block, slide it with Up / Down, press again to drop (B puts it back)"},
+	.Grab         = {key = "grab",         label = "Refactor",     glyph = "G", hint = "Refactor menu: Grab (move the highlighted statement / block) or Copy line (move a copy); press again to drop, B puts it back"},
 }
 
 BUTTON_KEY  := [Pad_Button]string{.Up = "up", .Down = "down", .Left = "left", .Right = "right", .A = "a", .B = "b", .X = "x", .Y = "y"}

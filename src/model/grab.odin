@@ -1,6 +1,13 @@
 package model
 
-// Grab (RT+X by default): lift the statement / block the RT walk last
+// Refactor (RT+X by default): a menu with
+//   Grab        lift the highlighted statement / block and move it (below)
+//   Copy line   the same, but a copy moves and the original stays where it
+//               was. A copy from inside a procedure can go into any procedure
+//               (out of this one, past the others, into another); between
+//               procedures it's drawn red and can't be dropped. B: no copy.
+//
+// Grab: lift the statement / block the RT walk last
 // highlighted, move it up and down - into and out of loops and other blocks -
 // then drop it.
 //
@@ -37,7 +44,7 @@ grab_lines :: proc(app: ^App) -> (ni, end_ni: int, ok: bool) {
 
 // grab_start lifts the RT selection (see the top). False when there's nothing
 // to lift (an empty file, the package line, a `} else {` line).
-grab_start :: proc(app: ^App) -> bool {
+grab_start :: proc(app: ^App, copy := false) -> bool {
 	if _, ok := tree_selection(app); !ok do return false
 	path := app.tree_path[:]
 	idx := -1
@@ -51,7 +58,15 @@ grab_start :: proc(app: ^App) -> bool {
 	}
 	t := line_trim(app, lift.ni)
 	if strings.has_prefix(t, "package ") || strings.has_prefix(t, "}") do return false
+	if copy {
+		// The copy goes in just below the original, and that's what moves.
+		size := lift.end_ni - lift.ni + 1
+		for k in 0 ..< size do inject_at(&app.doc.nodes, lift.end_ni + 1 + k, clone_line(app.doc.nodes[lift.ni + k]))
+		lift.ni += size
+		lift.end_ni += size
+	}
 	app.grab_active = true
+	app.grab_copy = copy
 	app.grab_sel = lift
 	app.grab_top = idx == 0
 	app.grab_proc = path[0]
@@ -73,7 +88,9 @@ grab_update :: proc(app: ^App, inp: Input, keys: Resolved) -> bool {
 		return false
 	}
 	switch {
-	case .Grab in keys.fired || inp.x || keys.rest.confirm: grab_drop(app)
+	case .Grab in keys.fired || inp.x || keys.rest.confirm:
+		if grab_blocked(app) do app.notice = "A copy from inside a procedure can only be dropped inside a procedure"
+		else do grab_drop(app)
 	case keys.rest.cancel:      grab_cancel(app)
 	case .Walk_Prev in keys.fired: grab_jump(app, -1)
 	case .Walk_Next in keys.fired: grab_jump(app, +1)
@@ -96,6 +113,14 @@ grab_cancel :: proc(app: ^App) {
 		rotate_lines(app, op.lo, op.hi, op.hi - op.lo + 1 - op.first)
 		app.grab_sel = op.sel
 	}
+	if app.grab_copy {
+		// Back just below the original: take it away.
+		ni, end := app.grab_sel.ni, app.grab_sel.end_ni
+		for _ in ni ..= end do remove_node(app, ni)
+		grab_end(app)
+		focus_line_start(app, max(ni - (end - ni + 1), 0))
+		return
+	}
 	reindent_lifted(app, app.grab_indent)
 	grab_drop(app)
 }
@@ -103,6 +128,7 @@ grab_cancel :: proc(app: ^App) {
 @(private = "file")
 grab_end :: proc(app: ^App) {
 	app.grab_active = false
+	app.grab_copy = false
 	delete(app.grab_ops)
 	app.grab_ops = nil
 	if app.grab_indent != "" do delete(app.grab_indent)
@@ -159,13 +185,23 @@ enterable :: proc(app: ^App, b: Sel) -> bool {
 	for kw in ([]string{"for", "if", "else", "when"}) {
 		if strings.has_prefix(t, kw) && (len(t) == len(kw) || t[len(kw)] == ' ' || t[len(kw)] == '{') do return true
 	}
-	return t == "{" // a plain scope block
+	if t == "{" do return true // a plain scope block
+	// A copy from inside a procedure: into another procedure too.
+	return app.grab_copy && !app.grab_top && is_proc_block(app, b)
+}
+
+// A procedure's block: `name :: proc(...) {` (any calling convention / directive).
+@(private = "file")
+is_proc_block :: proc(app: ^App, b: Sel) -> bool {
+	t := line_trim(app, b.ni)
+	return strings.contains(t, "::") && strings.contains(t, "proc") && strings.has_suffix(t, "{")
 }
 
 // Can it step out of this block (it isn't the procedure it was lifted from)?
 @(private = "file")
 leavable :: proc(app: ^App, b: Sel) -> bool {
 	if app.grab_top do return false
+	if app.grab_copy do return strings.has_suffix(line_trim(app, b.ni), "{") // a copy can leave its procedure
 	return !(b.ni == app.grab_proc.ni) && strings.has_suffix(line_trim(app, b.ni), "{")
 }
 
@@ -180,7 +216,7 @@ grab_step :: proc(app: ^App, dir: int) -> bool {
 	j := p.idx + dir
 	if j >= 0 && j < len(p.sibs) {
 		other := p.sibs[j]
-		if !p.top && enterable(app, other) {
+		if (!p.top || (app.grab_copy && !app.grab_top)) && enterable(app, other) {
 			inner := strings.concatenate({line_lead(app, other.ni), "\t"}, context.temp_allocator)
 			if dir > 0 {
 				// [lift, gap, header] -> [gap, header, lift]: just under the header.
@@ -310,4 +346,55 @@ focus_line_start :: proc(app: ^App, ni: int) {
 	app.editor_attr = false
 	app.editor_field = 0
 	clamp_field(app)
+}
+
+// grab_blocked: a copy from inside a procedure, between procedures now - it
+// can't be dropped here (the app draws it red).
+grab_blocked :: proc(app: ^App) -> bool {
+	if !app.grab_active || !app.grab_copy || app.grab_top do return false
+	p, ok := grab_place(app)
+	return !ok || p.top
+}
+
+// A deep copy of a line (Copy line).
+@(private = "file")
+clone_line :: proc(n: Node) -> Node {
+	out: Node
+	out.fields = make([dynamic]Field, 0, len(n.fields))
+	for f in n.fields {
+		c := f
+		c.text = strings.clone(f.text)
+		append(&out.fields, c)
+	}
+	return out
+}
+
+// ---- The Refactor menu ----
+
+REFACTOR_FILL :: "__refactor__" // call_name = "grab" / "copy"
+
+// open_refactor_menu (the Grab action, RT+X): Grab / Copy line for the
+// highlighted statement or block.
+open_refactor_menu :: proc(app: ^App) {
+	if _, ok := tree_selection(app); !ok do return
+	mk :: proc(label, op: string) -> Entry {
+		return Entry{label = strings.clone(label), owned_label = true, fill = REFACTOR_FILL, call_name = strings.clone(op)}
+	}
+	menu := make_slice(mk("Grab", "grab"), mk("Copy line", "copy"))
+	if app.slot_menu != nil do free_entries(app.slot_menu)
+	app.slot_menu = menu
+	clear_nav(app)
+	app.return_state = .Editor
+	app.state = .Radial
+	v := MenuView{title = "Refactor", entries = make([]Entry, len(menu))}
+	copy(v.entries, menu)
+	push_view(app, v)
+}
+
+// refactor_choose (menu_select): lift it, or a copy of it.
+refactor_choose :: proc(app: ^App, e: Entry) {
+	clear_nav(app)
+	app.state = .Editor
+	if app.slot_menu != nil { free_entries(app.slot_menu); app.slot_menu = nil }
+	if !grab_start(app, e.call_name == "copy") do app.notice = "Nothing here to move"
 }

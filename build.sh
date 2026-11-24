@@ -14,7 +14,7 @@ case "${1:-}" in
     odin test src/stt
     ;;
   release)
-    odin build "$SRC" -out:"$OUT" -o:speed -no-bounds-check
+    odin build "$SRC" -out:"$OUT" -o:speed -no-bounds-check -define:DOODLE_TRACE=false # no action recording
     ;;
   run)
     odin build "$SRC" -out:"$OUT" -debug

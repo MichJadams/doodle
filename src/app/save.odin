@@ -29,8 +29,11 @@ g_project_name: string
 ensure_projects_dir :: proc() {
 	if g_projects_dir != "" do return // already initialized
 	
-	// Get user home directory from USERPROFILE env var (Windows).
+	// The home folder: USERPROFILE (Windows), else HOME (Linux / Steam Deck /
+	// macOS). Without HOME the fallback below would put projects in the working
+	// folder - on the Deck that's often the install folder, which an update replaces.
 	home := os.get_env("USERPROFILE", context.temp_allocator)
+	if home == "" do home = os.get_env("HOME", context.temp_allocator)
 	// NOTE: these globals must outlive the frame, so they are heap-allocated
 	// (a tprintf here is freed by free_all(temp_allocator) at the end of the frame).
 	if home == "" {

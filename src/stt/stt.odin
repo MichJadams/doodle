@@ -12,6 +12,9 @@ import "core:c/libc"
 import "core:os"
 import "core:strings"
 import "core:fmt"
+import "base:runtime"
+import "core:sync"
+import "core:thread"
 
 SAMPLE_RATE :: 16000
 
@@ -46,6 +49,23 @@ Engine :: struct {
 	dev:       sdl.AudioDeviceID,
 	available: bool,
 	recording: bool,
+
+	// Background transcription (segment_async / end_async / poll): one worker
+	// thread runs whisper on the queued clips in order.
+	worker:  ^thread.Thread,
+	mu:      sync.Mutex,
+	cond:    sync.Cond,
+	jobs:    [dynamic]Job, // waiting for the worker
+	done:    [dynamic]string, // finished, in order, not yet polled
+	quit:    bool,
+	clip_no: int,
+}
+
+// Job: one clip to transcribe, with the settings it was recorded under.
+@(private)
+Job :: struct {
+	cfg: Config,  // tmp_wav / tmp_txt are this job's own files (owned)
+	pcm: []u8,    // owned; empty = nothing was heard
 }
 
 CLI_NAME   :: "whisper-cli.exe" when ODIN_OS == .Windows else "whisper-cli"
@@ -265,6 +285,18 @@ listen :: proc(e: ^Engine, ms: u32) -> string {
 
 shutdown :: proc(e: ^Engine) {
 	if e == nil do return
+	if e.worker != nil {
+		sync.mutex_lock(&e.mu)
+		e.quit = true
+		sync.cond_signal(&e.cond)
+		sync.mutex_unlock(&e.mu)
+		thread.join(e.worker)
+		thread.destroy(e.worker)
+	}
+	for j in e.jobs do job_free(j)
+	delete(e.jobs)
+	for s in e.done do delete(s, queue_heap())
+	delete(e.done)
 	if e.available do sdl.CloseAudioDevice(e.dev)
 	free(e)
 }
@@ -364,4 +396,123 @@ write_wav :: proc(path: string, pcm: []u8) -> bool {
 	append(&b, ..pcm)
 	err := os.write_entire_file(path, b[:])
 	return err == nil
+}
+
+// ---- Background transcription ----
+//
+// The editor's dictation doesn't wait for whisper: segment_async / end_async
+// take the audio heard so far and queue it, the worker thread transcribes the
+// clips one after another, and poll hands the texts back in order (one per
+// queued clip, "" for silence). The texts are cleaned like segment / end's.
+
+// segment_async: queue the audio heard so far; keep recording.
+segment_async :: proc(e: ^Engine) {
+	if e == nil || !e.available || !e.recording do return
+	queue_clip(e)
+}
+
+// end_async: stop recording and queue the rest.
+end_async :: proc(e: ^Engine) {
+	if e == nil || !e.available || !e.recording do return
+	sdl.PauseAudioDevice(e.dev, true)
+	e.recording = false
+	queue_clip(e)
+}
+
+// poll: the next finished text, in queue order (caller owns it).
+poll :: proc(e: ^Engine) -> (text: string, ok: bool) {
+	if e == nil do return "", false
+	sync.mutex_lock(&e.mu)
+	defer sync.mutex_unlock(&e.mu)
+	if len(e.done) == 0 do return "", false
+	text = strings.clone(e.done[0]) // in the caller's allocator
+	delete(e.done[0], queue_heap())
+	ordered_remove(&e.done, 0)
+	return text, true
+}
+
+@(private)
+queue_clip :: proc(e: ^Engine) {
+	pcm: []u8
+	if size := sdl.GetQueuedAudioSize(e.dev); size > 0 {
+		pcm = make([]u8, int(size))
+		got := sdl.DequeueAudio(e.dev, raw_data(pcm), size)
+		pcm = pcm[:int(got)]
+	}
+	queue_pcm(e, pcm)
+	delete(pcm)
+}
+
+// Everything the queue owns lives on the heap allocator: it's made on the main
+// thread and freed on the worker (or the other way round), whatever allocator
+// the caller's context has.
+@(private)
+queue_heap :: proc() -> runtime.Allocator { return runtime.heap_allocator() }
+
+// queue_pcm: queue a copy of one clip (16 kHz mono s16).
+@(private)
+queue_pcm :: proc(e: ^Engine, pcm: []u8) {
+	// Its own files, so a clip being written never clobbers one being read.
+	e.clip_no += 1
+	cfg := e.cfg
+	cfg.tmp_wav = fmt.aprintf("%s.%d.wav", e.cfg.tmp_wav, e.clip_no, allocator = queue_heap())
+	cfg.tmp_txt = fmt.aprintf("%s.%d.txt", e.cfg.tmp_txt, e.clip_no, allocator = queue_heap())
+	clip := make([]u8, len(pcm), queue_heap())
+	copy(clip, pcm)
+	sync.mutex_lock(&e.mu)
+	if e.jobs == nil do e.jobs = make([dynamic]Job, queue_heap())
+	if e.done == nil do e.done = make([dynamic]string, queue_heap())
+	append(&e.jobs, Job{cfg, clip})
+	if e.worker == nil do e.worker = thread.create_and_start_with_data(e, worker_main)
+	sync.cond_signal(&e.cond)
+	sync.mutex_unlock(&e.mu)
+}
+
+@(private)
+worker_main :: proc(data: rawptr) {
+	e := (^Engine)(data)
+	context.allocator = queue_heap()
+	for {
+		sync.mutex_lock(&e.mu)
+		for len(e.jobs) == 0 && !e.quit do sync.cond_wait(&e.cond, &e.mu)
+		if e.quit { sync.mutex_unlock(&e.mu); return }
+		j := e.jobs[0]
+		ordered_remove(&e.jobs, 0)
+		sync.mutex_unlock(&e.mu)
+
+		text := transcribe_clip(j.cfg, j.pcm)
+		job_free(j)
+		free_all(context.temp_allocator) // the whisper command line etc. (this thread's own)
+
+		sync.mutex_lock(&e.mu)
+		append(&e.done, text)
+		sync.mutex_unlock(&e.mu)
+	}
+}
+
+@(private)
+job_free :: proc(j: Job) {
+	os.remove(j.cfg.tmp_wav)
+	os.remove(j.cfg.tmp_txt)
+	delete(j.cfg.tmp_wav, queue_heap())
+	delete(j.cfg.tmp_txt, queue_heap())
+	delete(j.pcm, queue_heap())
+}
+
+// transcribe_clip: whisper on one clip, cleaned (caller owns the text).
+@(private)
+transcribe_clip :: proc(cfg: Config, pcm: []u8) -> string {
+	if len(pcm) == 0 do return strings.clone("")
+	if !write_wav(cfg.tmp_wav, pcm) do return strings.clone("")
+	run_whisper(cfg)
+	data, _ := os.read_entire_file(cfg.tmp_txt, context.allocator)
+	defer if data != nil do delete(data)
+	if cfg.free_text do return clean_free(string(data))
+	res := clean_identifier(string(data))
+	if len(cfg.vocabulary) > 0 {
+		snapped := snap_identifier(res, cfg.vocabulary)
+		delete(res)
+		return snapped
+	}
+	return res
 }

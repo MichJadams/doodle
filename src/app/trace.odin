@@ -173,6 +173,7 @@ Replay :: struct {
 	wall0:        f64,
 	sandbox:      string,
 	stt_fake:     bool,                // an STT recording "began" during replay
+	stt_fake_due: int,                 // ... its clips queued: each polls back "" (trace_stt_poll)
 	real_quit:    bool,                // the window was closed (not the recording quitting)
 	cur_t:        f64,                 // recorded time of `cur`
 	vt:           f64,                 // --speed: replay clock (stops while paused)
@@ -785,9 +786,10 @@ screen_ctx :: proc(m: ^model.App) -> Trace_Ctx {
 	if m.slot_menu != nil do append(&modes, "slot")
 	if m.ctrl_menu != .None do append(&modes, fmt.tprintf("ctrl:%v", m.ctrl_menu))
 	if m.tree_sticky do append(&modes, "tree_sticky")
-	if m.grab_active do append(&modes, "grab") // something is lifted (model/grab.odin)
+	if m.grab_active do append(&modes, m.grab_copy ? "grab_copy" : "grab") // something is lifted (model/grab.odin)
 	if m.word_edit_active do append(&modes, "words") // inside a string, word by word (model/word_edit.odin)
 	if g_recording do append(&modes, "dictating")
+	if g_stt_busy do append(&modes, "transcribing") // words being worked out in the background
 	if g_save_open && g_save_overwrite != "" do append(&modes, "overwrite_prompt")
 	if g_keys_open && g_keys.picking do append(&modes, "picker")
 	if g_keys_open && g_keys.asking_reset do append(&modes, "reset_prompt")
@@ -816,6 +818,10 @@ screen_ctx :: proc(m: ^model.App) -> Trace_Ctx {
 		c.title = model.slot_name(bank, b)
 		items, _ := screen_items(m)
 		pick(&c, items, g_keys.picking ? g_keys.pick : bank * len(model.KEYS_ROWS) + g_keys.row)
+	case g_sb_open:
+		c.scr = "stb_build"
+		items, _ := screen_items(m)
+		pick(&c, items, g_sb_index)
 	case g_vp_open:
 		c.scr = "vendor_path"
 		items, _ := screen_items(m)
@@ -899,6 +905,8 @@ screen_items :: proc(m: ^model.App) -> (items: []string, recent: int) {
 			for c in g_run_cmds do append(&out, c.cmd)
 			append(&out, "+ New command")
 		}
+	case g_sb_open:
+		for ch in SB_CHOICES do append(&out, ch)
 	case g_vp_open:
 		for ch in VP_CHOICES do append(&out, ch)
 	case g_settings_open:
@@ -1011,6 +1019,11 @@ fingerprint :: proc(m: ^model.App) -> u64 {
 		h = fnv_int(h, 2)
 		h = fnv_int(h, g_vp_index)
 	}
+	// The stb libraries prompt (stb_build.odin) - only while it's open.
+	if g_sb_open {
+		h = fnv_int(h, 3)
+		h = fnv_int(h, g_sb_index)
+	}
 	// Settings page and the options - only while it's open, so recordings made
 	// before Settings existed keep their fingerprints (the options only change
 	// what the page shows, and a replay doesn't run programs).
@@ -1073,6 +1086,47 @@ trace_stt_segment :: proc(e: ^stt.Engine) -> string {
 
 trace_stt_end :: proc(e: ^stt.Engine) -> string {
 	return stt_result(e, false)
+}
+
+// Background transcription (the editor's dictation, stt.segment_async /
+// end_async / poll). Recorded: each text as the frame it arrived in polls it.
+// Replayed: the engine isn't touched; poll hands back the recorded text once
+// the replay reaches its frame. (A recording made before this, with the text
+// arriving the same frame as the press, replays the same: poll runs right
+// after the queueing in that frame.)
+trace_stt_segment_async :: proc(e: ^stt.Engine) { stt_queue(e, true) }
+trace_stt_end_async     :: proc(e: ^stt.Engine) { stt_queue(e, false) }
+
+@(private = "file")
+stt_queue :: proc(e: ^stt.Engine, segment: bool) {
+	switch {
+	case trace_replaying():
+	case g_tr.rp.stt_fake:
+		g_tr.rp.stt_fake_due += 1 // began during the replay: nothing was heard
+	case segment:
+		stt.segment_async(e)
+	case:
+		stt.end_async(e)
+	}
+	if !segment do g_tr.rp.stt_fake = false
+}
+
+trace_stt_poll :: proc(e: ^stt.Engine) -> (text: string, ok: bool) {
+	switch {
+	case trace_replaying():
+		q := g_tr.rp.strs["stt"]
+		i := g_tr.rp.str_next["stt"]
+		if i >= len(q) || q[i].frame > g_tr.rp.cur do return "", false
+		g_tr.rp.str_next["stt"] = i + 1
+		return strings.clone(q[i].text), true
+	case g_tr.rp.stt_fake_due > 0:
+		g_tr.rp.stt_fake_due -= 1
+		text, ok = strings.clone(""), true
+	case:
+		text, ok = stt.poll(e)
+	}
+	if ok && g_tr.mode != .Off do note_str("stt", text)
+	return
 }
 
 @(private = "file")
@@ -1713,6 +1767,9 @@ trace_poll         :: #force_inline proc(win: ^platform.Window, events: ^[dynami
 trace_stt_begin    :: #force_inline proc(e: ^stt.Engine) { stt.begin(e) }
 trace_stt_segment  :: #force_inline proc(e: ^stt.Engine) -> string { return stt.segment(e) }
 trace_stt_end      :: #force_inline proc(e: ^stt.Engine) -> string { return stt.end(e) }
+trace_stt_segment_async :: #force_inline proc(e: ^stt.Engine) { stt.segment_async(e) }
+trace_stt_end_async     :: #force_inline proc(e: ^stt.Engine) { stt.end_async(e) }
+trace_stt_poll          :: #force_inline proc(e: ^stt.Engine) -> (string, bool) { return stt.poll(e) }
 
 trace_startup_file :: proc() -> string {
 	if len(os.args) > 1 && os.exists(os.args[1]) do return os.args[1]
