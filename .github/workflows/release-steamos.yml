@@ -388,6 +388,8 @@ jobs:
         run: |
           odin test src/model
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The stt tests call SDL: the test program needs SDL2.dll (Odin ships it in vendor\sdl2).
+          $env:PATH = (Join-Path (Split-Path (Get-Command odin).Source) 'vendor\sdl2') + ";$env:PATH"
           odin test src/stt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

@@ -29,6 +29,8 @@ if not exist bin\SDL2.dll (
 
 if "%~1"=="test" (
     odin test src\model || exit /b 1
+    REM The stt tests call SDL: SDL2.dll (copied into bin\ above) must be findable.
+    set "PATH=%CD%\bin;!PATH!"
     odin test src\stt
     goto :eof
 )
